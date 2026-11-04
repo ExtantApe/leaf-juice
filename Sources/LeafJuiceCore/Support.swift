@@ -48,9 +48,13 @@ public enum AppPaths {
         UserDefaults.standard.set(folder.path, forKey: "serversFolder")
         UserDefaults.standard.set(true, forKey: "serversFolderChosen")
     }
+    /// Leaf Juice's own folder beside the servers. Holds backups, and is never listed as a server.
+    public static let ownFolderName = "LeafJuice"
+    public static var backups: URL {
+        servers.appendingPathComponent(ownFolderName, isDirectory: true).appendingPathComponent("backups", isDirectory: true)
+    }
     public static var registry: URL { home.appendingPathComponent("servers.json") }
     public static var runtimes: URL { home.appendingPathComponent("Runtimes", isDirectory: true) }
-    public static var backups: URL { home.appendingPathComponent("Backups", isDirectory: true) }
     public static var rules: URL { home.appendingPathComponent("rules", isDirectory: true) }
 }
 
@@ -98,6 +102,13 @@ public enum FileOps {
     public static func writeAtomic(_ text: String, to url: URL) throws {
         try ensureDir(url.deletingLastPathComponent())
         try text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// A path relative to `root`, even when one of them goes through a symlink (`/var` is one on macOS).
+    public static func relative(_ url: URL, to root: URL) -> String {
+        let base = root.resolvingSymlinksInPath().path + "/"
+        let path = url.resolvingSymlinksInPath().path
+        return path.hasPrefix(base) ? String(path.dropFirst(base.count)) : path
     }
 
     public static func children(_ url: URL) -> [URL] {

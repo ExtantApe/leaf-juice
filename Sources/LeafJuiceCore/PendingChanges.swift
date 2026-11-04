@@ -8,6 +8,7 @@ public struct PendingChange: Codable, Identifiable, Equatable, Sendable {
         case pluginInstall(name: String, stagedFile: String, finalName: String, replaces: String?, upstreamID: String?)
         case pluginRemove(fileName: String)
         case pluginToggle(fileName: String, enable: Bool)
+        case playerRestore(folder: String, uuid: String, name: String, inventoryOnly: Bool, containers: [String])
     }
     public var id = UUID()
     public var kind: Kind
@@ -26,6 +27,7 @@ public struct PendingChange: Codable, Identifiable, Equatable, Sendable {
         case let .pluginInstall(name, _, _, _, _): "plugin:\(name.lowercased())"
         case let .pluginRemove(file): "file:\(file)"
         case let .pluginToggle(file, _): "file:\(file)"
+        case let .playerRestore(_, uuid, _, _, _): "player:\(uuid)"
         }
     }
 
@@ -50,6 +52,12 @@ public struct UpgradeRecord: Codable, Identifiable, Equatable, Sendable {
     public var backupFolder: String
     public var worlds: [String]
     public var size: Int64
+    /// A rename or merge rather than a version change, so the wording differs.
+    public var isRename = false
+    public init(from: SoftwareState, toLabel: String, toFileName: String, backupFile: String, backupFolder: String, worlds: [String], size: Int64, isRename: Bool = false) {
+        self.from = from; self.toLabel = toLabel; self.toFileName = toFileName; self.backupFile = backupFile
+        self.backupFolder = backupFolder; self.worlds = worlds; self.size = size; self.isRename = isRename
+    }
 }
 
 /// The server as it stood after an upgrade you rolled back. Not a backup: it's kept apart,

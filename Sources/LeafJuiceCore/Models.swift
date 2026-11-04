@@ -150,7 +150,7 @@ public enum BackupScope: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .worlds: "Worlds only"
         case .standard: "Worlds, settings and plugins"
-        case .everything: "Whole folder"
+        case .everything: "Whole server folder"
         }
     }
 }
@@ -158,11 +158,11 @@ public enum BackupScope: String, Codable, CaseIterable, Identifiable, Sendable {
 public struct BackupConfig: Codable, Equatable, Sendable {
     public var enabled = true
     public var intervalHours = 24
-    public var scope: BackupScope = .standard
-    /// nil uses Leaf Juice's own folder.
+    public var scope: BackupScope = .everything
+    /// Where this server's backups go. Set once, so later renames or settings changes can't lose track of them.
     public var destination: String?
     public var keepLast = 7
-    public var keepDays = 30
+    public var keepDays = 14
     public var beforeUpdates = true
     public var lastRun: Date?
     public init() {}
@@ -211,6 +211,7 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
     public var backup = BackupConfig()
     public var restart = RestartSchedule()
     public var lastPluginCheck: Date?
+    public var playerSnapshots = PlayerSnapshotConfig()
     public init() {}
 }
 

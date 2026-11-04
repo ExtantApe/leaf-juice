@@ -11,24 +11,24 @@ struct UpgradeBanner: View {
         if let upgrade = server.activeUpgrade {
             Callout(
                 tone: .warning,
-                title: "Upgraded to \(upgrade.toLabel). Happy with it?",
-                detail: "A verified restore point of \(upgrade.from.label) is saved (\(Format.bytes(upgrade.size))). Try the server, then keep the upgrade or roll back."
+                title: upgrade.isRename ? "\(upgrade.toLabel): done. Happy with it?" : "Upgraded to \(upgrade.toLabel). Happy with it?",
+                detail: "A verified restore point from just before is saved (\(Format.bytes(upgrade.size))). Try the server, then keep this or undo it."
             ) {
                 HStack {
                     Button("Roll Back…") { confirmRollBack = true }
                         .buttonStyle(.juice).disabled(server.activity != nil || server.isBackingUp)
-                    Button("Keep This Upgrade…") { confirmKeep = true }.buttonStyle(.juice)
+                    Button(upgrade.isRename ? "Keep It…" : "Keep This Upgrade…") { confirmKeep = true }.buttonStyle(.juice)
                 }
             }
-            .confirmationDialog("Roll back to \(upgrade.from.label)?", isPresented: $confirmRollBack) {
+            .confirmationDialog("Undo: go back to how it was before?", isPresented: $confirmRollBack) {
                 Button("Roll Back") { server.attempt { try await server.rollBackUpgrade() } }
             } message: {
-                Text("The server stops if it's running and returns to how it was before the upgrade. Anything players did since then isn't in the restored world, but it isn't lost: the upgraded server moves to the Shelf on the Backups page, and you can resume it later.")
+                Text("The server stops if it's running and returns to how it was. Anything players did since then isn't in the restored world, but it isn't lost: the current state moves to the Shelf on the Backups page, and you can resume it later.")
             }
             .confirmationDialog("Keep \(upgrade.toLabel)?", isPresented: $confirmKeep) {
                 Button("Keep") { server.keepUpgrade() }
             } message: {
-                Text("This removes the roll back option. The restore point becomes an ordinary backup, so your retention settings will eventually delete it. You can pin it on the Backups page to hold on to it.")
+                Text("This removes the undo option. The restore point becomes an ordinary backup, so your retention settings will eventually delete it. You can pin it on the Backups page to hold on to it.")
             }
         }
     }

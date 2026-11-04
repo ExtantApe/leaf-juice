@@ -48,6 +48,7 @@ struct ChangesPage: View {
         case .config: "doc.text"
         case .software: "shippingbox"
         case .pluginInstall, .pluginRemove, .pluginToggle: "puzzlepiece.extension"
+        case .playerRestore: "person.crop.circle.badge.clock"
         }
     }
 

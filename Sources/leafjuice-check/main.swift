@@ -17,8 +17,8 @@ defer { try? FileManager.default.removeItem(at: scratch) }
 nonisolated(unsafe) var passed = 0
 nonisolated(unsafe) var failures: [String] = []
 
-@MainActor func check(_ condition: @autoclosure () -> Bool, _ label: String, line: Int = #line) {
-    if condition() { passed += 1 } else { failures.append("line \(line): \(label)"); print("  FAIL \(label) (line \(line))") }
+@MainActor func check(_ condition: @autoclosure () throws -> Bool, _ label: String, line: Int = #line) {
+    if (try? condition()) == true { passed += 1 } else { failures.append("line \(line): \(label)"); print("  FAIL \(label) (line \(line))") }
 }
 @MainActor func equal<T: Equatable>(_ a: T, _ b: T, _ label: String, line: Int = #line) {
     if a == b { passed += 1 } else { failures.append("line \(line): \(label): \(a) != \(b)"); print("  FAIL \(label): got \(a), want \(b) (line \(line))") }
@@ -380,7 +380,10 @@ do {
     write("jar", root.appendingPathComponent("plugins/foo.jar"))
     write("meta", root.appendingPathComponent(".leafjuice/x"))
     equal(Backups.worldFolders(root), ["world"], "finds worlds")
-    check(!Backups.items(root, scope: .everything).contains("logs"), "skips logs")
+    for needed in ["logs", "libraries", "versions", "cache"] { write("x", root.appendingPathComponent("\(needed)/f")) }
+    for needed in ["logs", "libraries", "versions", "cache", "plugins", "world"] {
+        check(Backups.items(root, scope: .everything).contains(needed), "whole folder has \(needed)")
+    }
     check(!Backups.items(root, scope: .everything).contains(".leafjuice"), "skips own metadata")
     check(Backups.items(root, scope: .standard).contains("plugins"), "standard has plugins")
 
@@ -399,6 +402,29 @@ do {
     check(!FileOps.exists(world.appendingPathComponent("extra.txt")), "world replaced, not merged")
     check(!FileOps.exists(world.appendingPathComponent("session.lock")), "lock not restored")
     check(FileOps.exists(root.appendingPathComponent("logs/latest.log")), "logs untouched")
+    equal(try! String(contentsOf: root.appendingPathComponent("libraries/f"), encoding: .utf8), "x", "libraries come back")
+
+    // Anything added since goes, so it's exactly as it was. Leaf Juice's own records stay.
+    let wholeBackup = try await Backups.create(profile, root: root, trigger: "manual")
+    write("new", root.appendingPathComponent("paper-99.jar"))
+    write("new", root.appendingPathComponent("extra_world/level.dat"))
+    write("new", root.appendingPathComponent("plugins/added.jar"))
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("libraries"))
+    try await Backups.restore(wholeBackup, profile: profile, root: root)
+    check(!FileOps.exists(root.appendingPathComponent("paper-99.jar")), "jar added since is gone")
+    check(!FileOps.exists(root.appendingPathComponent("extra_world")), "world added since is gone")
+    check(!FileOps.exists(root.appendingPathComponent("plugins/added.jar")), "plugin added since is gone")
+    check(FileOps.exists(root.appendingPathComponent("libraries/f")), "deleted libraries are back")
+    check(FileOps.exists(root.appendingPathComponent(".leafjuice/x")), "own records kept")
+    equal(wholeBackup.softwareState, profile.software, "records what was running")
+    // A partial backup still leaves everything else alone.
+    let partial = try await Backups.create(profile, root: root, trigger: "manual", scope: .worlds)
+    write("keep", root.appendingPathComponent("keepme.txt"))
+    try await Backups.restore(partial, profile: profile, root: root)
+    check(FileOps.exists(root.appendingPathComponent("keepme.txt")), "partial restore removes nothing")
+    try FileManager.default.removeItem(at: root.appendingPathComponent("keepme.txt"))
+    check(wholeBackup.fileName != partial.fileName, "same-second backups get different names")
+    try Backups.delete(wholeBackup, profile: profile); try Backups.delete(partial, profile: profile)
     check(FileOps.children(ServerPaths(root: root).meta).allSatisfy { !$0.lastPathComponent.hasPrefix("restore-") }, "temp cleaned")
 
     try Backups.setPinned(made, pinned: true, profile: profile)
@@ -654,6 +680,632 @@ do {
     setenv("LEAFJUICE_SERVERS", parent.path, 1)
     equal(AppPaths.servers.path, parent.path, "tests never use the real folder")
     equal(AppPaths.defaultServers.path, parent.path, "nor does the first-launch default")
+}
+
+section("Config forms")
+do {
+    // Properties: the file decides, and the table only adds words.
+    let props = "#Minecraft server properties\nmotd=\\u00A7aHello\\: World\nview-distance=10\npvp=true\ndifficulty=easy\nbrand-new-setting=7\nanother.future-flag=true\nmystery=abc\nlevel-seed=\n"
+    var f = ConfigForm.fields(props, format: .properties)
+    let by = Dictionary(uniqueKeysWithValues: f.map { ($0.path.joined(separator: "."), $0) })
+    equal(by["view-distance"]?.title, "View distance", "known title"); equal(by["view-distance"]?.kind, .int(2...32), "known range")
+    equal(by["view-distance"]?.section, "Performance", "known group")
+    equal(by["brand-new-setting"]?.kind, .int(nil), "unknown number still gets a control"); equal(by["brand-new-setting"]?.title, "Brand new setting", "and a readable title")
+    equal(by["brand-new-setting"]?.section, "Other settings", "in its own section")
+    equal(by["another.future-flag"]?.kind, .bool, "unknown true/false gets a toggle")
+    equal(by["mystery"]?.kind, .text, "unknown text")
+    check(by["hardcore"] == nil, "a setting not in the file isn't shown")
+    equal(f.first?.section, "Basics", "known groups first")
+    equal(by["motd"]?.value, "\u{A7}aHello: World", "unicode escape read")
+    equal(ConfigForm.plainMOTD("\u{A7}aHello &lWorld\nTwo"), "Hello World Two", "motd cleaned")
+    if case let .choice(options)? = by["difficulty"]?.kind { check(options.contains("hard"), "choices") } else { failures.append("difficulty choice") }
+    var edited = ConfigForm.set(by["view-distance"]!, to: "6", in: props, format: .properties)
+    check(edited.contains("view-distance=6\n") && edited.contains("#Minecraft server properties"), "one line changes, comments stay")
+    edited = ConfigForm.set(by["brand-new-setting"]!, to: "9", in: edited, format: .properties)
+    check(edited.contains("brand-new-setting=9"), "unknown setting edits too")
+    equal(ConfigForm.fields("view-distance=99", format: .properties).first?.problem, "This needs to be from 2 to 32.", "known range enforced")
+    check(ConfigForm.fields("brand-new-setting=99", format: .properties).first?.problem == nil, "unknown has no invented limit")
+    check(ConfigForm.fields("view-distance=abc", format: .properties).first?.problem == nil, "odd values aren't forced into a number")
+
+    // YAML, shaped like real Bukkit and Paper files.
+    let yaml = """
+    # This is the main configuration file for Bukkit.
+    settings:
+      allow-end: true # keep
+      warn-on-overload: true
+      shutdown-message: Server closed
+      quoted: 'it''s here'
+      dquoted: "a \\"b\\""
+    spawn-limits:
+      monsters: 70
+    # Ticks between saves
+    ticks-per:
+      autosave: 6000
+    aliases: now-in-commands.yml
+    worlds:
+    - alpha
+    - beta
+    nested:
+      list:
+        - one
+        - two
+      inline: [a, b]
+      empty: {}
+      block: |
+        line one
+        key: not real
+      after-block: 3
+      ratio: 0.5
+      fallback: default
+    top-level: yes-please
+
+    """
+    f = ConfigForm.fields(yaml, format: .yaml)
+    let y = Dictionary(uniqueKeysWithValues: f.map { ($0.path.joined(separator: "."), $0) })
+    equal(y["settings.allow-end"]?.kind, .bool, "yaml bool"); equal(y["settings.allow-end"]?.value, "true", "comment isn't part of the value")
+    equal(y["settings.allow-end"]?.section, "Settings", "section from nesting")
+    equal(y["spawn-limits.monsters"]?.kind, .int(nil), "yaml int"); check(y["spawn-limits.monsters"]?.help?.isEmpty == false, "known help")
+    equal(y["settings.quoted"]?.value, "it's here", "single quotes read"); equal(y["settings.quoted"]?.kind, .text, "quoted is text")
+    equal(y["ticks-per.autosave"]?.value, "6000", "after a comment")
+    equal(y["worlds"]?.kind, .readOnly, "top-level list is read-only"); equal(y["nested.list"]?.kind, .readOnly, "nested list is read-only")
+    equal(y["nested.inline"]?.kind, .readOnly, "inline list read-only"); equal(y["nested.empty"]?.kind, .readOnly, "inline map read-only")
+    equal(y["nested.block"]?.kind, .readOnly, "block read-only"); check(y["nested.key"] == nil && y["nested.block.key"] == nil, "block contents aren't settings")
+    equal(y["nested.after-block"]?.value, "3", "continues after a block"); equal(y["nested.ratio"]?.kind, .number, "decimal")
+    equal(y["nested.fallback"]?.kind, .text, "the word default is text, as in Paper's files")
+    equal(y["aliases"]?.section, "General", "top-level scalar")
+
+    // Every edit changes exactly one line, and same-value edits change nothing.
+    for field in f where field.kind != .readOnly && !field.path.contains("quoted") && !field.path.contains("dquoted") {
+        equal(ConfigForm.set(field, to: field.value, in: yaml, format: .yaml), yaml, "same value is a no-op: \(field.id)")
+    }
+    let on = ConfigForm.set(y["settings.allow-end"]!, to: "false", in: yaml, format: .yaml)
+    check(on.contains("  allow-end: false # keep\n"), "comment and indent kept")
+    equal(zip(on.split(separator: "\n", omittingEmptySubsequences: false), yaml.split(separator: "\n", omittingEmptySubsequences: false)).filter { $0 != $1 }.count, 1, "exactly one line changed")
+    let q = ConfigForm.set(y["settings.quoted"]!, to: "bob's", in: yaml, format: .yaml)
+    check(q.contains("quoted: 'bob''s'"), "single quoting kept and escaped")
+    let dq = ConfigForm.set(y["settings.dquoted"]!, to: "x\"y", in: yaml, format: .yaml)
+    check(dq.contains(#"dquoted: "x\"y""#), "double quoting kept and escaped")
+    // Text that YAML would misread gets quoted, and reads back as written.
+    for risky in ["a: b", "true", "123", "", "#hash", "no", "- dash", "ends:", "x #y", "1.5"] {
+        let out = ConfigForm.set(y["settings.shutdown-message"]!, to: risky, in: yaml, format: .yaml)
+        let back = ConfigForm.fields(out, format: .yaml).first { $0.path == ["settings", "shutdown-message"] }
+        equal(back?.value, risky, "text round trip: \(risky)"); equal(back?.kind, .text, "stays text: \(risky)")
+    }
+    check(ConfigForm.set(y["worlds"]!, to: "x", in: yaml, format: .yaml) == yaml, "read-only can't be edited")
+    check(ConfigForm.fields("", format: .yaml).isEmpty && ConfigForm.fields("[]", format: .json).isEmpty, "empty and unsupported are fine")
+    check(ConfigForm.fields("\tbad: tabs\n", format: .yaml).isEmpty, "tabs are left alone")
+    check(!ConfigForm.supports(.json) && ConfigForm.supports(.yaml), "supported formats")
+
+    // Player lists.
+    equal(PlayerList.entries(#"[{"uuid":"1","name":"Zed","level":4},{"uuid":"2","name":"amy"}]"#), ["amy", "Zed"], "names")
+    equal(PlayerList.entries(#"[{"ip":"1.2.3.4","reason":"x"}]"#), ["1.2.3.4"], "addresses"); check(PlayerList.entries("nope").isEmpty, "bad file")
+    equal(PlayerList.commands(for: "ops.json")?.remove, "deop", "op commands"); equal(PlayerList.commands(for: "banned-ips.json")?.add, "ban-ip", "ip commands"); check(PlayerList.commands(for: "bukkit.yml") == nil, "others aren't lists")
+    check(PlayerList.isValid("Steve_1", isAddress: false) && PlayerList.isValid(".BedrockKid", isAddress: false), "valid names")
+    check(!PlayerList.isValid("a b", isAddress: false) && !PlayerList.isValid("x\nstop", isAddress: false) && !PlayerList.isValid("this_name_is_far_too_long", isAddress: false), "unsafe names refused")
+    check(PlayerList.isValid("10.0.0.1", isAddress: true) && !PlayerList.isValid("1.1.1.1 stop", isAddress: true), "addresses")
+
+    // Per-world files, in both layouts.
+    let root = folder("perworld"); let paths = ServerPaths(root: root)
+    write("level-name=world\n", paths.properties)
+    write("x", root.appendingPathComponent("world/level.dat")); write("a: 1", root.appendingPathComponent("world/paper-world.yml"))
+    write("a: 1", root.appendingPathComponent("world/dimensions/minecraft/the_nether/paper-world.yml"))
+    let cfg = ConfigCatalog.scan(paths).map(\.path)
+    check(cfg.contains("world/paper-world.yml"), "pre-26 per-world file"); check(cfg.contains("world/dimensions/minecraft/the_nether/paper-world.yml"), "26.x per-dimension file")
+
+    // Plugin pages come from what's installed and what's in each folder.
+    let pl = folder("plugin-pages"); let plp = ServerPaths(root: pl)
+    for f in ["LuckPerms/config.yml", "LuckPerms/extra.yml", "Essentials/config.yml", "Essentials/kits.yml", "Essentials/userdata/abc.yml", "Essentials/nested/more/deep.yml", "Essentials/nested/more/too/deep.yml", "Essentials/lang/fr.yml", "Essentials/data.db", "Gone/config.yml", "Off/config.yml", "update/x.yml"] {
+        write("a: 1\n", plp.plugins.appendingPathComponent(f))
+    }
+    func installed(_ name: String, enabled: Bool = true) -> InstalledPlugin {
+        InstalledPlugin(fileName: "\(name).jar", enabled: enabled, descriptor: PluginDescriptor(name: name), digests: nil, size: 0)
+    }
+    let scanned = ConfigCatalog.scan(plp, plugins: [installed("LuckPerms"), installed("essentials"), installed("Off", enabled: false), installed("NoFiles")])
+    func files(_ group: String) -> [String] { scanned.filter { $0.group == group }.map(\.listTitle) }
+    equal(files("LuckPerms"), ["config.yml", "extra.yml"], "plugin gets its own group, main file first")
+    equal(files("essentials"), ["config.yml", "kits.yml", "nested/more/deep.yml"], "folder matched regardless of case; data folders and very deep files skipped")
+    equal(files("Off (disabled)"), ["config.yml"], "disabled plugins labelled")
+    equal(files("Leftover plugin folders"), ["config.yml"], "no installed plugin: listed apart")
+    check(!scanned.contains { $0.path.contains("/update/") }, "the update folder isn't a plugin")
+    check(!scanned.contains { $0.group == "NoFiles" }, "a plugin with no files has no empty group")
+    equal(scanned.last?.group, "Leftover plugin folders", "leftovers last")
+    equal(ConfigCatalog.format(for: "x.toml"), .text, "other formats open as text")
+
+    // Plugin comments become help; banners and huge headers don't.
+    let commented = "##########\n# Plugin header\n##########\n\n# How often to save, in minutes.\n# Lower is safer.\nsave-interval: 5\n# \(String(repeating: "x", count: 600))\nlong: 1\n"
+    let cf = ConfigForm.fields(commented, format: .yaml)
+    equal(cf.first?.help, "How often to save, in minutes. Lower is safer.", "comment is help")
+    check(cf.last?.help == nil, "a huge comment isn't help")
+
+    // Controller: motd goes the usual way.
+    write("server-port=25589\nmotd=old\n", root.appendingPathComponent("server.properties"))
+    let c = try await ServerController.adopt(root: root, name: "Forms")
+    defer { c.stopTicker() }
+    c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+    equal(c.serverMessage, "old", "message read")
+    equal(try c.setServerMessage("new"), .saved, "saved while stopped"); equal(c.serverMessage, "new", "message updated")
+    check((try! String(contentsOf: paths.properties, encoding: .utf8)).contains("motd=new"), "on disk")
+}
+
+section("Player data format")
+do {
+    let sample: NBT = .compound([
+        .init("DataVersion", .int(4671)), .init("XpLevel", .int(7)), .init("Health", .float(0x41A00000)), .init("Pos", .list(6, [.double(1), .double(2), .double(3)])),
+        .init("Dimension", .string("minecraft:overworld")), .init("UUID", .intArray([1, 2, 3, 4])), .init("big", .long(-5)), .init("s", .short(-2)), .init("b", .byte(-1)),
+        .init("bytes", .byteArray([-1, 2])), .init("longs", .longArray([9, -9])), .init("emptyList", .list(0, [])),
+        .init("Inventory", .list(10, [.compound([.init("Slot", .byte(0)), .init("id", .string("minecraft:diamond")), .init("count", .int(3))]), .compound([.init("Slot", .byte(1)), .init("id", .string("minecraft:stone")), .init("Count", .byte(64))])])),
+        .init("EnderItems", .list(10, [.compound([.init("Slot", .byte(0)), .init("id", .string("minecraft:elytra")), .init("count", .int(1))])])),
+        .init("bukkit", .compound([.init("lastKnownName", .string("Steve"))])),
+    ])
+    let doc = NBT.Document(root: sample)
+    let bytes = try NBT.encode(doc)
+    check(Gzip.isGzip(bytes), "written gzipped")
+    let back = try NBT.decode(bytes)
+    equal(back, doc, "round trip keeps everything, in order")
+    equal(try Gzip.decompress(try Gzip.compress(Data("hello hello hello".utf8))), Data("hello hello hello".utf8), "gzip round trip")
+    // Checked against the system's gzip, so this isn't only agreeing with itself.
+    let gzFile = scratch.appendingPathComponent("t.gz"); try bytes.write(to: gzFile)
+    let tool = try await Tool.run("/usr/bin/gzip", ["-t", gzFile.path]); check(tool.ok, "valid gzip to the system tool: \(tool.err)")
+    let summary = PlayerFiles.summary(sample)
+    equal(summary.items.map(\.count), [3, 64], "both item count formats"); equal(summary.enderItems.first?.item, "minecraft:elytra", "ender chest"); equal(summary.level, 7, "level")
+    equal(summary.items.first?.title, "Diamond", "readable item")
+    equal(PlayerFiles.offlineUUID(name: "Notch"), "b50ad385-829d-3141-a216-7e7d7539ba7f", "offline UUID matches the known value")
+    var f = sample; f["XpLevel"] = .int(9); equal(f["XpLevel"]?.intValue, 9, "edit"); f["gone"] = nil; f["new"] = .string("x"); equal(f["new"]?.stringValue, "x", "add")
+    var threw = false
+    do { _ = try NBT.decode(Data([10, 0])) } catch { threw = true }
+    check(threw, "cut-short file refused, not crashed")
+}
+
+section("Players")
+do {
+    // Both layouts, Multiverse-Inventories included.
+    for modern in [false, true] {
+        let root = folder("players-\(modern)"); let paths = ServerPaths(root: root)
+        write("level-name=world\n", paths.properties)
+        write("x", root.appendingPathComponent("world/level.dat"))
+        let base = modern ? "world/players" : "world"
+        let dataDir = modern ? "\(base)/data" : "world/playerdata"
+        let id = "069a79f4-44e9-4726-a5be-fca90e38aaf5", oldID = PlayerFiles.offlineUUID(name: "Steve")
+        func dat(_ items: [(String, Int)], level: Int, name: String) throws -> NBT.Document {
+            var stacks: [NBT] = []
+            for (i, item) in items.enumerated() {
+                let entries: [NBT.Entry] = [.init("Slot", .byte(Int8(i))), .init("id", .string(item.0)), .init("count", .int(Int32(item.1)))]
+                stacks.append(.compound(entries))
+            }
+            let top: [NBT.Entry] = [
+                .init("UUID", .intArray([0, 0, 0, 0])), .init("XpLevel", .int(Int32(level))), .init("Pos", .list(6, [.double(UInt64(level))])),
+                .init("Inventory", .list(10, stacks)), .init("bukkit", .compound([.init("lastKnownName", .string(name))])),
+            ]
+            return NBT.Document(root: .compound(top))
+        }
+        try FileOps.ensureDir(root.appendingPathComponent(dataDir))
+        let p = PlayerPaths(paths)
+        if modern { equal(p.dataFolder.path.hasSuffix("players/data"), true, "26.x data path") } else { equal(p.dataFolder.lastPathComponent, "playerdata", "old data path") }
+        try NBT.write(try dat([("minecraft:diamond", 5)], level: 10, name: "Steve"), to: p.data(id))
+        write(#"[{"name":"Steve","uuid":"\#(id)","expiresOn":"2030-01-01"}]"#, root.appendingPathComponent("usercache.json"))
+        write(#"{"stats":{"minecraft:custom":{"minecraft:play_time":72000,"minecraft:jump":5}},"DataVersion":1}"#, p.stats(id))
+        write(#"{"minecraft:story/root":{"criteria":{"a":"2026-02-01"},"done":true},"DataVersion":1}"#, p.advancements(id))
+        write(#"{"SURVIVAL":{"inventoryContents":{"0":"nether"}}}"#, p.inventories.appendingPathComponent("worlds/mining/Steve.json"))
+        write(#"{"SURVIVAL":{"inventoryContents":{"0":"group"}}}"#, p.inventories.appendingPathComponent("groups/default/Steve.json"))
+
+        let list = PlayerFiles.list(paths)
+        equal(list.first?.name, "Steve", "named from usercache"); equal(list.first?.playTime, 3600, "play time")
+        equal(p.inventoryContainers(name: "Steve"), ["groups/default/Steve.json", "worlds/mining/Steve.json"], "world and group inventories found")
+
+        var profile = ServerProfile(); profile.name = "players \(modern)"
+        profile.backup.destination = folder("players-backups-\(modern)").path
+        // Snapshot, griefed, restored.
+        let snap = try PlayerSnapshots.take(uuid: id, name: "Steve", trigger: "playing", paths: paths, profile: profile)
+        equal(snap.containers.count, 2, "snapshot holds per-world data")
+        try NBT.write(try dat([("minecraft:dirt", 1)], level: 99, name: "Steve"), to: p.data(id))
+        write(#"{"griefed":true}"#, p.inventories.appendingPathComponent("worlds/mining/Steve.json"))
+        write(#"{"griefed":true}"#, p.inventories.appendingPathComponent("groups/default/Steve.json"))
+        try PlayerSnapshots.restore(snap, inventoryOnly: true, containers: ["worlds/mining/Steve.json"], paths: paths, profile: profile)
+        var restored = PlayerFiles.summary(of: p.data(id))
+        equal(restored?.items.first?.item, "minecraft:diamond", "inventory back"); equal(restored?.level, 99, "inventory-only keeps current XP")
+        check((try String(contentsOf: p.inventories.appendingPathComponent("worlds/mining/Steve.json"), encoding: .utf8)).contains("nether"), "chosen world restored")
+        check((try String(contentsOf: p.inventories.appendingPathComponent("groups/default/Steve.json"), encoding: .utf8)).contains("griefed"), "unchosen group left alone")
+        try PlayerSnapshots.restore(snap, inventoryOnly: false, containers: [], paths: paths, profile: profile)
+        restored = PlayerFiles.summary(of: p.data(id)); equal(restored?.level, 10, "full restore brings everything")
+        // Rolling retention spares what you asked for.
+        for _ in 0..<3 { try PlayerSnapshots.take(uuid: id, name: "Steve", trigger: "playing", paths: paths, profile: profile) }
+        try PlayerSnapshots.take(uuid: id, name: "Steve", trigger: "manual", paths: paths, profile: profile)
+        PlayerSnapshots.prune(uuid: id, keep: 2, profile: profile)
+        let left = PlayerSnapshots.list(uuid: id, profile: profile)
+        equal(left.filter { $0.trigger == "playing" }.count, 2, "automatic ones roll off"); equal(left.filter { $0.trigger == "manual" }.count, 1, "manual stays")
+
+        // From a backup, without touching the world.
+        let backup = try await Backups.create(profile, root: root, trigger: "manual")
+        try NBT.write(try dat([("minecraft:dirt", 1)], level: 1, name: "Steve"), to: p.data(id))
+        let world = try Data(contentsOf: root.appendingPathComponent("world/level.dat"))
+        let extracted = try await PlayerSnapshots.fromBackup(backup, uuid: id, name: "Steve", paths: paths, profile: profile)
+        equal(extracted.containers.count, 2, "per-world data from a backup")
+        equal(PlayerFiles.summary(of: PlayerSnapshots.location(extracted, profile: profile).appendingPathComponent("player.dat"))?.items.first?.item, "minecraft:diamond", "the backup's inventory")
+        equal(try Data(contentsOf: root.appendingPathComponent("world/level.dat")), world, "world untouched")
+        check(FileOps.children(paths.meta).allSatisfy { !$0.lastPathComponent.hasPrefix("extract-") }, "temp folder removed")
+
+        // Merge: an offline twin, with stats, advancements and a name change.
+        try NBT.write(try dat([("minecraft:gold_ingot", 2)], level: 3, name: "Steve"), to: p.data(oldID))
+        try NBT.write(try dat([("minecraft:diamond", 5)], level: 10, name: "Steve"), to: p.data(id))
+        write(#"{"stats":{"minecraft:custom":{"minecraft:play_time":100,"minecraft:new":1}},"DataVersion":1}"#, p.stats(oldID))
+        write(#"{"minecraft:story/root":{"criteria":{"a":"2020-01-01","b":"2020-01-02"},"done":false},"minecraft:other":{"criteria":{"c":"2021"},"done":true},"DataVersion":1}"#, p.advancements(oldID))
+        let suggestions = PlayerMerge.suggestions(paths)
+        check(suggestions.contains { $0.from.uuid == oldID && $0.to.uuid == id }, "offline twin suggested: \(suggestions.map(\.reason))")
+        var plan = MergePlan(from: PlayerRef(uuid: oldID, name: "Steve"), to: PlayerRef(uuid: id, name: "Steve"))
+        plan.keepFromSource = true
+        let archive = scratch.appendingPathComponent("merge-archive-\(modern)")
+        try PlayerMerge.apply(plan, paths: paths, archive: archive)
+        check(!FileOps.exists(p.data(oldID)), "old profile merged away"); check(FileOps.exists(archive.appendingPathComponent("\(oldID).dat")), "and kept aside")
+        let merged = try NBT.read(p.data(id))
+        equal(PlayerFiles.summary(merged.root).items.first?.item, "minecraft:gold_ingot", "chosen inventory kept")
+        equal(merged.root["UUID"], NBT.uuid(UUID(uuidString: id)!), "identifies as the profile that stays")
+        let stats = try JSONSerialization.jsonObject(with: Data(contentsOf: p.stats(id))) as! [String: Any]
+        let custom = (stats["stats"] as! [String: Any])["minecraft:custom"] as! [String: Int]
+        equal(custom["minecraft:play_time"], 72100, "stats add up"); equal(custom["minecraft:new"], 1, "new stats kept"); equal(custom["minecraft:jump"], 5, "existing stats kept")
+        let adv = try JSONSerialization.jsonObject(with: Data(contentsOf: p.advancements(id))) as! [String: Any]
+        let root1 = adv["minecraft:story/root"] as! [String: Any]
+        equal(root1["done"] as? Bool, true, "earned stays earned"); equal((root1["criteria"] as! [String: String])["a"], "2020-01-01", "earlier date wins"); check(adv["minecraft:other"] != nil, "both profiles' advancements")
+
+        // Merge: a name change, which only Multiverse-Inventories notices.
+        write(#"{"old":"true"}"#, p.inventories.appendingPathComponent("worlds/mining/OldName.json"))
+        write(#"{"old":"only"}"#, p.inventories.appendingPathComponent("worlds/other/OldName.json"))
+        let orphan = PlayerMerge.suggestions(paths).first { $0.from.name == "OldName" }
+        check(orphan != nil, "orphaned name suggested")
+        var rename = MergePlan(from: PlayerRef(uuid: "", name: "OldName"), to: PlayerRef(uuid: id, name: "Steve"))
+        equal(PlayerMerge.conflicts(rename, paths: paths), ["worlds/mining"], "conflict found")
+        rename.useOldContainer["worlds/mining"] = true
+        try PlayerMerge.apply(rename, paths: paths, archive: archive)
+        check((try String(contentsOf: p.inventories.appendingPathComponent("worlds/mining/Steve.json"), encoding: .utf8)).contains("true"), "chosen side of the conflict")
+        check((try String(contentsOf: p.inventories.appendingPathComponent("worlds/other/Steve.json"), encoding: .utf8)).contains("only"), "no conflict, just renamed")
+        check(!FileOps.exists(p.inventories.appendingPathComponent("worlds/mining/OldName.json")), "old name gone")
+    }
+
+    // Who was on.
+    var cal = Calendar(identifier: .gregorian); cal.timeZone = .current
+    let day = cal.date(from: DateComponents(year: 2026, month: 3, day: 1))!
+    let log = "[23:50:00] [Server thread/INFO]: Steve joined the game\n[23:50:05] [Server thread/INFO]: <Steve> Bob joined the game\n[00:10:00] [Server thread/INFO]: Steve left the game\n[01:00:00] [Server thread/INFO]: Alex joined the game\n"
+    let sessions = PlayerHistory.sessions(inLog: log, day: day, calendar: cal)
+    equal(sessions.count, 2, "chat can't fake a session"); equal(sessions.first?.name, "Steve", "session name")
+    equal(cal.component(.day, from: sessions.first!.end!), 2, "crosses midnight"); check(sessions.last?.end == nil, "still on")
+    let logRoot = folder("history"); try FileOps.ensureDir(logRoot.appendingPathComponent("logs"))
+    try Gzip.compress(Data(log.utf8)).write(to: logRoot.appendingPathComponent("logs/2026-03-01-1.log.gz"))
+    equal(PlayerHistory.read(ServerPaths(root: logRoot)).count, 2, "reads compressed logs")
+
+    // Small helpers.
+    equal(TPS.parse("TPS from last 1m, 5m, 15m: *20.0, 19.5, 18.25")?.fiveMinutes, 19.5, "tps parse"); check(TPS.parse("nope") == nil, "not tps")
+    check(TPS.parse("TPS from last 1m, 5m, 15m: 15.0, 19, 19")?.isHealthy == false, "lag noticed")
+    check(ConnectCheck.parse(Data(#"{"online":true}"#.utf8), address: "1.2.3.4:25565").reachable, "reachable"); check(!ConnectCheck.parse(Data(#"{"online":false}"#.utf8), address: "x").reachable, "not reachable")
+    check(!ConnectCheck.parse(Data("garbage".utf8), address: "x").reachable, "garbage isn't reachable")
+    check(DiskCheck.warning(free: 1 << 30, name: "x")?.critical == true, "critical disk"); check(DiskCheck.warning(free: 5 << 30, name: "x")?.critical == false, "low disk"); check(DiskCheck.warning(free: 100 << 30, name: "x") == nil, "plenty")
+}
+
+section("Renames: the text")
+do {
+    let bukkit = "settings:\n  allow-end: true\nworlds:\n  creative:\n    generator: x\n  other:\n    generator: y\nspawn-limits:\n  creative: 5\n"
+    var r = RenameText.renameKey(bukkit, section: "worlds", names: ["creative": "build"])
+    check(r.0.contains("worlds:\n  build:\n    generator: x"), "section key renamed"); check(r.0.contains("spawn-limits:\n  creative: 5"), "same word elsewhere untouched"); equal(r.1.count, 1, "one change")
+    r = RenameText.renameKey("minecraft:creative:\n  alias: ''\nminecraft:overworld:\n  alias: ''\n", section: nil, names: ["minecraft:creative": "minecraft:build"])
+    check(r.0.hasPrefix("minecraft:build:\n"), "namespaced top-level key"); check(r.0.contains("minecraft:overworld:"), "others kept")
+    r = RenameText.renameKey("worlds:\n  'creative':\n    x: 1\n", section: "worlds", names: ["creative": "build"])
+    check(r.0.contains("'build':"), "quoted key keeps its quotes")
+    let values = "world: creative # home\nname: creative\nother-world: 'creative'\nworlds:\n- creative\n- keep\nlist: [creative, keep]\nnested:\n  world: \"creative\"\ntext: world creative here\n"
+    var v = RenameText.replaceValues(values, keys: ["world", "worlds", "list"], names: ["creative": "build"])
+    check(v.0.contains("world: build # home"), "comment kept"); check(v.0.contains("name: creative"), "other keys untouched")
+    check(v.0.contains("other-world: 'creative'"), "similar key untouched"); check(v.0.contains("- build\n- keep"), "list item"); check(v.0.contains("[build, keep]"), "inline list")
+    check(v.0.contains(#"world: "build""#), "quoted value keeps quotes"); check(v.0.contains("text: world creative here"), "prose untouched")
+    v = RenameText.replaceValues("world: creative2\nworld: mycreative\n", keys: ["world"], names: ["creative": "build"])
+    check(v.1.isEmpty, "partial matches never change")
+    var d = RenameText.replaceDestinations("destination: 'w:creative'\ndest: e:creative:1,2,3\nnope: w:creative2\nurl: http://creative\n", names: ["creative": "build"])
+    check(d.0.contains("'w:build'") && d.0.contains("e:build:1,2,3"), "destinations"); check(d.0.contains("w:creative2") && d.0.contains("http://creative"), "lookalikes untouched")
+    d = RenameText.replaceAnchors("anchors:\n  home: creative:1.0,2.0,3.0:0.0:0.0\n  note: creative:notes\n", names: ["creative": "build"])
+    check(d.0.contains("home: build:1.0"), "anchor"); check(d.0.contains("note: creative:notes"), "not an anchor")
+    equal(RenameText.replaceToken("cd /srv/my-server && screen -S my-server; my-server2", old: "my-server", new: "x").1, 2, "whole tokens only")
+    equal(ServerRename.folderFormats(for: "Sonoran Realms"), ["sonoran-realms", "sonoranrealms", "SonoranRealms", "sonoran_realms"], "name formats")
+    equal(ServerRename.folderFormats(for: "sonoranRealms").first, "sonoran-realms", "from camel case"); check(ServerRename.folderFormats(for: "!!").isEmpty, "nothing usable")
+    check(WorldRename.problem(with: "Build", world: nil, existing: []) != nil, "uppercase refused"); check(WorldRename.problem(with: "a b", world: nil, existing: []) != nil, "spaces refused"); check(WorldRename.problem(with: "build", world: nil, existing: []) == nil, "fine")
+    check(WorldRename.problem(with: "world", world: nil, existing: [WorldEntry(name: "minecraft:world")]) != nil, "taken")
+}
+
+section("Renames: whole servers")
+do {
+    // A pre-26 server, with the plugins that hold world names.
+    let root = folder("rename-old"); let paths = ServerPaths(root: root)
+    write("level-name=main\nmotd=Hello\n", paths.properties)
+    for f in ["main", "main_nether", "main_the_end", "creative"] { write("x", root.appendingPathComponent("\(f)/region/r.0.0.mca")) }
+    try NBT.write(NBT.Document(root: .compound([.init("Data", .compound([.init("LevelName", .string("creative")), .init("Keep", .int(1))]))])), to: root.appendingPathComponent("creative/level.dat"))
+    try NBT.write(NBT.Document(root: .compound([.init("Data", .compound([.init("LevelName", .string("main"))]))])), to: root.appendingPathComponent("main/level.dat"))
+    for f in ["main_nether", "main_the_end"] { write("x", root.appendingPathComponent("\(f)/level.dat")) }
+    write("worlds:\n  creative:\n    generator: VoidGen\n", root.appendingPathComponent("bukkit.yml"))
+    write("world-settings:\n  default:\n    a: 1\n  creative:\n    a: 2\n", root.appendingPathComponent("spigot.yml"))
+    write("minecraft:creative:\n  alias: ''\n  respawn-world: minecraft:creative\n  read-only:\n    legacy-world-name: creative\nminecraft:overworld:\n  alias: ''\n  read-only:\n    legacy-world-name: main\n", paths.plugins.appendingPathComponent("Multiverse-Core/worlds.yml"))
+    write("spawn:\n  first-spawn-location: creative\n  join-destination: w:creative\n", paths.plugins.appendingPathComponent("Multiverse-Core/config.yml"))
+    write("anchors:\n  home: creative:1,2,3:0:0\n", paths.plugins.appendingPathComponent("Multiverse-Core/anchors.yml"))
+    write("portals:\n  p1:\n    world: creative\n    destination: w:creative\n", paths.plugins.appendingPathComponent("Multiverse-Portals/portals.yml"))
+    write("groups:\n  g:\n    worlds:\n    - creative\n    - main\n", paths.plugins.appendingPathComponent("Multiverse-Inventories/groups.yml"))
+    write("{}", paths.plugins.appendingPathComponent("Multiverse-Inventories/worlds/creative/Steve.json"))
+    write("regions: {}", paths.plugins.appendingPathComponent("WorldGuard/worlds/creative/regions.yml"))
+    write("home:\n  world: creative\n  world-name: creative\n  x: 1\n", paths.plugins.appendingPathComponent("Essentials/warps/home.yml"))
+    write("homes:\n  a:\n    world: creative\nname: creative-fan\n", paths.plugins.appendingPathComponent("Essentials/userdata/abc.yml"))
+    write("mention: creative\n", paths.plugins.appendingPathComponent("SomeOther/config.yml"))
+    write("x", paths.plugins.appendingPathComponent("CoreProtect/config.yml"))
+    let unrelated = "creative-mode: true\ncreative: 3\n"
+    write(unrelated, paths.plugins.appendingPathComponent("Essentials/config.yml"))
+
+    let c = try await ServerController.adopt(root: root, name: "Rename Test")
+    defer { c.stopTicker() }
+    c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date(); c.profile.backup.destination = folder("rename-backups").path
+    await c.refreshWorlds()
+    let world = c.worlds.first { $0.name == "minecraft:creative" }!
+    let plan = c.worldRenamePlan(world, to: "build")
+    let described = plan.items.map(\.description)
+    check(plan.mentions.contains("plugins/SomeOther/config.yml"), "others are listed: \(plan.mentions)")
+    check(!plan.items.contains { if case let .replaceFile(path, _) = $0.action { path == "plugins/SomeOther/config.yml" } else { false } }, "and not changed")
+    check(plan.notes.contains { $0.contains("CoreProtect") }, "database limits explained")
+    check(described.contains("Multiverse world list") && described.contains("WorldGuard regions and flags"), "known places found: \(described)")
+    let unchangedFile = paths.plugins.appendingPathComponent("SomeOther/config.yml")
+
+    try await c.applyRename(plan)
+    func text(_ rel: String) throws -> String { try String(contentsOf: root.appendingPathComponent(rel), encoding: .utf8) }
+    check(FileOps.exists(root.appendingPathComponent("build/region/r.0.0.mca")) && !FileOps.exists(root.appendingPathComponent("creative")), "folder moved")
+    check(try text("bukkit.yml").contains("  build:\n    generator: VoidGen"), "bukkit")
+    check(try text("spigot.yml").contains("  build:\n    a: 2"), "spigot"); check(try text("spigot.yml").contains("  default:"), "spigot default kept")
+    let ymlNow = try text("plugins/Multiverse-Core/worlds.yml")
+    check(ymlNow.contains("minecraft:build:\n") && ymlNow.contains("respawn-world: minecraft:build"), "multiverse: \(ymlNow)"); check(ymlNow.contains("minecraft:overworld:"), "main key kept")
+    check(ymlNow.contains("legacy-world-name: build"), "the name Multiverse finds the folder by"); check(ymlNow.contains("legacy-world-name: main"), "other worlds' left alone")
+    check(try text("plugins/Multiverse-Core/config.yml").contains("first-spawn-location: build") && text("plugins/Multiverse-Core/config.yml").contains("w:build"), "multiverse config")
+    check(try text("plugins/Multiverse-Core/anchors.yml").contains("home: build:1,2,3"), "anchors")
+    check(try text("plugins/Multiverse-Portals/portals.yml").contains("world: build") && text("plugins/Multiverse-Portals/portals.yml").contains("w:build"), "portals")
+    check(try text("plugins/Multiverse-Inventories/groups.yml").contains("- build\n    - main"), "groups")
+    check(FileOps.exists(paths.plugins.appendingPathComponent("Multiverse-Inventories/worlds/build/Steve.json")), "inventories folder")
+    check(FileOps.exists(paths.plugins.appendingPathComponent("WorldGuard/worlds/build/regions.yml")), "worldguard folder")
+    check(try text("plugins/Essentials/warps/home.yml").contains("world: build\n  world-name: build"), "warps")
+    let home = try text("plugins/Essentials/userdata/abc.yml"); check(home.contains("world: build") && home.contains("name: creative-fan"), "homes changed, lookalike not")
+    equal(try text("plugins/Essentials/config.yml"), unrelated, "a file not on the list isn't touched")
+    equal(try String(contentsOf: unchangedFile, encoding: .utf8), "mention: creative\n", "mention left alone")
+    equal(try NBT.read(root.appendingPathComponent("build/level.dat")).root["Data"]?["LevelName"]?.stringValue, "build", "name in the world")
+    equal(try NBT.read(root.appendingPathComponent("build/level.dat")).root["Data"]?["Keep"]?.intValue, 1, "rest of level.dat kept")
+    check(c.activeUpgrade?.isRename == true, "offers undo"); check(c.backups.contains { $0.trigger == "before-upgrade" && $0.pinned }, "restore point first")
+    await c.refreshWorlds()
+    check(c.worlds.contains { $0.name == "minecraft:build" && $0.relativePath == "build" }, "world list agrees: \(c.worlds.map(\.name))")
+
+    // Undo puts it all back.
+    try await c.rollBackUpgrade()
+    check(FileOps.exists(root.appendingPathComponent("creative/level.dat")) && !FileOps.exists(root.appendingPathComponent("build")), "undo restores the folder")
+    check(try text("bukkit.yml").contains("  creative:"), "undo restores configs")
+    equal(c.shelved.count, 1, "renamed state on the shelf"); try c.deleteShelved(c.shelved[0])
+
+    // The main world, which has companions and a setting of its own.
+    await c.refreshWorlds()
+    let main = c.worlds.first { $0.isMain }!
+    let mainPlan = c.worldRenamePlan(main, to: "home")
+    try await c.applyRename(mainPlan)
+    equal(PropertiesDocument(try text("server.properties")).value("level-name"), "home", "level-name")
+    check(FileOps.exists(root.appendingPathComponent("home/level.dat")) && FileOps.exists(root.appendingPathComponent("home_nether")) && FileOps.exists(root.appendingPathComponent("home_the_end")), "companions move too")
+    check(!FileOps.exists(root.appendingPathComponent("main")), "old main gone")
+    check(try text("plugins/Multiverse-Inventories/groups.yml").contains("- home"), "group follows")
+    equal(try NBT.read(root.appendingPathComponent("home/level.dat")).root["Data"]?["LevelName"]?.stringValue, "home", "main's stored name")
+    check(try text("plugins/Multiverse-Core/worlds.yml").contains("minecraft:overworld:"), "minecraft:overworld stays: it isn't a name")
+    check(try text("plugins/Multiverse-Core/worlds.yml").contains("legacy-world-name: home"), "main's folder name follows")
+    await c.refreshWorlds()
+    check(c.worlds.first { $0.isMain }?.relativePath == "home", "main world found again")
+    c.keepUpgrade()
+
+    // A failed rename leaves everything as it was.
+    write("exists", root.appendingPathComponent("taken/level.dat"))
+    await c.refreshWorlds()
+    var doomed = RenamePlan(title: "Doomed")
+    doomed.items = [
+        RenameItem(action: .replaceFile(path: "bukkit.yml", text: "changed"), description: "first"),
+        RenameItem(action: .moveFolder(from: "home", to: "taken"), description: "blocked"),
+    ]
+    let bukkitBefore = try text("bukkit.yml")
+    var failure = ""
+    do { try await c.applyRename(doomed) } catch { failure = error.localizedDescription }
+    check(failure.contains("put back"), "reports the undo: \(failure)")
+    equal(try text("bukkit.yml"), bukkitBefore, "first step undone")
+    check(FileOps.exists(root.appendingPathComponent("home/level.dat")), "world still there")
+
+    // Server rename: scripts, motd, formats, opt-in warning.
+    let server = folder("My Realm"); let sp = ServerPaths(root: server)
+    write("motd=Welcome to My Realm!\nlevel-name=world\n", sp.properties)
+    write("x", server.appendingPathComponent("world/level.dat"))
+    write("#!/bin/sh\ncd \"\(server.path)\"\nscreen -S my-realm java -jar paper.jar\n", server.appendingPathComponent("start.sh"))
+    write("server: my-realm\nother: my-realm\n", sp.plugins.appendingPathComponent("LuckPerms/config.yml"))
+    write("data: \(server.path)/plugins/x\n", sp.plugins.appendingPathComponent("Thing/config.yml"))
+    let sc = try await ServerController.adopt(root: server, name: "My Realm")
+    defer { sc.stopTicker() }
+    sc.profile.lastPluginCheck = Date(); sc.profile.software.lastCheck = Date(); sc.profile.backup.destination = folder("server-rename-backups").path
+    let sPlan = sc.serverRenamePlan(name: "Sonoran Realms", folder: "sonoran-realms")
+    let lp = sPlan.items.first { $0.description == "LuckPerms server name" }
+    check(lp?.optional == true && lp?.selected == false && lp?.warning != nil, "permissions-sensitive name is opt-in")
+    try await sc.applyRename(sPlan, afterwards: { _ = try sc.rename(to: "Sonoran Realms", moveFolderTo: "sonoran-realms") })
+    let moved = server.deletingLastPathComponent().appendingPathComponent("sonoran-realms")
+    check(FileOps.exists(moved.appendingPathComponent("world/level.dat")), "folder renamed"); equal(sc.profile.name, "Sonoran Realms", "name")
+    let script = try String(contentsOf: moved.appendingPathComponent("start.sh"), encoding: .utf8)
+    check(script.contains("screen -S sonoran-realms") && script.contains("/sonoran-realms\"") , "script updated: \(script)")
+    check((try String(contentsOf: moved.appendingPathComponent("server.properties"), encoding: .utf8)).contains("Welcome to Sonoran Realms!"), "motd follows")
+    check((try String(contentsOf: moved.appendingPathComponent("plugins/LuckPerms/config.yml"), encoding: .utf8)).contains("server: my-realm"), "opt-in left alone unless chosen")
+    check((try String(contentsOf: moved.appendingPathComponent("plugins/Thing/config.yml"), encoding: .utf8)).contains("/sonoran-realms/plugins/x"), "absolute path updated")
+}
+
+section("Cleanup")
+do {
+    let root = folder("cleanup"); let paths = ServerPaths(root: root)
+    write("level-name=world\n", paths.properties)
+    write("x", root.appendingPathComponent("world/level.dat"))
+    write("x", root.appendingPathComponent("paper-1.21.11-5.jar"))
+    write("x", root.appendingPathComponent("paper-1.20.1-1.jar"))
+    write("x", root.appendingPathComponent("script-uses-this.jar")); write("java -jar script-uses-this.jar", root.appendingPathComponent("start.sh"))
+    write("x", root.appendingPathComponent("hs_err_pid123.log")); write("x", root.appendingPathComponent("bukkit.yml.old")); write("x", root.appendingPathComponent("paper.yml")); write("x", root.appendingPathComponent("config/paper-global.yml"))
+    write("x", root.appendingPathComponent("versions/1.20.1/a.jar")); write("x", root.appendingPathComponent("versions/1.21.11/a.jar"))
+    write("x", root.appendingPathComponent("logs/2020-01-01-1.log.gz")); write("x", root.appendingPathComponent("logs/2026-11-01-1.log.gz")); write("x", root.appendingPathComponent("logs/latest.log"))
+    write("x", root.appendingPathComponent("crash-reports/old.txt"))
+    try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -400 * 86400)], ofItemAtPath: root.appendingPathComponent("logs/2020-01-01-1.log.gz").path)
+    try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -400 * 86400)], ofItemAtPath: root.appendingPathComponent("crash-reports/old.txt").path)
+    write("x", paths.plugins.appendingPathComponent("Gone/data.yml")); write("x", paths.plugins.appendingPathComponent("Kept/data.yml"))
+    write("x", paths.plugins.appendingPathComponent("old.jar.old"))
+    makeJar(paths.plugins.appendingPathComponent("Kept.jar"), yaml: "name: Kept\nversion: 1\nmain: a.B\n")
+    write("x", root.appendingPathComponent("abandoned_world/level.dat")); write("x", root.appendingPathComponent("loaded_world/level.dat"))
+    makeJar(paths.plugins.appendingPathComponent("mv.jar"), yaml: "name: Multiverse-Core\nversion: 5.8.2\nmain: a.C\n")
+    write("loaded_world:\n  alias: ''\n", paths.plugins.appendingPathComponent("Multiverse-Core/worlds.yml"))
+    var profile = ServerProfile(); profile.software.jarName = "paper-1.21.11-5.jar"; profile.software.mcVersion = "1.21.11"; profile.backup.destination = folder("cleanup-backups").path
+    let plugins = await PluginScanner.scan(paths)
+    let items = Cleanup.scan(profile, paths: paths, plugins: plugins)
+    func item(_ p: String) -> CleanupItem? { items.first { $0.path == p } }
+    for safe in ["paper-1.20.1-1.jar", "hs_err_pid123.log", "bukkit.yml.old", "paper.yml", "versions/1.20.1", "logs/2020-01-01-1.log.gz", "crash-reports/old.txt", "plugins/old.jar.old"] {
+        equal(item(safe)?.confidence, .safe, "known leftover: \(safe)")
+    }
+    equal(item("plugins/Gone")?.confidence, .review, "orphan plugin folder needs a look"); equal(item("abandoned_world")?.confidence, .review, "unmanaged world needs a look")
+    for kept in ["paper-1.21.11-5.jar", "script-uses-this.jar", "versions/1.21.11", "logs/2026-11-01-1.log.gz", "logs/latest.log", "plugins/Kept", "plugins/Multiverse-Core", "world", "loaded_world", "bukkit.yml", "server.properties"] {
+        check(item(kept) == nil, "protected: \(kept)")
+    }
+    // A leftover a config still mentions isn't suggested.
+    write("groups:\n  - abandoned_world\n", paths.plugins.appendingPathComponent("Multiverse-Inventories/groups.yml"))
+    check(Cleanup.scan(profile, paths: paths, plugins: plugins).first { $0.path == "abandoned_world" } == nil, "a world a config mentions stays")
+    // Aside, not deleted, and it comes back.
+    let moving = items.filter { $0.confidence == .safe }
+    let batch = try Cleanup.apply(moving, profile: profile, paths: paths)
+    check(!FileOps.exists(root.appendingPathComponent("paper-1.20.1-1.jar")), "moved"); check(FileOps.exists(Cleanup.holdingArea(profile).appendingPathComponent("\(batch.folder)/versions/1.20.1/a.jar")), "kept, with its path")
+    equal(Cleanup.batches(profile).count, 1, "listed")
+    try Cleanup.undo(batch, profile: profile, paths: paths)
+    check(FileOps.exists(root.appendingPathComponent("versions/1.20.1/a.jar")), "brought back"); check(Cleanup.batches(profile).isEmpty, "nothing left aside")
+    let again = try Cleanup.apply(Array(moving.prefix(1)), profile: profile, paths: paths)
+    try Cleanup.discard(again, profile: profile); check(Cleanup.batches(profile).isEmpty, "discarded")
+    var traversal = 0
+    let evil = CleanupItem(path: "../outside", reason: "", size: 0, confidence: .safe)
+    write("safe", root.deletingLastPathComponent().appendingPathComponent("outside"))
+    traversal = try Cleanup.apply([evil], profile: profile, paths: paths).items.count
+    equal(traversal, 0, "can't reach outside the server folder"); check(FileOps.exists(root.deletingLastPathComponent().appendingPathComponent("outside")), "outside untouched")
+}
+
+section("Comparing backups")
+do {
+    let root = folder("diff"); let paths = ServerPaths(root: root)
+    write("level-name=world\nmax-players=10\nmotd=a\n", paths.properties)
+    write("x", root.appendingPathComponent("world/level.dat"))
+    let region = root.appendingPathComponent("world/region/r.0.0.mca")
+    try FileOps.ensureDir(region.deletingLastPathComponent())
+    var table = Data(count: 8192 + 100)
+    try table.write(to: region)
+    write("settings:\n  a: 1 # note\n", root.appendingPathComponent("bukkit.yml"))
+    write("# only a comment\nb: 1\n", root.appendingPathComponent("spigot.yml"))
+    write("x", root.appendingPathComponent("paper-1.21.4-1.jar"))
+    try FileOps.ensureDir(paths.plugins)
+    makeJar(paths.plugins.appendingPathComponent("Keep.jar"), yaml: "name: Keep\nversion: 1.0\nmain: a.B\n")
+    makeJar(paths.plugins.appendingPathComponent("Gone.jar"), yaml: "name: Gone\nversion: 1.0\nmain: a.C\n")
+    let id = "069a79f4-44e9-4726-a5be-fca90e38aaf5"
+    func inv(_ items: [(String, Int)]) -> NBT.Document {
+        var stacks: [NBT] = []
+        for (i, item) in items.enumerated() {
+            let entries: [NBT.Entry] = [.init("Slot", .byte(Int8(i))), .init("id", .string(item.0)), .init("count", .int(Int32(item.1)))]
+            stacks.append(.compound(entries))
+        }
+        let top: [NBT.Entry] = [.init("Inventory", .list(10, stacks))]
+        return NBT.Document(root: .compound(top))
+    }
+    try NBT.write(inv([("minecraft:diamond", 5), ("minecraft:stone", 1)]), to: root.appendingPathComponent("world/playerdata/\(id).dat"))
+    write(#"[{"name":"Steve","uuid":"\#(id)"}]"#, root.appendingPathComponent("usercache.json"))
+    var profile = ServerProfile(); profile.backup.destination = folder("diff-backups").path
+    let older = try await Backups.create(profile, root: root, trigger: "manual")
+
+    write("level-name=world\nmax-players=20\nmotd=a\nnew-one=1\n", paths.properties)
+    write("settings:\n  a: 2 # note\n", root.appendingPathComponent("bukkit.yml"))
+    write("# a different comment\nb: 1\n", root.appendingPathComponent("spigot.yml"))
+    table.replaceSubrange(4096..<4104, with: [0, 0, 0, 9, 0, 0, 0, 7])
+    try table.write(to: region)
+    write("x", root.appendingPathComponent("world/region/r.1.0.mca"))
+    write("x", root.appendingPathComponent("extra/level.dat"))
+    try FileManager.default.removeItem(at: root.appendingPathComponent("paper-1.21.4-1.jar")); write("x", root.appendingPathComponent("paper-1.21.11-2.jar"))
+    try FileManager.default.removeItem(at: paths.plugins.appendingPathComponent("Gone.jar")); try FileManager.default.removeItem(at: paths.plugins.appendingPathComponent("Keep.jar"))
+    makeJar(paths.plugins.appendingPathComponent("Keep.jar"), yaml: "name: Keep\nversion: 2.0\nmain: a.B\n")
+    makeJar(paths.plugins.appendingPathComponent("New.jar"), yaml: "name: New\nversion: 1.0\nmain: a.D\n")
+    try NBT.write(inv([("minecraft:diamond", 2), ("minecraft:dirt", 9)]), to: root.appendingPathComponent("world/playerdata/\(id).dat"))
+    let newer = try await Backups.create(profile, root: root, trigger: "manual")
+
+    let diff = try await BackupCompare.compare(older, newer, profile: profile, paths: paths)
+    func setting(_ file: String, _ key: String) -> BackupDiff.Setting? { diff.settings.first { $0.file == file && $0.key == key } }
+    equal(setting("server.properties", "max-players")?.after, "20", "setting changed"); equal(setting("server.properties", "new-one")?.before, nil, "setting added")
+    check(setting("server.properties", "motd") == nil, "unchanged setting not listed"); equal(setting("bukkit.yml", "settings.a")?.before, "1", "yaml setting")
+    check(diff.otherSettingsFiles.contains("spigot.yml"), "comment-only change still noted")
+    equal(diff.plugins.map(\.name), ["Gone", "Keep", "New"], "plugins"); equal(diff.plugins[1].after, "2.0", "upgrade"); check(diff.plugins[0].after == nil && diff.plugins[2].before == nil, "removed and added")
+    check(diff.serverJar != nil, "server jar change")
+    let w = diff.worlds.first { $0.name == "world" }; equal(w?.chunksChanged, 2, "chunks counted from region timestamps"); equal(w?.regionsAdded, 1, "new region")
+    check(diff.worlds.contains { $0.name == "extra" && $0.added }, "new world")
+    let pl = diff.players.first; equal(pl?.name, "Steve", "player named")
+    equal(pl?.items.map { "\($0.item):\($0.before)>\($0.after)" }, ["minecraft:diamond:5>2", "minecraft:dirt:0>9", "minecraft:stone:1>0"], "inventory changes")
+    check(FileOps.children(paths.meta).allSatisfy { !$0.lastPathComponent.hasPrefix("compare-") }, "temp folder removed")
+    let none = try await BackupCompare.compare(older, older, profile: profile, paths: paths); check(none.isEmpty, "same backup: no differences")
+}
+
+section("Backup location")
+do {
+    let servers = AppPaths.servers
+    equal(AppPaths.backups.path, servers.path + "/LeafJuice/backups", "beside the servers")
+    check(ServerProfile().backup.scope == .everything, "whole folder by default")
+    equal(ServerProfile().backup.keepDays, 14, "two weeks of extras by default")
+    write("x", servers.appendingPathComponent("LeafJuice/backups/a/server.properties"))
+    write("x", servers.appendingPathComponent("LeafJuice/server.jar"))
+    check(!ServerFolders.find(in: servers).contains { $0.lastPathComponent == "LeafJuice" }, "own folder isn't a server")
+
+    func makeServer(_ folderName: String, _ name: String) async throws -> ServerController {
+        let root = servers.appendingPathComponent(folderName, isDirectory: true)
+        write("x", root.appendingPathComponent("world/level.dat"))
+        write("server-port=25590\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: name)
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        return c
+    }
+    let one = try await makeServer("one", "Same/Name")
+    defer { one.stopTicker() }
+    let first = try await one.backupNow()
+    let expected = AppPaths.backups.appendingPathComponent("Same-Name")
+    equal(Backups.destination(one.profile).path, expected.path, "named after the server")
+    check(FileOps.exists(expected.appendingPathComponent(first.fileName)), "archive is there")
+    equal(first.scope, .everything, "whole folder")
+    let listing = try await Tool.run("/usr/bin/tar", ["-tzf", expected.appendingPathComponent(first.fileName).path])
+    check(listing.out.contains("server.properties") && listing.out.contains("world/level.dat"), "contains the server")
+
+    // A same-named server stays separate, even in the same folder name.
+    let two = try await makeServer("two", "Same/Name")
+    defer { two.stopTicker() }
+    let second = try await two.backupNow()
+    equal(Backups.destination(two.profile).lastPathComponent, "Same-Name 2", "same name gets its own folder")
+    check(!one.backups.contains { $0.fileName == second.fileName } || first.fileName == second.fileName, "backups don't mix")
+    one.refreshBackups(); two.refreshBackups()
+    equal(one.backups.count, 1, "first server sees its own"); equal(two.backups.count, 1, "second sees its own")
+
+    // Stored once: changing the servers folder can't lose track of them.
+    let pinned = one.profile.backup.destination
+    setenv("LEAFJUICE_SERVERS", scratch.appendingPathComponent("elsewhere").path, 1)
+    equal(Backups.destination(one.profile).path, pinned, "path stays put when the servers folder changes")
+    setenv("LEAFJUICE_SERVERS", servers.path, 1)
+
+    // Renaming takes the backups along, and an open upgrade decision with them.
+    _ = try one.rename(to: "Renamed", moveFolderTo: nil)
+    equal(Backups.destination(one.profile).lastPathComponent, "Renamed", "folder follows the name")
+    check(!FileOps.exists(expected), "old folder gone")
+    equal(one.backups.map(\.fileName), [first.fileName], "backups still listed after rename")
+    _ = try one.rename(to: "Same-Name 2", moveFolderTo: nil)
+    equal(Backups.destination(one.profile).lastPathComponent, "Same-Name 2 2", "rename won't take another server's folder")
+    _ = try one.rename(to: "Renamed", moveFolderTo: nil)
+
+    // A folder someone chose is left alone by renames.
+    let chosen = folder("external-drive").appendingPathComponent("mc")
+    try Backups.claim(chosen, for: two.profile.id)
+    two.profile.backup.destination = chosen.path
+    _ = try two.rename(to: "Other", moveFolderTo: nil)
+    equal(Backups.destination(two.profile).path, chosen.path, "chosen folder unchanged by rename")
+    two.useDefaultBackupFolder()
+    equal(Backups.destination(two.profile).lastPathComponent, "Other", "use default returns to the named folder")
+
+    // A backup must never swallow itself, if the servers folder is itself a server.
+    let selfRoot = folder("self-contained")
+    write("x", selfRoot.appendingPathComponent("world/level.dat"))
+    write("old", selfRoot.appendingPathComponent("LeafJuice/backups/s/old.tar.gz"))
+    var p = ServerProfile(); p.backup.destination = selfRoot.appendingPathComponent("LeafJuice/backups/s").path
+    let inside = try await Backups.create(p, root: selfRoot, trigger: "manual")
+    let selfListing = try await Tool.run("/usr/bin/tar", ["-tzf", Backups.destination(p).appendingPathComponent(inside.fileName).path])
+    check(selfListing.out.contains("world/level.dat"), "the world is in it"); check(!selfListing.out.contains("LeafJuice"), "its own backups aren't")
 }
 
 section("Upgrade safety")
@@ -985,6 +1637,132 @@ if CommandLine.arguments.contains("--real-paper") {
         c.stop()
         await checkUntil(90, "stopped after Multiverse") { c.state == .stopped }
 
+        // Real config files, as real Paper wrote them: forms must read them and not damage them.
+        c.refreshConfigs()
+        var checkedFields = 0
+        for file in c.configs where ConfigForm.supports(file.format) {
+            let text = c.liveConfigText(file)
+            let fields = ConfigForm.fields(text, format: file.format)
+            print("    \(file.path): \(fields.count) settings, \(fields.filter { $0.kind == .readOnly }.count) read-only")
+            if file.path == "server.properties" || file.path == "bukkit.yml" || file.path == "spigot.yml" || file.path.hasPrefix("config/paper-") {
+                check(fields.count > 5, "\(file.path) has settings")
+            }
+            for field in fields where field.kind != .readOnly {
+                checkedFields += 1
+                if file.format == .yaml, !text.components(separatedBy: "\n")[field.line].contains("'"), !text.components(separatedBy: "\n")[field.line].contains("\"") {
+                    equal(ConfigForm.set(field, to: field.value, in: text, format: .yaml), text, "no-op in \(file.path): \(field.id)")
+                }
+                let changed = field.kind == .bool ? (field.value.lowercased() == "true" ? "false" : "true") : (field.kind == .text ? "changed" : "7")
+                let out = ConfigForm.set(field, to: changed, in: text, format: file.format)
+                let after = ConfigForm.fields(out, format: file.format)
+                equal(after.count, fields.count, "edit keeps the structure in \(file.path): \(field.id)")
+                equal(after.first { $0.id == field.id }?.value, changed, "edit reads back in \(file.path): \(field.id)")
+                equal(after.filter { $0.id != field.id }.map(\.value), fields.filter { $0.id != field.id }.map(\.value), "others untouched in \(file.path): \(field.id)")
+            }
+        }
+        print("    round-tripped \(checkedFields) real settings")
+        check(checkedFields > 100, "plenty of real settings exercised")
+
+        // A form edit to real files survives a real boot: Paper accepts it, and uses it.
+        let bukkit = c.configs.first { $0.path == "bukkit.yml" }!
+        let bukkitFields = ConfigForm.fields(c.liveConfigText(bukkit), format: .yaml)
+        let monsters = bukkitFields.first { $0.path == ["spawn-limits", "monsters"] }!
+        let propsFile = c.configs.first { $0.path == "server.properties" }!
+        try c.saveConfig(bukkit, text: ConfigForm.set(monsters, to: "42", in: c.liveConfigText(bukkit), format: .yaml))
+        let viewDistance = ConfigForm.fields(c.liveConfigText(propsFile), format: .properties).first { $0.path == ["view-distance"] }!
+        try c.saveConfig(propsFile, text: ConfigForm.set(viewDistance, to: "5", in: c.liveConfigText(propsFile), format: .properties))
+        await c.start()
+        await checkUntil(240, "boots with form edits") { c.state == .running }
+        c.send("whitelist add LeafJuiceTest")
+        try? await Task.sleep(for: .seconds(3))
+        print("    allowlist: \(c.console.suffix(2).map(\.text)) entries=\(PlayerList.entries(c.liveConfigText(ConfigFile(path: "whitelist.json", title: "", summary: "", group: "", format: .json, policy: .stagedWhileRunning))))")
+        c.stop()
+        await checkUntil(90, "stopped after form edits") { c.state == .stopped }
+        let monstersAfter = ConfigForm.fields(c.liveConfigText(bukkit), format: .yaml).first { $0.path == ["spawn-limits", "monsters"] }
+        equal(monstersAfter?.value, "42", "Paper kept the form's edit")
+        equal(PropertiesDocument(c.liveConfigText(propsFile)).value("view-distance"), "5", "properties edit kept")
+
+        // Demo: rename a real world and boot on it, then the main world, then undo.
+        section("REAL RENAMES")
+        await c.start()
+        await checkUntil(240, "up for rename demo") { c.state == .running }
+        var demo = NewWorld(); demo.name = "renameme"
+        try await c.createWorld(demo)
+        equal(c.worldOperation?.succeeded, true, "world to rename created")
+        let levelDat = NBT.Document(root: try NBT.read(c.paths.root.appendingPathComponent("world/level.dat")).root)
+        equal(try NBT.encode(NBT.Document(root: levelDat.root)).isEmpty, false, "real level.dat readable"); check(levelDat.root["Data"]?["LevelName"]?.stringValue == "world", "real LevelName read")
+        await c.refreshWorlds()
+        let target = c.worlds.first { $0.name.hasSuffix("renameme") }!
+        let realPlan = c.worldRenamePlan(target, to: "renamed")
+        print("    plan: \(realPlan.items.map { "\($0.description): \($0.changes.first ?? "")" })")
+        try await c.applyRename(realPlan, rebuild: { c.worldRenamePlan(target, to: "renamed") }, restart: true)
+        await checkUntil(240, "boots after world rename") { c.state == .running }
+        await c.refreshWorlds()
+        print("    after: \(c.worlds.map { "\($0.name)=\($0.relativePath ?? "-")" })")
+        check(c.worlds.contains { $0.name == "minecraft:renamed" && $0.relativePath == "renamed" }, "real world renamed and tied to its folder")
+        check(!c.worlds.contains { $0.name.hasSuffix("renameme") }, "old name gone")
+        check(!c.console.contains { $0.level == .error && $0.text.lowercased().contains("renameme") }, "no errors about the old name")
+        c.send("mv list")
+        try? await Task.sleep(for: .seconds(2))
+        print("    mv list: \(c.console.suffix(6).map(\.text))")
+        check(c.console.suffix(10).contains { $0.text.contains("renamed - ") && !$0.text.contains("UNLOADED") }, "Multiverse has it loaded under the new name")
+        check(!c.console.suffix(10).contains { $0.text.contains("renameme") }, "and the old name is gone from Multiverse")
+        check(FileOps.exists(c.paths.root.appendingPathComponent("renamed/level.dat")), "world folder intact")
+        equal(try NBT.read(c.paths.root.appendingPathComponent("renamed/level.dat")).root["Data"]?["LevelName"]?.stringValue, "renamed", "stored name changed")
+        print("    worlds.yml keys now: \((try String(contentsOf: c.paths.plugins.appendingPathComponent("Multiverse-Core/worlds.yml"), encoding: .utf8)).split(separator: "\n").filter { $0.contains("legacy-world-name") || !$0.hasPrefix(" ") })")
+        c.keepUpgrade()
+        // Main world.
+        await c.refreshWorlds()
+        let mainPlan = c.worldRenamePlan(c.worlds.first { $0.isMain }!, to: "homebase")
+        let mainEntry = c.worlds.first { $0.isMain }!
+        try await c.applyRename(mainPlan, rebuild: { c.worldRenamePlan(mainEntry, to: "homebase") }, restart: true)
+        await checkUntil(240, "boots after main world rename") { c.state == .running }
+        check(FileOps.exists(c.paths.root.appendingPathComponent("homebase/level.dat")), "main folder renamed")
+        check(!FileOps.exists(c.paths.root.appendingPathComponent("world")), "and no new world generated under the old name")
+        check(c.console.contains { $0.text.contains("homebase") }, "server loads it")
+        c.send("mv list")
+        try? await Task.sleep(for: .seconds(2))
+        print("    mv list after main rename: \(c.console.suffix(6).map(\.text))")
+        check(c.console.suffix(8).contains { $0.text.contains("homebase - NORMAL") }, "main world loaded under its new name")
+        check(c.console.suffix(8).contains { $0.text.contains("homebase_nether - NETHER") }, "its Nether too")
+        check(c.console.suffix(8).contains { $0.text.contains("renamed - ") && !$0.text.contains("UNLOADED") }, "earlier renamed world still loads")
+        await c.refreshWorlds()
+        print("    after main: \(c.worlds.map { "\($0.name)=\($0.relativePath ?? "-")" })")
+        // Undo restores the original and it boots.
+        try await c.rollBackUpgrade()
+        check(FileOps.exists(c.paths.root.appendingPathComponent("world/level.dat")), "undo brings back the name")
+        await c.start()
+        await checkUntil(240, "boots after undo") { c.state == .running }
+        c.requestTPS()
+        await checkUntil(10, "real TPS read: \(c.console.suffix(2).map(\.text))") { c.tps != nil }
+        print("    tps: \(String(describing: c.tps))")
+        if !c.shelved.isEmpty { try c.deleteShelved(c.shelved[0]) }
+        // Comparing real backups.
+        let before = try await c.backupNow(trigger: "manual")
+        c.send("save-all flush")
+        try? await Task.sleep(for: .seconds(3))
+        c.stop()
+        await checkUntil(90, "stopped for compare") { c.state == .stopped }
+        var props = PropertiesDocument(c.liveConfigText(c.configs.first { $0.path == "server.properties" }!)); props.set("max-players", "33")
+        try FileOps.writeAtomic(props.text, to: c.paths.properties)
+        let after = try await c.backupNow(trigger: "manual")
+        let realDiff = try await BackupCompare.compare(before, after, profile: c.profile, paths: c.paths)
+        check(realDiff.settings.contains { $0.key == "max-players" && $0.after == "33" }, "real diff: \(realDiff.settings.map(\.key).prefix(6))")
+        print("    diff: settings=\(realDiff.settings.count) worlds=\(realDiff.worlds.map { "\($0.name):\($0.chunksChanged)" }) other=\(realDiff.otherFilesChanged)")
+
+        // A real test copy of a real upgrade, while keeping the original.
+        section("REAL TEST COPY: upgrade to 26.3")
+        c.isTrialFast = true
+        if !c.runtimes.contains(where: { $0.major >= 25 }) { try await c.installJava(major: 25) }
+        let trialBuild = try await SoftwareCatalog.latestBuild(.paper, mc: "26.3")!
+        let jarBefore = c.profile.software.jarName
+        await c.startTrial(.software(trialBuild))
+        print("    report: \(String(describing: c.trialReport))")
+        equal(c.trialReport?.booted, true, "real upgrade boots in the copy")
+        equal(c.profile.software.jarName, jarBefore, "real server untouched")
+        check(FileOps.exists(c.paths.root.appendingPathComponent("world_nether")), "real world still old-style")
+        await c.collapseTrial()
+
         // The riskiest path there is: a real upgrade across the 26.x world layout change, and back.
         section("REAL UPGRADE: 1.21.11 to 26.3 and back")
         let levelBefore = try Data(contentsOf: c.paths.root.appendingPathComponent("world/level.dat"))
@@ -1073,6 +1851,8 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
         log("INFO", "Starting minecraft server version 1.21.11");
         log("WARN", "**** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!");
         for (var plugin : Objects.requireNonNull(new File("plugins").list())) if (plugin.endsWith(".jar")) log("INFO", "Enabling " + plugin);
+        for (var plugin : Objects.requireNonNull(new File("plugins").list())) if (plugin.equals("Bad.jar")) { log("ERROR", "Error occurred while enabling Bad v1.0 (Is it up to date?)"); }
+        if (new File("crash-on-boot").exists()) { log("ERROR", "Simulated boot failure"); System.exit(5); }
         log("INFO", "Done (1.234s)! For help, type \"help\"");
         var reader = new BufferedReader(new InputStreamReader(System.in));
         String line;
@@ -1105,6 +1885,7 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
               else if (p2[1].equals("load")) log("INFO", "World '" + p2[2] + "' loaded!");
               else if (p2[1].equals("unload")) log("INFO", "World '" + p2[2] + "' unloaded!");
             }
+            case "tps" -> log("INFO", "TPS from last 1m, 5m, 15m: *20.0, 19.5, 18.25");
             case "stop" -> { log("INFO", "Stopping the server"); socket.close(); System.exit(0); }
             default -> log("INFO", "Unknown command");
           }
@@ -1230,6 +2011,13 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
 
         // Worlds, through Multiverse's own commands.
         if c.profile.software.jarName == "standin.jar" {
+            // TPS is read, and stays out of the console.
+            let linesBefore = c.console.count
+            c.requestTPS()
+            await checkUntil(5, "tps read") { c.tps != nil }
+            equal(c.tps?.oneMinute, 20, "tps value"); equal(c.tps?.fifteenMinutes, 18.25, "tps 15m")
+            check(!c.console.dropFirst(linesBefore).contains { $0.text.contains("TPS from") }, "the app's own tps check stays out of the console")
+
             equal(c.multiverseMajor, 5, "multiverse detected")
             var refused = ""
             do { var bad = NewWorld(); bad.name = "x\nstop"; try await c.createWorld(bad) } catch { refused = error.localizedDescription }
@@ -1256,6 +2044,73 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
             check(c.backups.contains { $0.trigger == "before-world-delete" }, "backed up first")
             check(!c.worlds.contains { $0.name == "moon" }, "gone from the list")
             check(!FileOps.exists(c.paths.root.appendingPathComponent("moon")), "folder gone")
+        }
+
+        // Snapshots while playing, from what the server logs. Stand-in only: no real client here.
+        if c.profile.software.jarName == "standin.jar" {
+            let id = "069a79f4-44e9-4726-a5be-fca90e38aaf5"
+            let p = PlayerPaths(c.paths)
+            try NBT.write(NBT.Document(root: .compound([.init("Inventory", .list(10, []))])), to: p.data(id))
+            write(#"[{"name":"Steve","uuid":"\#(id)"}]"#, c.paths.root.appendingPathComponent("usercache.json"))
+            c.profile.playerSnapshots.intervalMinutes = 1
+            c.send("join")
+            await checkUntil(5, "player online") { c.players.contains("Steve") }
+            c.tickPlayerSnapshots(elapsed: 30)
+            equal(PlayerSnapshots.list(uuid: id, profile: c.profile).count, 0, "not due yet")
+            c.tickPlayerSnapshots(elapsed: 31)
+            equal(PlayerSnapshots.list(uuid: id, profile: c.profile).first?.trigger, "playing", "taken after the play time")
+            c.tickPlayerSnapshots(elapsed: 30)
+            equal(PlayerSnapshots.list(uuid: id, profile: c.profile).count, 1, "counter restarted")
+            // Restoring an online player waits for the restart.
+            let snap = PlayerSnapshots.list(uuid: id, profile: c.profile)[0]
+            equal(try c.restorePlayer(snap, inventoryOnly: true, containers: []), .staged, "online player's restore waits")
+            check(c.pending.contains { $0.target == "player:\(id)" }, "queued")
+            c.send("leave")
+            await checkUntil(5, "player offline") { c.players.isEmpty }
+            await checkUntil(8, "snapshot as they left") { PlayerSnapshots.list(uuid: id, profile: c.profile).contains { $0.trigger == "left" } }
+            equal(try c.restorePlayer(snap, inventoryOnly: true, containers: []), .saved, "offline player without per-world files restores now")
+            c.discard(c.pending.first { $0.target == "player:\(id)" }!)
+
+            // A test copy: the real server keeps running, untouched.
+            let portBefore = c.serverPort
+            let propsBefore = try! String(contentsOf: c.paths.properties, encoding: .utf8)
+            c.isTrialFast = true
+            makeJar(c.paths.plugins.appendingPathComponent("DiscordSRV.jar"), yaml: "name: DiscordSRV\nversion: 1\nmain: a.D\n")
+            await c.refreshPlugins()
+            await c.startTrial(.custom(title: "A good change", { child in write("marker", child.paths.root.appendingPathComponent("changed.txt")) }))
+            check(c.trialPhase == .finished, "finished: \(String(describing: c.trialPhase))")
+            equal(c.trialReport?.passed, true, "good change passes: \(String(describing: c.trialReport))")
+            check(c.state == .running, "real server still running"); equal(c.serverPort, portBefore, "real port unchanged")
+            equal(try! String(contentsOf: c.paths.properties, encoding: .utf8), propsBefore, "real settings untouched")
+            check(!FileOps.exists(c.paths.root.appendingPathComponent("changed.txt")), "the change stayed in the copy")
+            let copyFolder = c.trialController!.paths.root
+            check(c.trialController!.serverPort != portBefore, "copy on its own port")
+            check(FileOps.exists(copyFolder.appendingPathComponent("plugins/DiscordSRV.jar.disabled")), "outward-facing plugin off in the copy")
+            check(c.trialReport!.notes.contains { $0.contains("DiscordSRV") }, "and that's said")
+            await c.collapseTrial()
+            check(!FileOps.exists(copyFolder), "copy removed"); check(c.trialPhase == nil, "cleared")
+
+            // A bad one fails, and the culprit is found by booting subsets.
+            await c.startTrial(.custom(title: "A bad plugin", { child in
+                makeJar(child.paths.plugins.appendingPathComponent("Bad.jar"), yaml: "name: Bad\nversion: 1\nmain: a.E\n")
+                makeJar(child.paths.plugins.appendingPathComponent("Fine.jar"), yaml: "name: Fine\nversion: 1\nmain: a.F\n")
+                await child.refreshPlugins()
+            }))
+            equal(c.trialReport?.passed, false, "failing plugin caught: \(String(describing: c.trialReport))")
+            check(c.trialReport?.failedPlugins.contains { $0.contains("Bad") } == true, "named: \(c.trialReport?.failedPlugins ?? [])")
+            await c.findTrialCulprit()
+            check(c.trialReport?.culprit?.contains("Bad causes it") == true, "culprit found: \(c.trialReport?.culprit ?? "")")
+            await c.collapseTrial()
+            await c.startTrial(.custom(title: "Won't boot", { child in write("x", child.paths.root.appendingPathComponent("crash-on-boot")) }))
+            equal(c.trialReport?.booted, false, "boot failure caught")
+            await c.findTrialCulprit()
+            check(c.trialReport?.culprit?.contains("even with no plugins") == true, "not blamed on a plugin: \(c.trialReport?.culprit ?? "")")
+            await c.collapseTrial()
+            await c.startTrial(.custom(title: "Throws", { _ in throw LeafError("It went wrong") }))
+            equal(c.trialReport?.failure, "It went wrong", "failure reported"); await c.collapseTrial()
+            check(c.state == .running, "real server ran throughout")
+            try? FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("DiscordSRV.jar"))
+            await c.refreshPlugins()
         }
 
         // Stop cleanly.

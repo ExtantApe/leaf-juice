@@ -11,6 +11,7 @@ struct WorldsPage: View {
     @State private var editing: WorldEntry?
     @State private var cloning: WorldEntry?
     @State private var removing: WorldEntry?
+    @State private var renaming: WorldEntry?
     @State private var deleting: WorldEntry?
 
     var body: some View {
@@ -20,7 +21,7 @@ struct WorldsPage: View {
             ForEach(server.worlds) { world in
                 WorldRow(
                     server: server, world: world, onImport: { importing = world }, onEdit: { editing = world },
-                    onClone: { cloning = world }, onRemove: { removing = world }, onDelete: { deleting = world })
+                    onClone: { cloning = world }, onRemove: { removing = world }, onDelete: { deleting = world }, onRename: { renaming = world })
             }
             Hint("Backups include every world, wherever it's stored. A world's folder name and environment can't be changed after it's created.")
         }
@@ -29,6 +30,7 @@ struct WorldsPage: View {
         .sheet(isPresented: $creating) { CreateWorldSheet(server: server) }
         .sheet(item: $importing) { ImportWorldSheet(server: server, world: $0) }
         .sheet(item: $editing) { EditWorldSheet(server: server, world: $0) }
+        .sheet(item: $renaming) { WorldRenameSheet(server: server, world: $0) }
         .sheet(item: $cloning) { CloneWorldSheet(server: server, world: $0) }
         .sheet(item: $deleting) { DeleteWorldSheet(server: server, world: $0) }
         .confirmationDialog("Remove \(removing?.title ?? "") from Multiverse?", isPresented: removeShown, presenting: removing) { world in
@@ -133,6 +135,7 @@ private struct WorldRow: View {
     let onClone: () -> Void
     let onRemove: () -> Void
     let onDelete: () -> Void
+    let onRename: () -> Void
 
     private var canAct: Bool { server.state == .running && server.multiverseMajor != nil && (server.worldOperation?.finished ?? true) }
 
@@ -146,6 +149,10 @@ private struct WorldRow: View {
                 badges
             }
             Hint(details)
+            if !world.folderMissing {
+                Button("Rename…", action: onRename).buttonStyle(.juice)
+                    .disabled(server.activity != nil || server.trialPhase != nil)
+            }
             if server.multiverseMajor != nil { actions }
         }
     }

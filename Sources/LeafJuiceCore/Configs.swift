@@ -53,11 +53,19 @@ public struct PropertiesDocument: Equatable, Sendable {
 
     static func unescape(_ raw: String) -> String {
         var out = "", escaped = false
+        var unicode: String?
         for ch in raw {
-            if escaped {
+            if let collected = unicode {
+                unicode = collected + String(ch)
+                if unicode!.count == 4 {
+                    if let code = UInt32(unicode!, radix: 16), let scalar = Unicode.Scalar(code) { out.append(Character(scalar)) }
+                    unicode = nil
+                }
+            } else if escaped {
                 switch ch {
                 case "n": out.append("\n")
                 case "t": out.append("\t")
+                case "u": unicode = ""
                 default: out.append(ch)
                 }
                 escaped = false
@@ -102,22 +110,42 @@ public struct PropertySpec: Identifiable, Sendable {
     public let title: String
     public let help: String
     public let kind: Kind
+    public let group: String
 
-    public static let common: [PropertySpec] = [
-        .init(key: "motd", title: "Server message", help: "Shown in the multiplayer list.", kind: .text),
-        .init(key: "server-port", title: "Port", help: "Default is 25565. Each server on this Mac needs its own.", kind: .int(1...65535)),
-        .init(key: "max-players", title: "Max players", help: "Players allowed online at once.", kind: .int(1...1000)),
-        .init(key: "view-distance", title: "View distance", help: "Chunks sent to players. The biggest factor in memory and bandwidth.", kind: .int(2...32)),
-        .init(key: "simulation-distance", title: "Simulation distance", help: "Chunks that tick around players. The biggest factor in CPU use.", kind: .int(2...32)),
-        .init(key: "difficulty", title: "Difficulty", help: "", kind: .choice(["peaceful", "easy", "normal", "hard"])),
-        .init(key: "gamemode", title: "Default game mode", help: "", kind: .choice(["survival", "creative", "adventure", "spectator"])),
-        .init(key: "pvp", title: "Player combat", help: "", kind: .bool),
-        .init(key: "white-list", title: "Allowlist", help: "Only allowlisted players can join.", kind: .bool),
-        .init(key: "online-mode", title: "Verify accounts", help: "Checks players against Minecraft's account servers. Only turn off behind a proxy that does this for you.", kind: .bool),
-        .init(key: "level-name", title: "World folder", help: "Changing this starts or loads a different world.", kind: .text),
-        .init(key: "level-seed", title: "World seed", help: "Only used when a new world is created.", kind: .text),
-        .init(key: "spawn-protection", title: "Spawn protection", help: "Radius around spawn that only operators can build in.", kind: .int(0...1000)),
-        .init(key: "enable-rcon", title: "Remote console", help: "RCON is unencrypted. Leave it off unless you need it.", kind: .bool),
+    /// Sections for known settings. Anything else in the file lands in "Other settings".
+    public static let groupOrder = ["Basics", "Players", "World", "Performance", "Network and security"]
+
+    public static let known: [PropertySpec] = [
+        .init(key: "motd", title: "Server message", help: "Shown in the multiplayer list. This is what players see as your server's name.", kind: .text, group: "Basics"),
+        .init(key: "server-port", title: "Port", help: "Default is 25565. Each server on this Mac needs its own.", kind: .int(1...65535), group: "Basics"),
+        .init(key: "max-players", title: "Max players", help: "Players allowed online at once.", kind: .int(1...100000), group: "Basics"),
+        .init(key: "difficulty", title: "Difficulty", help: "", kind: .choice(["peaceful", "easy", "normal", "hard"]), group: "Basics"),
+        .init(key: "gamemode", title: "Default game mode", help: "", kind: .choice(["survival", "creative", "adventure", "spectator"]), group: "Basics"),
+        .init(key: "hardcore", title: "Hardcore", help: "Players are banned when they die.", kind: .bool, group: "Basics"),
+        .init(key: "white-list", title: "Allowlist", help: "Only allowlisted players can join.", kind: .bool, group: "Players"),
+        .init(key: "enforce-whitelist", title: "Enforce allowlist", help: "Removes players who aren't on the list when it's reloaded.", kind: .bool, group: "Players"),
+        .init(key: "pvp", title: "Player combat", help: "", kind: .bool, group: "Players"),
+        .init(key: "force-gamemode", title: "Force game mode", help: "Puts players in the default game mode every time they join.", kind: .bool, group: "Players"),
+        .init(key: "player-idle-timeout", title: "Idle kick", help: "Minutes before idle players are kicked. 0 turns this off.", kind: .int(0...100000), group: "Players"),
+        .init(key: "spawn-protection", title: "Spawn protection", help: "Radius around spawn that only operators can build in.", kind: .int(0...100000), group: "Players"),
+        .init(key: "op-permission-level", title: "Operator level", help: "What operators can do, from 1 to 4. 4 is everything.", kind: .int(1...4), group: "Players"),
+        .init(key: "level-name", title: "World folder", help: "Changing this starts or loads a different world.", kind: .text, group: "World"),
+        .init(key: "level-seed", title: "World seed", help: "Only used when a new world is created.", kind: .text, group: "World"),
+        .init(key: "level-type", title: "World type", help: "Only used when a new world is created.", kind: .text, group: "World"),
+        .init(key: "generate-structures", title: "Generate structures", help: "Villages, strongholds and so on. Only affects new chunks.", kind: .bool, group: "World"),
+        .init(key: "allow-nether", title: "Allow the Nether", help: "", kind: .bool, group: "World"),
+        .init(key: "spawn-monsters", title: "Spawn monsters", help: "", kind: .bool, group: "World"),
+        .init(key: "view-distance", title: "View distance", help: "Chunks sent to players. The biggest factor in memory and bandwidth.", kind: .int(2...32), group: "Performance"),
+        .init(key: "simulation-distance", title: "Simulation distance", help: "Chunks that tick around players. The biggest factor in CPU use.", kind: .int(2...32), group: "Performance"),
+        .init(key: "max-tick-time", title: "Watchdog time", help: "Milliseconds one tick can take before the server is treated as frozen and stopped. -1 turns this off.", kind: .int(-1...Int(Int32.max)), group: "Performance"),
+        .init(key: "sync-chunk-writes", title: "Sync chunk writes", help: "Safer against power loss, and slower. Paper's default is usually right.", kind: .bool, group: "Performance"),
+        .init(key: "network-compression-threshold", title: "Compression threshold", help: "Packets at or above this many bytes get compressed. -1 turns this off, which suits a proxy on the same machine.", kind: .int(-1...100000), group: "Performance"),
+        .init(key: "online-mode", title: "Verify accounts", help: "Checks players against Minecraft's account servers. Only turn off behind a proxy that does this for you.", kind: .bool, group: "Network and security"),
+        .init(key: "server-ip", title: "Listen address", help: "Leave blank to listen everywhere, which is almost always right.", kind: .text, group: "Network and security"),
+        .init(key: "enforce-secure-profile", title: "Require signed chat", help: "", kind: .bool, group: "Network and security"),
+        .init(key: "enable-rcon", title: "Remote console", help: "RCON is unencrypted. Leave it off unless you need it.", kind: .bool, group: "Network and security"),
+        .init(key: "rcon.password", title: "Remote console password", help: "", kind: .text, group: "Network and security"),
+        .init(key: "enable-query", title: "Server query", help: "Lets server lists fetch details.", kind: .bool, group: "Network and security"),
     ]
 }
 
@@ -138,6 +166,9 @@ public struct ConfigFile: Identifiable, Equatable, Sendable {
     public let group: String
     public let format: Format
     public let policy: Policy
+    /// The name within its group, where the full title would repeat it.
+    public var shortTitle: String?
+    public var listTitle: String { shortTitle ?? title }
 }
 
 public enum ConfigCatalog {
@@ -170,7 +201,39 @@ public enum ConfigCatalog {
     }
 
     /// The files that exist in this server: well-known ones first, then plugin configs.
-    public static func scan(_ paths: ServerPaths) -> [ConfigFile] {
+    /// Folders plugins use for data rather than settings, or for dozens of translations.
+    private static let notSettings: Set<String> = [
+        "userdata", "users", "players", "playerdata", "data", "cache", "logs", "log", "libs", "libraries", "lib",
+        "backup", "backups", "storage", "database", "databases", "translations", "lang", "languages", "locale", "locales", "temp", "tmp",
+    ]
+
+    /// A plugin's settings files, relative to its folder: main ones first, a few levels deep, within reason.
+    static func settingsFiles(in folder: URL, limit: Int = 40) -> [String] {
+        var found: [String] = []
+        var queue: [(URL, String, Int)] = [(folder, "", 0)]
+        while !queue.isEmpty, found.count < limit {
+            let (dir, prefix, depth) = queue.removeFirst()
+            for item in FileOps.children(dir).sorted(by: { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() }) {
+                let name = item.lastPathComponent
+                if name.hasPrefix(".") { continue }
+                if FileOps.isDirectory(item) {
+                    if depth < 2, !notSettings.contains(name.lowercased()) { queue.append((item, prefix + name + "/", depth + 1)) }
+                    continue
+                }
+                guard ["yml", "yaml", "json", "properties", "toml", "conf", "txt"].contains(item.pathExtension.lowercased()),
+                      FileOps.size(item) < 2_000_000 else { continue }
+                found.append(prefix + name)
+            }
+        }
+        func rank(_ rel: String) -> Int {
+            let lower = rel.lowercased()
+            if lower == "config.yml" || lower == "settings.yml" || lower == "config.yaml" || lower == "config.toml" { return 0 }
+            return rel.contains("/") ? 2 : 1
+        }
+        return Array(found.sorted { (rank($0), $0.lowercased()) < (rank($1), $1.lowercased()) }.prefix(limit))
+    }
+
+    public static func scan(_ paths: ServerPaths, plugins: [InstalledPlugin]? = nil) -> [ConfigFile] {
         var out = known.filter { FileOps.exists(paths.root.appendingPathComponent($0.path)) }
         let knownPaths = Set(out.map(\.path))
         // Per-world Paper configs live one level inside world folders; skip those to stay focused.
@@ -180,29 +243,52 @@ public enum ConfigCatalog {
                 out.append(.init(path: rel, title: dir.lastPathComponent, summary: "", group: "Paper", format: .yaml, policy: .stagedWhileRunning))
             }
         }
-        var pluginConfigs: [ConfigFile] = []
-        for plugin in FileOps.children(paths.plugins).sorted(by: { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() })
-        where FileOps.isDirectory(plugin) && plugin.lastPathComponent != "update" && !plugin.lastPathComponent.hasPrefix(".") {
-            for file in FileOps.children(plugin).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-                let format: ConfigFile.Format
-                switch file.pathExtension.lowercased() {
-                case "yml", "yaml": format = .yaml
-                case "json": format = .json
-                case "properties": format = .properties
-                case "toml", "conf", "txt": format = .text
-                default: continue
+        // Per-world Paper settings: beside each world before 26.x, in each dimension after.
+        var perWorld: [String] = []
+        for world in Backups.worldFolders(paths.root) {
+            let top = "\(world)/paper-world.yml"
+            if FileOps.exists(paths.root.appendingPathComponent(top)) { perWorld.append(top) }
+            let dimensions = paths.root.appendingPathComponent(world).appendingPathComponent("dimensions")
+            for namespace in FileOps.children(dimensions) {
+                for dimension in FileOps.children(namespace) where FileOps.exists(dimension.appendingPathComponent("paper-world.yml")) {
+                    perWorld.append("\(world)/dimensions/\(namespace.lastPathComponent)/\(dimension.lastPathComponent)/paper-world.yml")
                 }
-                guard FileOps.size(file) < 2_000_000 else { continue }
-                // Multiverse rewrites its world list as worlds change, which would overwrite a staged edit.
-                let isMultiverseWorlds = plugin.lastPathComponent == "Multiverse-Core" && file.lastPathComponent == "worlds.yml"
-                pluginConfigs.append(.init(
-                    path: "plugins/\(plugin.lastPathComponent)/\(file.lastPathComponent)",
-                    title: "\(plugin.lastPathComponent): \(file.lastPathComponent)", summary: "",
-                    group: "Plugins", format: format,
-                    policy: isMultiverseWorlds ? .lockedWhileRunning(hint: "Use the Worlds page while the server runs.") : .stagedWhileRunning))
             }
-            if pluginConfigs.count > 300 { break }
         }
+        for path in perWorld.sorted() {
+            let parts = path.components(separatedBy: "/")
+            out.append(.init(path: path, title: "Paper: \(parts[parts.count - 2])", summary: "Overrides Paper's world defaults for this world.", group: "Paper", format: .yaml, policy: .stagedWhileRunning))
+        }
+        // Each plugin's files, found from what's actually in its folder.
+        var pluginConfigs: [ConfigFile] = []
+        var leftovers: [ConfigFile] = []
+        let byFolder = Dictionary((plugins ?? []).filter { $0.descriptor != nil }.map { ($0.name.lowercased(), $0) }, uniquingKeysWith: { a, b in a.enabled ? a : b })
+        for folder in FileOps.children(paths.plugins).sorted(by: { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() })
+        where FileOps.isDirectory(folder) && folder.lastPathComponent != "update" && !folder.lastPathComponent.hasPrefix(".") {
+            let dirName = folder.lastPathComponent
+            let plugin = byFolder[dirName.lowercased()]
+            let group: String
+            if plugins == nil || plugin != nil {
+                group = plugin.map { $0.enabled ? $0.name : "\($0.name) (disabled)" } ?? dirName
+            } else {
+                group = "Leftover plugin folders"
+            }
+            for rel in settingsFiles(in: folder) {
+                let file = folder.appendingPathComponent(rel)
+                let format = ConfigCatalog.format(for: rel)
+                // Multiverse rewrites its world list as worlds change, which would overwrite a staged edit.
+                let isMultiverseWorlds = dirName == "Multiverse-Core" && rel == "worlds.yml"
+                let entry = ConfigFile(
+                    path: "plugins/\(dirName)/\(rel)", title: "\(dirName): \(rel)", summary: "",
+                    group: group, format: format,
+                    policy: isMultiverseWorlds ? .lockedWhileRunning(hint: "Use the Worlds page while the server runs.") : .stagedWhileRunning,
+                    shortTitle: rel)
+                if group == "Leftover plugin folders" { leftovers.append(entry) } else { pluginConfigs.append(entry) }
+                _ = file
+            }
+            if pluginConfigs.count + leftovers.count > 1000 { break }
+        }
+        pluginConfigs += leftovers
         return out + pluginConfigs
     }
 }

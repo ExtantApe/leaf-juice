@@ -49,6 +49,13 @@ struct OverviewPage: View {
                 issuesCard
             }
         }
+        .task(id: server.state) {
+            // Only while this page is showing, so it adds nothing to the log otherwise.
+            while server.state == .running, !Task.isCancelled {
+                server.requestTPS()
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
         .confirmationDialog("Remove \(server.profile.name) from Leaf Juice?", isPresented: $confirmRemove) {
             Button("Remove", role: .destructive) { model.remove(server) }
         } message: {
@@ -75,10 +82,12 @@ struct OverviewPage: View {
             let local = SystemInfo.lanAddress().map { port == 25565 ? $0 : "\($0):\(port)" }
             Fact(label: "On this Mac", value: port == 25565 ? "localhost" : "localhost:\(port)")
             if let local { Fact(label: "On your network", value: local) }
+            Fact(label: "Server message", value: server.serverMessage ?? "Not set")
             Fact(label: "Players online", value: server.state == .running ? "\(server.players.count)" : "None")
             if !server.players.isEmpty {
                 Text(server.players.sorted().joined(separator: ", ")).font(.callout).foregroundStyle(Juice.ink)
             }
+            ConnectCheckRow(server: server)
             if let local {
                 Button("Copy Network Address") {
                     NSPasteboard.general.clearContents()
@@ -91,6 +100,15 @@ struct OverviewPage: View {
 
     private var performanceCard: some View {
         Card(title: "Performance", systemImage: "speedometer") {
+            if let tps = server.tps, server.state == .running {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Ticks per second").foregroundStyle(Juice.muted)
+                    Spacer()
+                    Badge(text: String(format: "%.1f", tps.oneMinute), tone: tps.isHealthy ? .good : .warning)
+                }
+                .accessibilityElement(children: .combine)
+                .help("20 is perfect. Below about 18, players start to notice lag. Last 5 and 15 minutes: \(String(format: "%.1f", tps.fiveMinutes)), \(String(format: "%.1f", tps.fifteenMinutes)).")
+            }
             if let m = server.metrics {
                 Fact(label: "Memory in use", value: Format.bytes(m.memoryBytes))
                 ProgressView(value: min(1, Double(m.memoryBytes) / Double(server.profile.launch.maxMemoryMB * 1_048_576)))
@@ -149,6 +167,31 @@ struct OverviewPage: View {
             Fact(label: "Open", value: "\(open.count)")
             Fact(label: "Needing attention", value: "\(open.filter { $0.severity >= .error }.count)")
             Button(model.showIssues ? "Hide Panel" : "Show Panel") { model.showIssues.toggle() }.buttonStyle(.juice)
+        }
+    }
+}
+
+/// Only runs when pressed, because it sends this Mac's public address to outside services.
+struct ConnectCheckRow: View {
+    let server: ServerController
+    @State private var checking = false
+
+    var body: some View {
+        if let result = server.connectResult {
+            Callout(tone: result.reachable ? .good : .warning, title: result.reachable ? "Reachable from the internet" : "Not reachable from the internet", detail: result.detail)
+        }
+        HStack {
+            Button("Can Friends Connect?") { run() }.buttonStyle(.juice).disabled(server.state != .running || checking)
+            if checking { ProgressView().controlSize(.small).accessibilityLabel("Checking") }
+        }
+        .help("Asks an outside service to try connecting. This shares your public address with api.ipify.org and api.mcsrvstat.us.")
+    }
+
+    private func run() {
+        checking = true
+        server.attempt {
+            defer { checking = false }
+            try await server.checkConnection()
         }
     }
 }

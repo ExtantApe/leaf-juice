@@ -46,6 +46,18 @@ Config files have a per-file policy:
 If a file changes on disk after staging, `.properties` files merge key by key. Others are held back and
 flagged as a conflict rather than overwriting anything.
 
+## Settings screens
+
+Forms are generated from the file, not from a schema that could go stale. Whatever keys the file has become rows; the control
+comes from the value (true/false, number, text). A small table adds friendly titles, help, limits and sections for well-known
+settings, but anything else still works with a plain label. Comments in the file become help text, which is where plugin
+authors already document things.
+
+Edits replace one value on one line, so comments and layout survive. Anything the simple reader isn't sure of (lists, inline
+maps, multi-line text) is shown read-only and edited in the Full File view. Rows show "Not saved yet" and "Applies at next
+restart". JSON, TOML and HOCON files use the Full File view. Each installed plugin gets its own group, discovered from its
+folder, skipping data folders such as `userdata` and `lang`; folders with no installed plugin are listed separately.
+
 ## Software
 
 `Paper` (default), `Folia`, `Purpur`, `Vanilla`, or a custom jar (Spigot and Bukkit, which can't be
@@ -133,7 +145,10 @@ Deleting any other world takes a backup first and requires typing its name.
 - Compressed `.tar.gz` with a sidecar JSON (version, build, trigger, scope, pinned).
 - While running: `save-off` → `save-all flush` → wait for confirmation → archive → `save-on`, always.
 - Interval schedule, retention (keep last N, and anything newer than D days), pinning, free-space check.
-- Default location is outside the server folder; can point to an external drive.
+- Default scope is the whole server folder, jars, libraries and caches included, so a restore can start straight away, even offline. Only `.leafjuice` stays out. Restoring removes anything added since, and returns the jar and launch settings.
+- Default location is beside the servers: `<servers folder>/LeafJuice/backups/<server name>/`. The path is stored when
+  first used, so changing the servers folder can't lose track of backups. Renaming a server moves its folder, and servers with the same
+  name get separate ones. Any other folder or external drive can be chosen instead.
 - Restore: stopped only, takes a safety backup first, extracts to a temp folder, then swaps.
 
 ## Issues (the side panel)
@@ -162,6 +177,38 @@ A rule engine over console output and `logs/latest.log`:
 See [brand/README.md](../brand/README.md). Takes the *construction* from OnePedigree and OneTaxonomy
 (tile geometry, 8/10 radii, icon with label, shape as well as color, 3:1 strokes), with its own pastel palette:
 cream and sage surfaces, juice green for structure, pink grapefruit as the single pop of color.
+
+## Deep changes
+
+These change many files at once, so they share one engine: **scan, preview every change, make a verified restore point, apply with the
+server stopped, offer undo**. If a step fails, everything is put back. Only files on a finite list are edited; anything else that mentions
+a name is listed, never changed. The plan is worked out again after the server stops, because plugins save files on the way down.
+
+**World rename:** folders (or `dimensions/` keys from 26.1), `level-name`, `level.dat`, `bukkit.yml`, `spigot.yml`, `purpur.yml`; Multiverse `worlds.yml`
+keys, `read-only.legacy-world-name` (which Multiverse uses to find the folder), config and anchors; Portals, NetherPortals, Inventories groups and
+folders; WorldGuard folders; Essentials spawn, warps, jails and homes; Citizens; Dynmap. The list lives in `WorldRename.knownFiles`. Plugin databases
+such as CoreProtect's can't be changed, so a note says so.
+
+**Server rename:** offers `sonoran-realms`, `sonoranrealms`, `SonoranRealms`, `sonoran_realms`. Covers the folder, backup folder, motd, start scripts and absolute paths.
+LuckPerms' `server:` value decides which permissions apply, so it's opt-in with that explanation.
+
+**Test copies:** an APFS clone of the server on its own port, with outward-facing plugins (Discord, votes, web maps, proxies) off and outside databases flagged. The change
+is applied and booted there, then reported. On success the copy is removed and the app offers to back up and proceed. Plugins can't be switched on reliably in
+a running server, so **Find Which Plugin** boots the copy with half of them at a time, along with their dependencies.
+
+**Player snapshots:** every 15 minutes of play and as players leave, copying the saved data (the server saves about every 5 minutes), including each
+Multiverse-Inventories world and group. Can also pull one player out of any backup. Restoring leaves the world alone, and waits for a restart whenever the server could overwrite it.
+
+**Player merge:** player data paths differ by version (`world/playerdata` before 26.1, `world/players/data` after). Online-mode name changes keep the UUID, so a second
+profile usually comes from offline mode or a mode switch. Multiverse-Inventories keys files by *name*, so a rename can orphan them even in online mode. Inventory and position
+come from the chosen side, advancements combine, stats add up, and each conflicting world or group is chosen separately.
+
+**Cleanup:** known leftovers are preselected; orphan plugin folders and unmanaged worlds need a decision. Anything a current config mentions is left out. Items move
+to `CleanedUp` beside the backups and can be brought back.
+
+**Backup diff:** settings key by key, plugins, server jar, chunks changed per world (from region file timestamps) and each player's item changes.
+
+**Testing limit:** tests have no Minecraft client, so no real player data exists in them. Player features are tested against generated files only.
 
 ## Later
 

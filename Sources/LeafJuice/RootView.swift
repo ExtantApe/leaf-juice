@@ -143,6 +143,8 @@ struct ServerWindow: View {
 
     @ViewBuilder private var banners: some View {
         VStack(spacing: 8) {
+            if let warning = server.diskWarning { Callout(tone: .warning, title: warning) }
+            TrialBanner(server: server)
             if let notice = server.notice {
                 Callout(tone: .info, title: notice) {
                     Button("Dismiss") { server.notice = nil }.buttonStyle(.juice)
@@ -160,7 +162,7 @@ struct ServerWindow: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, server.notice == nil && model.appUpdate == nil && !isExternal ? 0 : 12)
+        .padding(.top, server.notice == nil && model.appUpdate == nil && !isExternal && server.diskWarning == nil && server.trialPhase == nil ? 0 : 12)
     }
 
     private var isExternal: Bool {
@@ -172,8 +174,10 @@ struct ServerWindow: View {
         switch model.page {
         case .overview: OverviewPage(model: model, server: server, renaming: $renaming)
         case .console: ConsolePage(server: server)
+        case .players: PlayersPage(server: server)
         case .worlds: WorldsPage(model: model, server: server)
-        case .plugins: PluginsPage(server: server)
+        case .cleanup: CleanupPage(server: server)
+        case .plugins: PluginsPage(model: model, server: server)
         case .software: SoftwarePage(model: model, server: server)
         case .configs: ConfigsPage(model: model, server: server)
         case .launch: LaunchPage(server: server)
@@ -385,30 +389,40 @@ struct RenameSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var folder = ""
+    @State private var message = ""
+    @State private var originalMessage = ""
     @State private var error: String?
+    @State private var deep = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Rename Server").font(.title2.weight(.semibold)).foregroundStyle(Juice.ink)
             Form {
                 TextField("Name in Leaf Juice", text: $name)
+                TextField("Server message", text: $message)
                 TextField("Folder name", text: $folder).disabled(!server.state.canStart)
             }
             .formStyle(.columns)
             if !server.state.canStart { Hint("Stop the server to rename its folder.") }
-            Hint("To change what players see in their server list, edit the server message (motd) in Configs.")
+            Hint("The name is your label in Leaf Juice. The server message (motd) is what players see in their server list\(server.state.canStart ? "." : ", and a change to it applies at the next restart.")")
             if let error { Callout(tone: .danger, title: error) }
             HStack {
                 Button("Cancel") { dismiss() }.buttonStyle(.juice).keyboardShortcut(.cancelAction)
                 Spacer()
+                Button("Rename Everywhere…") { deep = true }.buttonStyle(.juice)
+                    .help("Also updates the folder, start scripts and other places the name is used, with a preview first")
                 Button("Rename") { rename() }.buttonStyle(.juicePrimary).keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)
         .frame(width: 440)
+        .sheet(isPresented: $deep) { ServerRenameSheet(model: model, server: server, onDone: { dismiss() }) }
         .onAppear {
             name = server.profile.name
             folder = server.paths.root.lastPathComponent
+            let file = server.configs.first { $0.path == "server.properties" } ?? ConfigCatalog.serverProperties
+            originalMessage = PropertiesDocument(server.configText(file)).value("motd") ?? ""
+            message = originalMessage
         }
     }
 
@@ -416,6 +430,7 @@ struct RenameSheet: View {
         do {
             let moved = try server.rename(to: name, moveFolderTo: server.state.canStart ? folder : nil)
             if moved != nil { model.pathsChanged() }
+            if message != originalMessage { try server.setServerMessage(message) }
             dismiss()
         } catch { self.error = error.localizedDescription }
     }

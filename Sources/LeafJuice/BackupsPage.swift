@@ -6,6 +6,7 @@ struct BackupsPage: View {
     @Bindable var server: ServerController
     @State private var restoring: BackupRecord?
     @State private var deleting: BackupRecord?
+    @State private var comparing: BackupRecord?
 
     var body: some View {
         Page(title: "Backups", subtitle: "Worlds and settings, saved safely even while the server runs.") {
@@ -26,10 +27,11 @@ struct BackupsPage: View {
             ShelfCard(server: server)
         }
         .onAppear { server.refreshBackups() }
+        .sheet(item: $comparing) { BackupDiffSheet(server: server, record: $0) }
         .confirmationDialog("Restore this backup?", isPresented: restoreShown, presenting: restoring) { record in
             Button("Restore") { server.attempt { try await server.restoreBackup(record) } }
         } message: { record in
-            Text("The items in this backup replace the current ones. A safety copy of the current state is saved and pinned first.\n\nMade \(record.date.formatted()) on \(record.software).")
+            Text("\(record.scope == .everything ? "The whole server returns to this state, and anything added since is removed." : "The items in this backup replace the current ones.") A safety copy of the current state is saved and pinned first.\n\nMade \(record.date.formatted()) on \(record.software).")
         }
         .confirmationDialog("Delete this backup?", isPresented: deleteShown, presenting: deleting) { record in
             Button("Delete", role: .destructive) { server.attempt { try server.deleteBackup(record) } }
@@ -60,6 +62,9 @@ struct BackupsPage: View {
             Picker("What to include", selection: $server.profile.backup.scope) {
                 ForEach(BackupScope.allCases) { Text($0.title).tag($0) }
             }
+            if server.profile.backup.scope == .everything {
+                Hint("Restoring puts the server back exactly as it was, ready to start, even without internet: jar, libraries, plugins, worlds, settings and logs. Anything added since is removed.")
+            }
             Stepper("Always keep the latest \(server.profile.backup.keepLast)", value: $server.profile.backup.keepLast, in: 1...100)
             Stepper(keepDaysLabel, value: $server.profile.backup.keepDays, in: 0...365)
             Hint("Older backups are deleted automatically. Pinned ones never are, including restore points for upgrades you haven't decided on.")
@@ -69,16 +74,12 @@ struct BackupsPage: View {
                 HStack {
                     Text(Backups.destination(server.profile).path).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.middle)
                     Button("Change…") { chooseDestination() }.buttonStyle(.juice)
-                    if server.profile.backup.destination != nil {
-                        Button("Use Default") {
-                            server.profile.backup.destination = nil
-                            server.refreshBackups()
-                        }
-                        .buttonStyle(.juice)
+                    if !Backups.isDefaultLocation(Backups.destination(server.profile)) {
+                        Button("Use Default") { server.useDefaultBackupFolder() }.buttonStyle(.juice)
                     }
                 }
             }
-            Hint("A backup on another drive survives that drive failing. The default location is on this Mac.")
+            Hint("By default, backups sit beside your servers in LeafJuice/backups. That's the same drive, so a copy on another drive is what protects you if that one fails. Changing this doesn't move backups you've already made.")
         }
     }
 
@@ -93,6 +94,7 @@ struct BackupsPage: View {
         panel.canCreateDirectories = true
         panel.prompt = "Choose"
         if panel.runModal() == .OK, let url = panel.url {
+            try? Backups.claim(url, for: server.profile.id)
             server.profile.backup.destination = url.path
             server.refreshBackups()
         }
@@ -110,6 +112,8 @@ struct BackupsPage: View {
                     deleting = record
                 } onPin: {
                     server.setPinned(record, pinned: !record.pinned)
+                } onCompare: {
+                    comparing = record
                 }
                 if record.id != server.backups.last?.id { Divider() }
             }
@@ -126,6 +130,7 @@ private struct BackupRow: View {
     let onRestore: () -> Void
     let onDelete: () -> Void
     let onPin: () -> Void
+    let onCompare: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -138,6 +143,7 @@ private struct BackupRow: View {
                 Hint("\(Format.bytes(record.size)) · \(record.scope.title) · \(record.software) · \(triggerTitle)")
             }
             Spacer()
+            Button("Compare…", action: onCompare).buttonStyle(.juice)
             Button(record.pinned ? "Unpin" : "Pin", action: onPin).buttonStyle(.juice)
             Button("Restore…", action: onRestore).buttonStyle(.juice).disabled(!canRestore)
             Button("Delete…", action: onDelete).buttonStyle(.juiceDanger)
@@ -151,7 +157,7 @@ private struct BackupRow: View {
         case "before-update": "Before an update"
         case "before-restore": "Before a restore"
         case "before-world-delete": "Before deleting a world"
-        case "before-upgrade": "Restore point before an upgrade"
+        case "before-upgrade": "Restore point before a change"
         default: record.trigger
         }
     }

@@ -12,12 +12,54 @@ public struct BackupRecord: Codable, Identifiable, Equatable, Sendable {
     public var serverName: String
     public var pinned = false
     public var warning: String?
+    /// What was running, so a whole-folder restore can start straight away as it was.
+    public var softwareState: SoftwareState?
+    public var launch: LaunchConfig?
 }
 
 public enum Backups {
     public static func destination(_ profile: ServerProfile) -> URL {
-        if let custom = profile.backup.destination { return URL(fileURLWithPath: custom, isDirectory: true) }
-        return AppPaths.backups.appendingPathComponent(profile.id.uuidString, isDirectory: true)
+        if let chosen = profile.backup.destination { return URL(fileURLWithPath: chosen, isDirectory: true) }
+        return defaultDestination(for: profile)
+    }
+
+    /// `<servers folder>/LeafJuice/backups/<server name>`, or a numbered name if another server has that one.
+    public static func defaultDestination(for profile: ServerProfile) -> URL {
+        let base = ServerFolders.folderName(for: profile.name) ?? profile.id.uuidString
+        var candidate = AppPaths.backups.appendingPathComponent(base, isDirectory: true)
+        var suffix = 2
+        while let owner = owner(of: candidate), owner != profile.id {
+            candidate = AppPaths.backups.appendingPathComponent("\(base) \(suffix)", isDirectory: true)
+            suffix += 1
+        }
+        return candidate
+    }
+
+    /// Is this one of the automatic folders, as opposed to one somebody chose?
+    public static func isDefaultLocation(_ folder: URL) -> Bool {
+        let parent = folder.deletingLastPathComponent().pathComponents.suffix(2)
+        return Array(parent) == [AppPaths.ownFolderName, "backups"]
+    }
+
+    private static func ownerFile(_ folder: URL) -> URL { folder.appendingPathComponent(".leafjuice-server") }
+
+    private static func owner(of folder: URL) -> UUID? {
+        guard let text = try? String(contentsOf: ownerFile(folder), encoding: .utf8) else { return nil }
+        return UUID(uuidString: text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Claims a folder for a server, so another server with the same name gets its own.
+    public static func claim(_ folder: URL, for id: UUID) throws {
+        try FileOps.ensureDir(folder)
+        try FileOps.writeAtomic(id.uuidString, to: ownerFile(folder))
+    }
+
+    /// Top-level items to leave out because the backup is being written inside them.
+    static func withoutDestination(_ items: [String], root: URL, destination: URL) -> [String] {
+        let rootParts = root.resolvingSymlinksInPath().pathComponents
+        let destParts = destination.resolvingSymlinksInPath().pathComponents
+        guard destParts.count > rootParts.count, Array(destParts.prefix(rootParts.count)) == rootParts else { return items }
+        return items.filter { $0 != destParts[rootParts.count] }
     }
 
     /// Worlds are any top-level folder containing `level.dat`, so extra world plugins are covered too.
@@ -25,8 +67,9 @@ public enum Backups {
         FileOps.children(root).filter { FileOps.exists($0.appendingPathComponent("level.dat")) }.map(\.lastPathComponent).sorted()
     }
 
-    /// Regenerated on start or too large to be worth keeping.
-    static let skippedTopLevel: Set<String> = ["logs", "cache", "libraries", "versions", ".leafjuice", "crash-reports", ".paper-remapped", ".DS_Store"]
+    /// A whole-folder backup is everything needed to run as it was, offline if need be: jars, libraries and
+    /// caches included. Only Leaf Juice's own bookkeeping stays out, because a restore shouldn't rewind that.
+    static let skippedTopLevel: Set<String> = [".leafjuice", ".DS_Store"]
 
     public static func items(_ root: URL, scope: BackupScope) -> [String] {
         let worlds = worldFolders(root)
@@ -73,11 +116,11 @@ public enum Backups {
 
     public static func create(_ profile: ServerProfile, root: URL, trigger: String, scope: BackupScope? = nil, into folder: URL? = nil) async throws -> BackupRecord {
         let scope = scope ?? profile.backup.scope
-        let items = items(root, scope: scope)
+        let dest = folder ?? destination(profile)
+        let items = withoutDestination(items(root, scope: scope), root: root, destination: dest)
         guard !items.isEmpty else {
             throw LeafError(scope == .worlds ? "There's no world to back up yet. Start the server once first." : "There's nothing to back up yet.")
         }
-        let dest = folder ?? destination(profile)
         do { try FileOps.ensureDir(dest) } catch {
             throw LeafError("Can't write to the backup folder \(dest.path). If it's on an external drive, check it's connected.")
         }
@@ -88,7 +131,13 @@ public enum Backups {
         }
 
         let date = Date()
-        let base = "\(stamp(date))_\(trigger)"
+        // Two backups in the same second must never share a name: the second would replace the first.
+        var base = "\(stamp(date))_\(trigger)"
+        var attempt = 2
+        while FileOps.exists(dest.appendingPathComponent(base + ".tar.gz")) {
+            base = "\(stamp(date))_\(trigger)-\(attempt)"
+            attempt += 1
+        }
         let archive = dest.appendingPathComponent(base + ".tar.gz")
         let partial = dest.appendingPathComponent(base + ".partial")
         defer { try? FileManager.default.removeItem(at: partial) }
@@ -106,7 +155,8 @@ public enum Backups {
         try FileOps.move(partial, to: archive)
         let record = BackupRecord(
             fileName: archive.lastPathComponent, date: date, size: FileOps.size(archive), scope: scope, trigger: trigger,
-            software: profile.software.label, mcVersion: profile.software.mcVersion, serverName: profile.name, warning: warning)
+            software: profile.software.label, mcVersion: profile.software.mcVersion, serverName: profile.name, warning: warning,
+            softwareState: profile.software, launch: profile.launch)
         try JSONStore.save(record, to: sidecar(for: archive))
         return record
     }
@@ -170,6 +220,18 @@ public enum Backups {
 
         var moved: [(new: URL, target: URL, saved: URL?)] = []
         do {
+            // A whole-folder restore puts things back exactly as they were, so whatever was added since has to go.
+            // Never the backup's own location, if it happens to be inside the server folder.
+            if record.scope == .everything {
+                let restored = Set(FileOps.children(extracted).map(\.lastPathComponent))
+                let kept = Set(FileOps.children(root).map(\.lastPathComponent).filter { !withoutDestination([$0], root: root, destination: folder ?? destination(profile)).isEmpty })
+                for name in kept where !restored.contains(name) && !skippedTopLevel.contains(name) {
+                    let target = root.appendingPathComponent(name)
+                    let saved = replaced.appendingPathComponent(name)
+                    try FileOps.move(target, to: saved)
+                    moved.append((target, target, saved))
+                }
+            }
             for item in FileOps.children(extracted) {
                 let target = root.appendingPathComponent(item.lastPathComponent)
                 var saved: URL?

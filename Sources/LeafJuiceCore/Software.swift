@@ -200,7 +200,8 @@ public enum ServerFolders {
     /// Subfolders that look like servers. Only looks at names in each folder: nothing is opened or changed.
     public static func find(in parent: URL) -> [URL] {
         FileOps.children(parent).filter { folder in
-            guard FileOps.isDirectory(folder), !folder.lastPathComponent.hasPrefix(".") else { return false }
+            guard FileOps.isDirectory(folder), !folder.lastPathComponent.hasPrefix("."),
+                  folder.lastPathComponent != AppPaths.ownFolderName else { return false }
             let names = FileOps.children(folder).map { $0.lastPathComponent.lowercased() }
             return names.contains("server.properties") || names.contains(".leafjuice") || names.contains { $0.hasSuffix(".jar") }
         }.sorted { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() }

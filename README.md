@@ -24,13 +24,32 @@ Not affiliated with Mojang or Microsoft.
 - **Knows which plugins fit**: each plugin has a source you can edit (Modrinth, Hangar, SpigotMC, GitHub
   Releases, Jenkins, or any web address). Releases tagged for another Minecraft version are skipped, and every
   download is checked before it replaces anything.
+- **Settings screens built from your files**: `server.properties`, Bukkit, Spigot, Paper and every installed plugin's
+  config get a form generated from the file itself, so they can't go out of date and new plugins just work. Comments become
+  help text, and edits change only that line. Ops, allowlist and bans have their own screen.
 - **Never changes a running server underneath its players**: edits wait for a restart you choose: now, when
   the last player leaves, or at a set time with in-game warnings.
 - **Protects you on upgrades**: see below.
 - **Manages worlds with Multiverse-Core**: create, import, load, unload, copy and delete worlds from the app.
-- **Backs up safely while running**: scheduled, with retention, pinning, and any destination.
+- **Backs up safely while running**: the whole server folder by default, to `LeafJuice/backups/<server>/` beside your
+  servers, or anywhere you choose. A whole-folder restore comes back exactly as it was and ready to start, even offline.
+  Scheduled, with retention and pinning.
+- **Tries changes on a test copy first**: clones the server, applies an upgrade, plugin update or rename there, boots it and reports back, with
+  nothing reaching the real server. If a plugin is the problem, it can find which one.
+- **Renames deeply**: a world or the whole server, across known config files, with a preview, a restore point and undo.
+- **Looks after players**: inventory snapshots every 15 minutes of play, per world with Multiverse-Inventories, restored without touching the world. Merges
+  duplicate profiles, and shows who was on and when.
+- **Compares backups**: settings, plugins, chunks and player inventories, between any two.
+- **Cleans up old servers**: finds leftovers and moves them aside, where they can be brought back.
+- **Watches health**: TPS, low disk warnings, and a check that friends can connect.
 - **Explains problems**: warnings and errors are catalogued in a side panel, grouped and counted, with
   suggestions for common ones. It's all built-in rules: no AI, and nothing leaves your Mac unless you click.
+
+## Your server stays yours
+
+**No telemetry, no analytics, no accounts.** Everything Leaf Juice measures stays on your Mac. It only goes online to
+do something you can see: checking for server, plugin and Java updates, and looking for a new Leaf Juice release (which you can turn off in Settings).
+A few things happen only when you click them, such as the connection check and web searches for an error, and they say what they share.
 
 ## Upgrades can't quietly break your server
 

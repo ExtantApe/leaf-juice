@@ -125,8 +125,12 @@ struct ChangeVersionCard: View {
             if !target.isEmpty { moveMessage }
             HStack {
                 Button("Check Plugins") { checkReadiness() }.buttonStyle(.juice).disabled(target.isEmpty || checking || server.plugins.isEmpty)
-                Button(server.state.canStart ? "Install…" : "Install at Restart…") { prepare() }
+                Button("Try on a Test Copy") { prepare(trial: true) }
                     .buttonStyle(.juicePrimary)
+                    .disabled(target.isEmpty || move == .downgrade || move == .same || server.activity != nil || server.trialPhase != nil)
+                    .help("Tries this on a throwaway copy of the server first. The real server isn't touched.")
+                Button(server.state.canStart ? "Install…" : "Install at Restart…") { prepare(trial: false) }
+                    .buttonStyle(.juice)
                     .disabled(target.isEmpty || move == .downgrade || move == .same || server.activity != nil)
                 if checking { ProgressView().controlSize(.small).accessibilityLabel("Checking plugins") }
             }
@@ -214,7 +218,7 @@ struct ChangeVersionCard: View {
         }
     }
 
-    private func prepare() {
+    private func prepare(trial: Bool) {
         Task {
             do {
                 let channels = showPre ? ["STABLE", "BETA", "ALPHA"] : server.profile.software.channels
@@ -223,7 +227,11 @@ struct ChangeVersionCard: View {
                     return
                 }
                 build = found
-                confirming = true
+                if trial {
+                    await server.startTrial(.software(found))
+                } else {
+                    confirming = true
+                }
             } catch { loadError = error.localizedDescription }
         }
     }

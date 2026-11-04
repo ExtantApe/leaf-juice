@@ -41,6 +41,28 @@ public final class ServerController: Identifiable {
     /// An upgrade you haven't yet decided to keep or roll back.
     public private(set) var activeUpgrade: UpgradeRecord?
     public private(set) var shelved: [ShelvedUpgrade] = []
+
+    public internal(set) var knownPlayers: [PlayerInfo] = []
+    public internal(set) var playerHistory: [PlayerSession] = []
+    public internal(set) var mergeSuggestions: [MergeSuggestion] = []
+    public internal(set) var cleanupItems: [CleanupItem] = []
+    public internal(set) var cleanupBatches: [CleanupBatch] = []
+    public internal(set) var tps: TPSReading?
+    public internal(set) var diskWarning: String?
+    public internal(set) var connectResult: ConnectResult?
+    public internal(set) var trialPhase: TrialPhase?
+    public internal(set) var trialReport: TrialReport?
+    public internal(set) var trialChange: TrialChange?
+    public internal(set) var trialController: ServerController?
+    var trialFolder: URL?
+    /// This controller runs a throwaway copy: no restore points, schedules or snapshots.
+    public internal(set) var isTrialCopy = false
+    var isTrialFast = false
+    var awaitingTPS = false
+    var playSeconds: [String: TimeInterval] = [:]
+    var playerUUIDs: [String: String] = [:]
+    private var lastTick: Date?
+    private var tickCount = 0
     public private(set) var restartPlan: RestartPlan?
     public private(set) var softwareUpdate: SoftwareBuild?
     public private(set) var launchedCommand: [String]?
@@ -55,7 +77,7 @@ public final class ServerController: Identifiable {
     /// Picks which Java runs a server. The app replaces this list on demand.
     public var runtimes: [JavaRuntime] = []
 
-    private var process: ServerProcess?
+    var process: ServerProcess?
     private let sampler = MetricsSampler()
     private let analyzer = IssueAnalyzer()
     private var lineBuffer: [String] = []
@@ -126,6 +148,8 @@ public final class ServerController: Identifiable {
         analyzer.markClean()
         issues = analyzer.sorted
         refreshConfigs()
+        // Wait for a servers folder to be chosen before putting anything in it.
+        if !AppPaths.needsServersFolderChoice { pinBackupFolder() }
         refreshBackups()
         nextScheduledRestart = profile.restart.enabled ? profile.restart.next(after: Date()) : nil
         Task {
@@ -140,7 +164,7 @@ public final class ServerController: Identifiable {
     private func savePending() { try? JSONStore.save(pending, to: paths.pending) }
     private func saveRecords() { try? JSONStore.save(records, to: paths.pluginRecords) }
 
-    private func setActivity(_ text: String?, progress: Double? = nil) {
+    func setActivity(_ text: String?, progress: Double? = nil) {
         activity = text
         activityProgress = progress
     }
@@ -164,6 +188,7 @@ public final class ServerController: Identifiable {
             moved = target
         }
         profile.name = clean
+        moveBackupFolderForRename()
         return moved
     }
 
@@ -413,6 +438,11 @@ public final class ServerController: Identifiable {
         var changedIssues = false
         for line in lines {
             let parsed = ParsedLogLine(line)
+            if let reading = TPS.parse(parsed.message) {
+                tps = reading
+                // Asked for by the app, so it shouldn't fill the console every few seconds.
+                if awaitingTPS { awaitingTPS = false; continue }
+            }
             append(line, level: parsed.level, origin: .server)
             analyzer.ingest(line)
             changedIssues = changedIssues || parsed.level >= .warn || analyzer.dirty
@@ -432,6 +462,7 @@ public final class ServerController: Identifiable {
     }
 
     private static let donePattern = regex(#"^Done \(\d+[.,]\d+s\)!"#)
+    private static let uuidPattern = regex(#"UUID of player (\.?[A-Za-z0-9_]{1,16}) is ([0-9a-fA-F-]{36})"#)
     private static let joinPattern = regex(#"^(\.?[A-Za-z0-9_]{1,16}) (joined|left) the game"#)
 
     private func observe(_ line: ParsedLogLine) {
@@ -449,7 +480,24 @@ public final class ServerController: Identifiable {
         if let m = Self.joinPattern.firstMatch(in: line.message), m.numberOfRanges == 3,
            let nameRange = Range(m.range(at: 1), in: line.message), let verbRange = Range(m.range(at: 2), in: line.message) {
             let name = String(line.message[nameRange])
-            if line.message[verbRange] == "joined" { players.insert(name) } else { players.remove(name) }
+            if line.message[verbRange] == "joined" {
+                players.insert(name)
+                playSeconds[name] = 0
+            } else {
+                players.remove(name)
+                playSeconds[name] = nil
+                // The server writes their data as they leave, so this catches their final state.
+                if profile.playerSnapshots.enabled, !isTrialCopy {
+                    Task { [weak self] in
+                        try? await Task.sleep(for: .seconds(3))
+                        self?.takeAutomaticSnapshot(name: name, trigger: "left")
+                    }
+                }
+            }
+        }
+        if let m = Self.uuidPattern.firstMatch(in: line.message), m.numberOfRanges == 3,
+           let n = Range(m.range(at: 1), in: line.message), let u = Range(m.range(at: 2), in: line.message) {
+            playerUUIDs[String(line.message[n])] = String(line.message[u])
         }
     }
 
@@ -470,7 +518,7 @@ public final class ServerController: Identifiable {
         }
     }
 
-    private func waitForLine(containing needle: String, timeout: Duration) async -> Bool {
+    func waitForLine(containing needle: String, timeout: Duration) async -> Bool {
         await waitForLine(containingAny: [needle], timeout: timeout) != nil
     }
 
@@ -485,6 +533,17 @@ public final class ServerController: Identifiable {
         analyzer.setStatus(status, id: id)
         issues = analyzer.sorted
         persistIssues()
+    }
+
+    func reportIssue(_ record: IssueRecord) {
+        analyzer.report(record)
+        issues = analyzer.sorted
+        persistIssues()
+    }
+
+    /// For a test copy, which watches for updates from the real server's source.
+    func adoptRecord(_ record: PluginRecord, key: String) {
+        records[key] = record
     }
 
     public func clearIssues() {
@@ -553,7 +612,7 @@ public final class ServerController: Identifiable {
 
         // A version change always gets a verified restore point, whatever the backup settings say.
         let majorUpgrade = pending.contains { if case .software(_, _, true) = $0.kind { true } else { false } }
-        if majorUpgrade, hasWorld {
+        if majorUpgrade, hasWorld, !isTrialCopy {
             do {
                 pendingRestorePoint = try await makeRestorePoint()
             } catch {
@@ -563,7 +622,7 @@ public final class ServerController: Identifiable {
             }
         }
         // A restore point covers everything, so a second backup would only repeat it.
-        if pendingRestorePoint == nil, profile.backup.beforeUpdates, pending.contains(where: { $0.needsBackup && $0.conflict == nil }), hasWorld {
+        if pendingRestorePoint == nil, !isTrialCopy, profile.backup.beforeUpdates, pending.contains(where: { $0.needsBackup && $0.conflict == nil }), hasWorld {
             do {
                 _ = try await backupNow(trigger: "before-update")
             } catch {
@@ -634,6 +693,12 @@ public final class ServerController: Identifiable {
             let source = paths.plugins.appendingPathComponent(fileName)
             if FileOps.exists(source) { try FileOps.move(source, to: paths.pluginArchive.appendingPathComponent(fileName)) }
             return nil
+        case let .playerRestore(folder, uuid, _, inventoryOnly, containers):
+            guard let snapshot = PlayerSnapshots.list(uuid: uuid, profile: profile).first(where: { $0.folder == folder }) else {
+                throw LeafError("That snapshot is missing.")
+            }
+            try applyPlayerRestore(snapshot, inventoryOnly: inventoryOnly, containers: containers)
+            return nil
         case let .pluginToggle(fileName, enable):
             let source = paths.plugins.appendingPathComponent(fileName)
             guard FileOps.exists(source) else { return nil }
@@ -695,6 +760,11 @@ public final class ServerController: Identifiable {
 
     func tick() async {
         let now = Date()
+        tickPlayerSnapshots(elapsed: now.timeIntervalSince(lastTick ?? now))
+        lastTick = now
+        tickCount += 1
+        if tickCount % 12 == 1 { tickDisk() }
+        if isTrialCopy { return }
         if let pid = process?.pid { metrics = sampler.sample(pid: pid) }
         analyzer.setPlugins(plugins)
         persistIssues()
@@ -727,7 +797,7 @@ public final class ServerController: Identifiable {
         }
     }
 
-    private var hasWorld: Bool { !Backups.worldFolders(paths.root).isEmpty }
+    var hasWorld: Bool { !Backups.worldFolders(paths.root).isEmpty }
 
     private func tickRestart(_ now: Date) {
         guard var plan = restartPlan, state == .running else { return }
@@ -855,6 +925,7 @@ public final class ServerController: Identifiable {
     public func refreshPlugins() async {
         plugins = await PluginScanner.scan(paths)
         analyzer.setPlugins(plugins)
+        refreshConfigs()
         await identifySources()
     }
 
@@ -1061,11 +1132,41 @@ public final class ServerController: Identifiable {
 
     // MARK: Configs
 
-    public func refreshConfigs() { configs = ConfigCatalog.scan(paths) }
+    public func refreshConfigs() { configs = ConfigCatalog.scan(paths, plugins: plugins) }
+
+    /// A plugin's settings files, in the order its page should show them.
+    public func configs(for plugin: InstalledPlugin) -> [ConfigFile] {
+        let folder = "plugins/\(plugin.name.lowercased())/"
+        return configs.filter { $0.path.lowercased().hasPrefix(folder) }
+    }
 
     public func configText(_ file: ConfigFile) -> String {
         ConfigStage(paths: paths).stagedText(file.path)
             ?? (try? String(contentsOf: paths.root.appendingPathComponent(file.path), encoding: .utf8)) ?? ""
+    }
+
+    /// What's on disk now, ignoring any edit waiting for a restart.
+    public func liveConfigText(_ file: ConfigFile) -> String {
+        (try? String(contentsOf: paths.root.appendingPathComponent(file.path), encoding: .utf8)) ?? ""
+    }
+
+    /// What players see in their server list, as plain text.
+    public var serverMessage: String? {
+        let file = configs.first { $0.path == "server.properties" } ?? ConfigCatalog.serverProperties
+        guard let motd = PropertiesDocument(configText(file)).value("motd") else { return nil }
+        let plain = ConfigForm.plainMOTD(motd)
+        return plain.isEmpty ? nil : plain
+    }
+
+    /// Changes the server message, by the usual route: now if stopped, at the next restart if running.
+    @discardableResult
+    public func setServerMessage(_ message: String) throws -> SaveOutcome {
+        let file = configs.first { $0.path == "server.properties" } ?? ConfigCatalog.serverProperties
+        var doc = PropertiesDocument(configText(file))
+        doc.set("motd", message)
+        let outcome = try saveConfig(file, text: doc.text)
+        refreshConfigs()
+        return outcome
     }
 
     public func hasStagedEdit(_ file: ConfigFile) -> Bool { ConfigStage(paths: paths).stagedText(file.path) != nil }
@@ -1122,6 +1223,48 @@ public final class ServerController: Identifiable {
 
     public var isBackingUp: Bool { backingUp }
 
+    /// Settles where this server's backups go, the first time it matters.
+    private func pinBackupFolder() {
+        guard profile.backup.destination == nil else { return }
+        let folder = Backups.defaultDestination(for: profile)
+        guard (try? Backups.claim(folder, for: profile.id)) != nil else { return }
+        profile.backup.destination = folder.path
+    }
+
+    /// Keeps the backup folder named after the server. Folders someone chose themselves are left alone.
+    private func moveBackupFolderForRename() {
+        guard let current = profile.backup.destination else { return }
+        let old = URL(fileURLWithPath: current, isDirectory: true)
+        guard Backups.isDefaultLocation(old), !backingUp else { return }
+        let wanted = ServerFolders.folderName(for: profile.name) ?? profile.id.uuidString
+        var target = old.deletingLastPathComponent().appendingPathComponent(wanted, isDirectory: true)
+        var suffix = 2
+        while FileOps.exists(target), target.path != old.path {
+            target = old.deletingLastPathComponent().appendingPathComponent("\(wanted) \(suffix)", isDirectory: true)
+            suffix += 1
+        }
+        guard target.path != old.path else { return }
+        if FileOps.exists(old) {
+            do { try FileManager.default.moveItem(at: old, to: target) } catch {
+                notice = "The server was renamed, but its backup folder couldn't be: \(error.localizedDescription) Backups stay at \(old.path)."
+                return
+            }
+        }
+        profile.backup.destination = target.path
+        if var upgrade = activeUpgrade, upgrade.backupFolder == old.path {
+            upgrade.backupFolder = target.path
+            setActiveUpgrade(upgrade)
+        }
+        refreshBackups()
+    }
+
+    /// Returns to `<servers folder>/LeafJuice/backups/<server name>`. Backups already made stay where they are.
+    public func useDefaultBackupFolder() {
+        profile.backup.destination = nil
+        pinBackupFolder()
+        refreshBackups()
+    }
+
     public func refreshBackups() { backups = Backups.list(profile) }
 
     /// Takes a consistent backup. While running, saving is paused so the world doesn't change underneath it.
@@ -1131,6 +1274,7 @@ public final class ServerController: Identifiable {
         guard state == .running || state.canStart else { throw LeafError("Wait until the server has finished starting or stopping.") }
         backingUp = true
         defer { backingUp = false }
+        pinBackupFolder()
         let previousActivity = activity
         setActivity("Backing up…")
         defer { setActivity(previousActivity) }
@@ -1159,8 +1303,16 @@ public final class ServerController: Identifiable {
         setActivity("Restoring backup…")
         defer { setActivity(nil) }
         try await Backups.restore(record, profile: profile, root: paths.root)
-        // Restoring a world from an older version must put the matching version back in charge.
-        if record.mcVersion != profile.software.mcVersion {
+        // A whole-folder backup knows exactly what it ran, so it can start straight away.
+        if record.scope == .everything, let software = record.softwareState,
+           FileOps.exists(paths.root.appendingPathComponent(software.jarName)) {
+            var restored = software
+            restored.lastCheck = profile.software.lastCheck
+            profile.software = restored
+            if let launch = record.launch { profile.launch = launch }
+            softwareUpdate = nil
+        } else if record.mcVersion != profile.software.mcVersion {
+            // Restoring a world from an older version must put the matching version back in charge.
             profile.software.mcVersion = record.mcVersion
             profile.software.build = nil
             // Put the matching jar back if there is one. Without it, the start check refuses to run.
@@ -1192,7 +1344,7 @@ public final class ServerController: Identifiable {
     // MARK: Upgrades
 
     /// A whole-folder archive of the server as it stands, proven readable, pinned so nothing prunes it.
-    private func makeRestorePoint() async throws -> BackupRecord {
+    func makeRestorePoint() async throws -> BackupRecord {
         let worlds = Backups.worldFolders(paths.root)
         let record = try await backupNow(trigger: "before-upgrade", scope: .everything)
         try await Backups.verify(record, in: Backups.destination(profile), expectingWorlds: worlds)
@@ -1202,7 +1354,7 @@ public final class ServerController: Identifiable {
         return record
     }
 
-    private func setActiveUpgrade(_ upgrade: UpgradeRecord?) {
+    func setActiveUpgrade(_ upgrade: UpgradeRecord?) {
         activeUpgrade = upgrade
         if let upgrade { try? JSONStore.save(upgrade, to: paths.activeUpgrade) }
         else { try? FileManager.default.removeItem(at: paths.activeUpgrade) }
@@ -1211,7 +1363,7 @@ public final class ServerController: Identifiable {
     private func saveShelved() { try? JSONStore.save(shelved, to: paths.shelved) }
 
     /// Stops the server if it's running, for actions that need it down.
-    private func stopAndWait() async throws {
+    func stopAndWait() async throws {
         if state == .running || state == .starting { stop() }
         for _ in 0..<(180 * 4) where state.isLive { try? await Task.sleep(for: .milliseconds(250)) }
         guard state.canStart else { throw LeafError("The server didn't stop, so nothing was changed.") }

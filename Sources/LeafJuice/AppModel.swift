@@ -4,13 +4,15 @@ import Observation
 import SwiftUI
 
 enum PageID: String, CaseIterable, Identifiable, Hashable {
-    case overview, console, worlds, plugins, software, configs, launch, backups, changes
+    case overview, console, players, worlds, plugins, software, configs, launch, backups, changes, cleanup
     var id: String { rawValue }
     var title: String {
         switch self {
         case .overview: "Overview"
         case .console: "Console"
+        case .players: "Players"
         case .worlds: "Worlds"
+        case .cleanup: "Cleanup"
         case .plugins: "Plugins"
         case .software: "Software"
         case .configs: "Configs"
@@ -23,7 +25,9 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .overview: "gauge.with.dots.needle.33percent"
         case .console: "terminal"
+        case .players: "person.2"
         case .worlds: "globe.americas"
+        case .cleanup: "sparkles"
         case .plugins: "puzzlepiece.extension"
         case .software: "shippingbox"
         case .configs: "slider.horizontal.3"
@@ -44,6 +48,8 @@ final class AppModel {
         didSet { UserDefaults.standard.set(showIssues, forKey: "showIssues") }
     }
     var showAddServer = false
+    /// The file open on the Configs page, so other pages can jump to one.
+    var configPath: String?
     var showFolderSetup = AppPaths.needsServersFolderChoice
     var appUpdate: (version: String, url: URL)?
     var checkAppUpdates = UserDefaults.standard.object(forKey: "checkAppUpdates") as? Bool ?? true {
@@ -51,7 +57,7 @@ final class AppModel {
     }
 
     var selected: ServerController? { servers.first { $0.id == selectedID } ?? servers.first }
-    var anyLive: Bool { servers.contains { $0.state.isLive } }
+    var anyLive: Bool { servers.contains { $0.state.isLive || $0.trialIsLive } }
 
     init() {
         let paths: [String] = JSONStore.load(AppPaths.registry, defaults: [])
@@ -85,7 +91,10 @@ final class AppModel {
     func pathsChanged() { saveRegistry() }
 
     func stopAll() async {
-        for server in servers where server.state.isLive { server.stop() }
+        for server in servers {
+            server.stopTrialCopy()
+            if server.state.isLive { server.stop() }
+        }
         for _ in 0..<(180 * 4) where anyLive { try? await Task.sleep(for: .milliseconds(250)) }
     }
 
@@ -190,7 +199,7 @@ struct ServerCommands: Commands {
             Button(model.showIssues ? "Hide Issues" : "Show Issues") { model.showIssues.toggle() }
                 .keyboardShortcut("i", modifiers: [.command, .option])
             Divider()
-            ForEach(Array(PageID.allCases.enumerated()), id: \.element) { index, page in
+            ForEach(Array(PageID.allCases.prefix(9).enumerated()), id: \.element) { index, page in
                 Button(page.title) { model.page = page }
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))))
             }

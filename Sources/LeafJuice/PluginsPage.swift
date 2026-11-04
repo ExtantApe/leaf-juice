@@ -3,6 +3,7 @@ import LeafJuiceCore
 import SwiftUI
 
 struct PluginsPage: View {
+    @Bindable var model: AppModel
     let server: ServerController
     @State private var selection: InstalledPlugin.ID?
     @State private var adding = false
@@ -21,7 +22,7 @@ struct PluginsPage: View {
             } else {
                 table
                 if let plugin = selected {
-                    PluginDetail(server: server, plugin: plugin, editing: $editing)
+                    PluginDetail(model: model, server: server, plugin: plugin, editing: $editing)
                         .id(plugin.id)
                 }
             }
@@ -101,6 +102,7 @@ struct PluginsPage: View {
 }
 
 struct PluginDetail: View {
+    @Bindable var model: AppModel
     let server: ServerController
     let plugin: InstalledPlugin
     @Binding var editing: InstalledPlugin?
@@ -131,6 +133,7 @@ struct PluginDetail: View {
                     Hint("Installs by itself only when the source gives evidence it fits this Minecraft version. The jar is always checked before it replaces anything.")
                 }
                 sourceRow(record)
+                settingsRow
                 if let suggestions { suggestionList(suggestions) }
                 FlowRow {
                     Button(plugin.enabled ? "Disable" : "Enable") {
@@ -180,9 +183,34 @@ struct PluginDetail: View {
             HStack {
                 if let page = c.pageURL.flatMap(URL.init(string:)) { Link("View", destination: page).buttonStyle(.juice) }
                 if c.downloadURL != nil {
+                    Button("Test First") {
+                        Task { await server.startTrial(.pluginUpdate(name: plugin.name)) }
+                    }
+                    .buttonStyle(.juice).disabled(server.trialPhase != nil)
+                    .help("Tries this update on a throwaway copy of the server first")
                     Button("Install") { server.attempt { try await server.installUpdate(for: plugin) } }
                         .buttonStyle(.juicePrimary).disabled(server.activity != nil)
                 }
+            }
+        }
+    }
+
+    /// Built from what's in the plugin's folder, so it's right for any plugin.
+    @ViewBuilder private var settingsRow: some View {
+        let files = server.configs(for: plugin)
+        HStack(spacing: 8) {
+            Text("Settings").foregroundStyle(Juice.muted)
+            if files.isEmpty {
+                Text("Its settings files appear once it has run on this server.").foregroundStyle(Juice.ink)
+                Spacer()
+            } else {
+                Text(files.count == 1 ? files[0].listTitle : "\(files.count) files").foregroundStyle(Juice.ink)
+                Spacer()
+                Button(files.count == 1 ? "Open Settings" : "Open Settings") {
+                    model.configPath = files[0].path
+                    model.page = .configs
+                }
+                .buttonStyle(.juice)
             }
         }
     }
