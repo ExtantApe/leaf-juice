@@ -186,7 +186,7 @@ Paper, Modrinth, Hangar, Spiget, GitHub and Jenkins services (downloads a few hu
 To boot real Paper with real Multiverse in a temporary folder, add `--real-paper --i-accept-the-minecraft-eula`.
 That second flag is your own acceptance of the [Minecraft EULA](https://aka.ms/MinecraftEULA).
 
-`--sandbox` keeps a longer-lived test server with bot players in `.sandbox/`, `--lab` runs the Lab and a real rehearsal there,
+`--sandbox` keeps a longer-lived test server with bot players in `.lab-sandbox/`, `--lab` runs the Lab and a real rehearsal there,
 and `--experiments` tries things on real servers and writes down what happened. All three need that same flag, and what
 they've found so far is in [docs/FINDINGS.md](docs/FINDINGS.md).
 

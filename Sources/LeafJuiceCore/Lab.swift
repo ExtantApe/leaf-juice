@@ -422,6 +422,33 @@ public final class LabController {
         for _ in 0..<(20 * 4) where c.players.contains(bot.name) { try? await Task.sleep(for: .milliseconds(250)) }
     }
 
+    /// Observed: a fixed wait after a teleport is sometimes too short with many plugins, which looks like lost items.
+    /// So this waits for the player to arrive.
+    private func travel(_ c: ServerController, to world: String) async -> Bool {
+        let target = world == "world" ? "overworld" : world
+        c.send("mv tp Alice \(world)")
+        for _ in 0..<20 {
+            try? await Task.sleep(for: .seconds(1))
+            if let line = await ask(c, "data get entity Alice Dimension", expecting: "entity data", seconds: 2), line.contains(target) {
+                // The plugin swaps inventories as part of arriving.
+                try? await Task.sleep(for: .seconds(1))
+                return true
+            }
+        }
+        return false
+    }
+
+    /// The inventory line, once it has the item or after a few tries.
+    private func inventory(_ c: ServerController, holding item: String) async -> String? {
+        var last: String?
+        for _ in 0..<5 {
+            last = await ask(c, "data get entity Alice Inventory", expecting: "entity data", seconds: 3) ?? last
+            if last?.contains(item) == true { return last }
+            try? await Task.sleep(for: .seconds(1))
+        }
+        return last
+    }
+
     private func hasPlugin(_ c: ServerController, _ key: String) -> Bool {
         c.plugins.contains { $0.enabled && $0.key == key }
     }
@@ -446,11 +473,9 @@ public final class LabController {
                 _ = await ask(c, "give \(who) minecraft:\(item) \(count)", expecting: "Gave ")
             }
             if hasPlugin(c, "multiverse-core") {
-                _ = await ask(c, "mv tp Alice mining", expecting: "Alice", seconds: 5)
-                try? await Task.sleep(for: .seconds(3))
+                _ = await travel(c, to: "mining")
                 _ = await ask(c, "give Alice minecraft:iron_ingot 7", expecting: "Gave ")
-                _ = await ask(c, "mv tp Alice world", expecting: "Alice", seconds: 5)
-                try? await Task.sleep(for: .seconds(3))
+                _ = await travel(c, to: "world")
             }
             // A fixed place, not beside a player: anything that moves a player mustn't look like lost blocks.
             _ = await ask(c, "forceload add 0 0", expecting: "orce", seconds: 3)
@@ -528,11 +553,9 @@ public final class LabController {
                 _ = await ask(c, "clear Alice", expecting: "Alice", seconds: 3)
                 _ = await ask(c, "give Alice minecraft:diamond 5", expecting: "Gave ")
                 if hasPlugin(c, "multiverse-inventories") {
-                    _ = await ask(c, "mv tp Alice mining", expecting: "Alice", seconds: 5)
-                    try? await Task.sleep(for: .seconds(3))
+                    _ = await travel(c, to: "mining")
                     _ = await ask(c, "give Alice minecraft:iron_ingot 7", expecting: "Gave ")
-                    _ = await ask(c, "mv tp Alice world", expecting: "Alice", seconds: 5)
-                    try? await Task.sleep(for: .seconds(3))
+                    _ = await travel(c, to: "world")
                 }
                 await leave(first, c)
                 await shutDown(c)
@@ -540,17 +563,15 @@ public final class LabController {
             }
             if let bot = await join("Alice", c, table) {
                 out.append(LabCheck("A player can join", .passed))
-                let held = await ask(c, "data get entity Alice Inventory", expecting: "entity data")
+                let held = await inventory(c, holding: "minecraft:diamond")
                 let hasItems = held?.contains("minecraft:diamond") == true
                 out.append(LabCheck("Inventory came through", hasItems ? .passed : .failed, hasItems ? "" : String((held ?? "No answer").prefix(160))))
                 if hasPlugin(c, "multiverse-inventories") {
-                    _ = await ask(c, "mv tp Alice mining", expecting: "Alice", seconds: 5)
-                    try? await Task.sleep(for: .seconds(3))
-                    let there = await ask(c, "data get entity Alice Inventory", expecting: "entity data")
+                    let arrived = await travel(c, to: "mining")
+                    let there = arrived ? await inventory(c, holding: "minecraft:iron_ingot") : nil
                     let ok = there?.contains("minecraft:iron_ingot") == true
-                    out.append(LabCheck("Per-world inventory came through", ok ? .passed : .failed, ok ? "" : String((there ?? "No answer").prefix(160))))
-                    _ = await ask(c, "mv tp Alice world", expecting: "Alice", seconds: 5)
-                    try? await Task.sleep(for: .seconds(3))
+                    out.append(LabCheck("Per-world inventory came through", ok ? .passed : .failed, ok ? "" : arrived ? String((there ?? "No answer").prefix(160)) : "The player never arrived in the other world."))
+                    _ = await travel(c, to: "world")
                 } else {
                     out.append(LabCheck("Per-world inventory came through", .skipped, "Multiverse-Inventories isn't installed."))
                 }

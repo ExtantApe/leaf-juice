@@ -3,11 +3,11 @@
 //                                      stand-in jar (compiled here if a JDK is available). No Minecraft.
 //   ... --live                         Also calls the real Paper, Modrinth, Hangar, Spiget, GitHub APIs.
 //   ... --sandbox --i-accept-the-minecraft-eula
-//                                      A lasting test server in .sandbox/, seeded with bot players and several worlds.
+//                                      A lasting test server in .lab-sandbox/, seeded with bot players and several worlds.
 //                                      Each run tests a throwaway clone. Add --sandbox-wipe to start it afresh.
 //   ... --lab --i-accept-the-minecraft-eula
 //   ... --experiments <versions,failures,multiverse,players,renames,restore|all> --i-accept-the-minecraft-eula
-//                                      Tries things and writes down what really happened, in .sandbox/findings/.
+//                                      Tries things and writes down what really happened, in .lab-sandbox/findings/.
 //   ... --real-paper --i-accept-the-minecraft-eula
 //                                      Boots real Paper. The second flag is your own acceptance of
 //                                      https://aka.ms/MinecraftEULA, for a throwaway server in a temp folder.
@@ -312,7 +312,7 @@ do {
             equal(a.sorted.first?.ruleID, rule.id, "sample routes to \(rule.id): \(sample)")
         }
     }
-    let pages = Set(["launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
+    let pages = Set(["resourcePacks", "launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
     for rule in rules { if let a = rule.action { check(pages.contains(a.page), "\(rule.id) action page") } }
     check(rules.allSatisfy { !$0.title.isEmpty && !$0.explanation.isEmpty }, "rules have text")
 }
@@ -1785,7 +1785,7 @@ if let flag = CommandLine.arguments.firstIndex(of: "--lab-model") {
 }
 if CommandLine.arguments.contains("--lab-demo") {
     // Fills the status board with example results, for looking at the screen. Never touches a real server folder.
-    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox/snap", isDirectory: true)
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".lab-sandbox/snap", isDirectory: true)
     setenv("LEAFJUICE_HOME", base.appendingPathComponent("home").path, 1)
     setenv("LEAFJUICE_SERVERS", base.appendingPathComponent("servers").path, 1)
     guard let model = ServerController.open(root: base.appendingPathComponent("servers/Demo", isDirectory: true)) else { print("no Demo"); exit(1) }
@@ -2566,7 +2566,7 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
 // MARK: The sandbox
 
 @MainActor func runSandbox() async {
-    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox", isDirectory: true)
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".lab-sandbox", isDirectory: true)
     let servers = base.appendingPathComponent("servers", isDirectory: true)
     setenv("LEAFJUICE_HOME", base.appendingPathComponent("home").path, 1)
     setenv("LEAFJUICE_SERVERS", servers.path, 1)
@@ -2786,12 +2786,12 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
 
 /// The Lab on real software, inside the sandbox folder: protection, seed, saves, and a real rehearsal.
 @MainActor func runLabScenario() async {
-    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox", isDirectory: true)
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".lab-sandbox", isDirectory: true)
     setenv("LEAFJUICE_HOME", base.appendingPathComponent("home").path, 1)
     setenv("LEAFJUICE_SERVERS", base.appendingPathComponent("servers").path, 1)
     let root = LabFiles.root
-    check(root.path.contains(".sandbox"), "the test Lab is in the sandbox: \(root.path)")
-    guard root.path.contains(".sandbox") else { return }
+    check(root.path.contains(".lab-sandbox"), "the test Lab is in the sandbox: \(root.path)")
+    guard root.path.contains(".lab-sandbox") else { return }
     try? FileManager.default.removeItem(at: root)
     try? FileManager.default.removeItem(at: LabFiles.saves)
     try? FileManager.default.removeItem(at: LabFiles.state)
@@ -2911,10 +2911,10 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
 /// Tests a real server's plugins in the sandbox's Lab. The real folder is only read: its jars and settings
 /// files are copied to a stand-in folder first, and that's what gets adopted.
 @MainActor func runLabModel(_ source: URL, mc: String, settings: Bool) async {
-    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox", isDirectory: true)
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".lab-sandbox", isDirectory: true)
     setenv("LEAFJUICE_HOME", base.appendingPathComponent("home").path, 1)
     setenv("LEAFJUICE_SERVERS", base.appendingPathComponent("servers").path, 1)
-    guard LabFiles.root.path.contains(".sandbox") else { failures.append("not in the sandbox"); return }
+    guard LabFiles.root.path.contains(".lab-sandbox") else { failures.append("not in the sandbox"); return }
     let stand = base.appendingPathComponent("servers/lab-model", isDirectory: true)
     try? FileManager.default.removeItem(at: stand)
     do {
@@ -3214,7 +3214,7 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
 
     // And all of it on Minecraft 26.x.
     section("SANDBOX: the same on Minecraft 26.3")
-    let table26 = try await ProtocolTable.load(mc: "26.3", cache: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox/protocol"), java: c.runtimes.first { $0.major >= 25 }?.path ?? "/usr/bin/java")
+    let table26 = try await ProtocolTable.load(mc: "26.3", cache: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".lab-sandbox/protocol"), java: c.runtimes.first { $0.major >= 25 }?.path ?? "/usr/bin/java")
     print("    protocol \(table26.version)")
     if !c.runtimes.contains(where: { $0.major >= 25 }) { try await c.installJava(major: 25) }
     let newest = try await SoftwareCatalog.latestBuild(.paper, mc: "26.3")!

@@ -6,7 +6,7 @@ Everything here was observed by running real server software, not read from docu
 .build/debug/leafjuice-check --experiments versions,failures,multiverse,players,renames,restore --i-accept-the-minecraft-eula
 ```
 
-The flag is your own acceptance of the Minecraft EULA. Raw results go to `.sandbox/findings/`, which isn't committed.
+The flag is your own acceptance of the Minecraft EULA. Raw results go to `.lab-sandbox/findings/`, which isn't committed.
 
 Tested in November 2026: Paper 1.21.11 and 26.3, Purpur, Folia, vanilla, Multiverse-Core 5.8.2 and 4.3.16, Multiverse-Inventories 5.3.6, LuckPerms 5.5.71. Behavior on other versions is an assumption until it's been run.
 
@@ -81,6 +81,16 @@ A real 35-plugin server found what a 3-plugin test server couldn't:
 - **Paper's stack frames name the jar:** `at ActionHealth-3.5.9-all.jar//com.example...`. That's how an error reaches the right plugin.
 - **Multiverse 5 keeps `environment` inside `read-only:`.**
 - **Saved issues need a second look.** Ones stored before a rule existed stayed uncategorized, so they're read again on opening.
+
+## Resource packs
+
+Tested with three real Modrinth packs and a real Paper 1.21.11 server, with bots as the client. No real game client has loaded a combined pack yet.
+
+- Real packs combined and read back as valid. They didn't overlap, so merging overlapping files has only been proven on made-up packs.
+- Real packs aren't always clean: one shipped an empty `assets/sodium/lang/test.json`.
+- A required pack: accepting gets in, declining is kicked with Minecraft's own message, and saying nothing never finishes joining.
+- An optional pack: declining gets in, but saying nothing still never finishes joining.
+- A malformed SHA-1 doesn't stop the server. It only logs `Invalid sha1 for resource-pack-sha1`.
 
 ## Not known yet
 

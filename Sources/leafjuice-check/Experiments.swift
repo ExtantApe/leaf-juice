@@ -4,7 +4,7 @@ import Foundation
 
 /// Experiments, not tests: each tries something real and writes down what actually happened.
 /// `leafjuice-check --experiments versions,failures --i-accept-the-minecraft-eula`
-/// Results go to `.sandbox/findings/<group>.md`.
+/// Results go to `.lab-sandbox/findings/<group>.md`.
 @MainActor final class Lab {
     let base: URL
     let servers: URL
@@ -120,7 +120,7 @@ import Foundation
 }
 
 @MainActor func runExperiments(_ groups: [String]) async {
-    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox", isDirectory: true)
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".lab-sandbox", isDirectory: true)
     setenv("LEAFJUICE_HOME", base.appendingPathComponent("home").path, 1)
     setenv("LEAFJUICE_SERVERS", base.appendingPathComponent("servers").path, 1)
     let all: [(String, @MainActor (Lab) async throws -> Void)] = [

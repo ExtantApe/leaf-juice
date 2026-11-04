@@ -180,6 +180,21 @@ let builtInRulesJSON = #"""
     "samples": ["[nl.pim16aap2.animatedarchitecture.core.util.updater.UpdateChecker] Received unexpected update state: 'ERROR' for URL: 'https://api.github.com/repos/x/y/releases/latest'", "[nl.pim16aap2.animatedarchitecture.core.util.updater.UpdateChecker] Failed to read URL 'https://api.github.com/repos/x/y/releases/latest'"]
   },
   {
+    "id": "resource-pack-bad-sha1", "title": "The resource pack's SHA-1 isn't valid", "severity": "error", "category": "Setup",
+    "contains": ["invalid sha1 for resource-pack-sha1"],
+    "explanation": "It should be 40 characters. The server still starts, but players' games can't tell whether they have the right pack.",
+    "steps": ["Set a new one with Use on This Server on the Resource Packs page, or correct resource-pack-sha1 in server.properties."],
+    "action": {"page": "resourcePacks", "label": "Open Resource Packs"},
+    "samples": ["Invalid sha1 for resource-pack-sha1"]
+  },
+  {
+    "id": "auth-keys-unreachable", "title": "Couldn't reach Mojang's login service", "severity": "warning", "category": "Setup",
+    "contains": ["failed to request yggdrasil public key"],
+    "explanation": "The server gets signing keys from Mojang when it starts, and that didn't work this time. It's usually the internet connection or a brief outage. If it lasts, players may not be able to log in.",
+    "steps": ["Check this Mac's internet connection.", "Restart the server when you can, which asks again."],
+    "samples": ["Failed to request yggdrasil public key"]
+  },
+  {
     "id": "plugin-unknown-dependency", "title": "{subject} is missing a plugin it needs", "severity": "error", "category": "Plugins",
     "regex": "could not load '?plugins[/\\\\](?<subject>[^']+?)'?.*(unknown ?dependency|unknown/missing dependency)|unknowndependencyexception",
     "explanation": "This plugin needs another plugin that isn't installed, so it wasn't loaded.",
