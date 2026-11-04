@@ -82,7 +82,7 @@ struct ResourcePacksPage: View {
                 .labelsHidden().toggleStyle(.checkbox)
             VStack(alignment: .leading, spacing: 2) {
                 Text(pack.fileName).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.middle)
-                Hint([pack.description, pack.format.map { "format \($0)" }, Format.bytes(pack.size)].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: ", ")).lineLimit(1)
+                Hint([pack.format.map { "Format \($0)" }, Format.bytes(pack.size), pack.description.split(whereSeparator: \.isNewline).first.map(String.init)].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: ", ")).lineLimit(1)
             }
             Spacer()
             Button { move(index, by: -1) } label: { Image(systemName: "arrow.up") }.buttonStyle(.juice).disabled(index == 0).accessibilityLabel("Higher priority")
@@ -170,7 +170,13 @@ struct ResourcePacksPage: View {
     // MARK: Actions
 
     private func reload() async {
+        // The first read of a big pack takes a moment, and an empty list would look like nothing's there.
+        if packs.isEmpty { working = "Reading your packs…" }
         packs = await ResourcePacks.list()
+        working = nil
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["LEAFJUICE_SNAPSHOT"] != nil { browsing = packs.first }
+        #endif
         // Newly added packs join at the bottom; removed ones drop out.
         for pack in packs where !recipe.entries.contains(where: { $0.fileName == pack.fileName }) {
             recipe.entries.append(PackRecipe.Entry(fileName: pack.fileName))

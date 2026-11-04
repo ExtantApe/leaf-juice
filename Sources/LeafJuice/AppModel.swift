@@ -202,7 +202,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     window.isReleasedWhenClosed = false
                     window.contentView = host
                     window.orderBack(nil)
-                    try? await Task.sleep(for: .seconds(page == .overview ? 5 : 2.5))
+                    try? await Task.sleep(for: .seconds(page == .overview ? 5 : page == .resourcePacks ? 12 : 2.5))
                     host.layoutSubtreeIfNeeded()
                     if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
                         host.cacheDisplay(in: host.bounds, to: rep)
