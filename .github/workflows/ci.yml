@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Tests, including the server lifecycle against a stand-in jar
+        run: swift run leafjuice-check
+      - name: The app builds and bundles
+        run: scripts/build-app.sh

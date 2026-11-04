@@ -1,0 +1,195 @@
+import Foundation
+
+public struct BackupRecord: Codable, Identifiable, Equatable, Sendable {
+    public var id: String { fileName }
+    public var fileName: String
+    public var date: Date
+    public var size: Int64
+    public var scope: BackupScope
+    public var trigger: String
+    public var software: String
+    public var mcVersion: String
+    public var serverName: String
+    public var pinned = false
+    public var warning: String?
+}
+
+public enum Backups {
+    public static func destination(_ profile: ServerProfile) -> URL {
+        if let custom = profile.backup.destination { return URL(fileURLWithPath: custom, isDirectory: true) }
+        return AppPaths.backups.appendingPathComponent(profile.id.uuidString, isDirectory: true)
+    }
+
+    /// Worlds are any top-level folder containing `level.dat`, so extra world plugins are covered too.
+    public static func worldFolders(_ root: URL) -> [String] {
+        FileOps.children(root).filter { FileOps.exists($0.appendingPathComponent("level.dat")) }.map(\.lastPathComponent).sorted()
+    }
+
+    /// Regenerated on start or too large to be worth keeping.
+    static let skippedTopLevel: Set<String> = ["logs", "cache", "libraries", "versions", ".leafjuice", "crash-reports", ".paper-remapped", ".DS_Store"]
+
+    public static func items(_ root: URL, scope: BackupScope) -> [String] {
+        let worlds = worldFolders(root)
+        switch scope {
+        case .worlds:
+            return worlds
+        case .standard:
+            let settings = FileOps.children(root).map(\.lastPathComponent).filter {
+                let ext = ($0 as NSString).pathExtension.lowercased()
+                return ["properties", "yml", "yaml", "json", "txt", "toml"].contains(ext)
+            }
+            return (worlds + settings + ["config", "plugins"].filter { FileOps.exists(root.appendingPathComponent($0)) }).sorted()
+        case .everything:
+            return FileOps.children(root).map(\.lastPathComponent).filter { !skippedTopLevel.contains($0) }.sorted()
+        }
+    }
+
+    static func stamp(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return f.string(from: date)
+    }
+
+    /// Holds shelved upgrades. Being a subfolder keeps them out of listings and retention entirely.
+    public static func shelf(_ profile: ServerProfile) -> URL {
+        destination(profile).appendingPathComponent("Shelf", isDirectory: true)
+    }
+
+    /// Proves an archive can actually bring these worlds back: it exists, every byte decompresses
+    /// (gzip checks its own CRC), and each world's `level.dat` is listed inside.
+    public static func verify(_ record: BackupRecord, in folder: URL, expectingWorlds worlds: [String]) async throws {
+        let archive = folder.appendingPathComponent(record.fileName)
+        guard FileOps.exists(archive), FileOps.size(archive) > 0 else {
+            throw LeafError("The backup \(record.fileName) is missing from \(folder.path).")
+        }
+        let listing = try await Tool.run("/usr/bin/tar", ["-tzf", archive.path])
+        guard listing.ok else { throw LeafError("The backup \(record.fileName) is damaged and can't be read.") }
+        let entries = Set(listing.out.split(whereSeparator: \.isNewline).map(String.init))
+        for world in worlds where !entries.contains("\(world)/level.dat") {
+            throw LeafError("The backup \(record.fileName) doesn't contain the world \(world).")
+        }
+    }
+
+    public static func create(_ profile: ServerProfile, root: URL, trigger: String, scope: BackupScope? = nil, into folder: URL? = nil) async throws -> BackupRecord {
+        let scope = scope ?? profile.backup.scope
+        let items = items(root, scope: scope)
+        guard !items.isEmpty else {
+            throw LeafError(scope == .worlds ? "There's no world to back up yet. Start the server once first." : "There's nothing to back up yet.")
+        }
+        let dest = folder ?? destination(profile)
+        do { try FileOps.ensureDir(dest) } catch {
+            throw LeafError("Can't write to the backup folder \(dest.path). If it's on an external drive, check it's connected.")
+        }
+        // A compressed backup can't exceed the source by much; require the full size to be safe.
+        let needed = items.reduce(Int64(0)) { $0 + FileOps.directorySize(root.appendingPathComponent($1)) }
+        if let free = FileOps.freeSpace(at: dest), free < needed {
+            throw LeafError("Not enough free space for a backup. It may need up to \(Format.bytes(needed)), and \(Format.bytes(free)) is free.")
+        }
+
+        let date = Date()
+        let base = "\(stamp(date))_\(trigger)"
+        let archive = dest.appendingPathComponent(base + ".tar.gz")
+        let partial = dest.appendingPathComponent(base + ".partial")
+        defer { try? FileManager.default.removeItem(at: partial) }
+
+        var args = ["-czf", partial.path, "--exclude", "session.lock", "--exclude", ".DS_Store"]
+        args += ["-C", root.path] + items
+        let result = try await Tool.run("/usr/bin/tar", args)
+        var warning: String?
+        if !result.ok {
+            // Files changing mid-read make tar complain. If the archive reads back whole, it's usable.
+            let verify = try await Tool.run("/usr/bin/tar", ["-tzf", partial.path])
+            guard verify.ok else { throw LeafError("The backup failed: \(result.err.prefix(300))") }
+            warning = "Some files changed while being copied."
+        }
+        try FileOps.move(partial, to: archive)
+        let record = BackupRecord(
+            fileName: archive.lastPathComponent, date: date, size: FileOps.size(archive), scope: scope, trigger: trigger,
+            software: profile.software.label, mcVersion: profile.software.mcVersion, serverName: profile.name, warning: warning)
+        try JSONStore.save(record, to: sidecar(for: archive))
+        return record
+    }
+
+    static func sidecar(for archive: URL) -> URL {
+        archive.deletingPathExtension().deletingPathExtension().appendingPathExtension("json")
+    }
+
+    public static func list(_ profile: ServerProfile, in folder: URL? = nil) -> [BackupRecord] {
+        let dest = folder ?? destination(profile)
+        let decoder = JSONStore.decoder
+        return FileOps.children(dest).filter { $0.lastPathComponent.hasSuffix(".tar.gz") }.compactMap { archive in
+            guard let data = try? Data(contentsOf: sidecar(for: archive)) else { return nil }
+            return try? decoder.decode(BackupRecord.self, from: data)
+        }.sorted { $0.date > $1.date }
+    }
+
+    public static func setPinned(_ record: BackupRecord, pinned: Bool, profile: ServerProfile, in folder: URL? = nil) throws {
+        var updated = record
+        updated.pinned = pinned
+        try JSONStore.save(updated, to: sidecar(for: (folder ?? destination(profile)).appendingPathComponent(record.fileName)))
+    }
+
+    public static func delete(_ record: BackupRecord, profile: ServerProfile, in folder: URL? = nil) throws {
+        let archive = (folder ?? destination(profile)).appendingPathComponent(record.fileName)
+        try FileManager.default.removeItem(at: archive)
+        try? FileManager.default.removeItem(at: sidecar(for: archive))
+    }
+
+    /// Which backups the retention policy would remove. Pinned ones never are.
+    public static func prunable(_ records: [BackupRecord], keepLast: Int, keepDays: Int, now: Date = Date()) -> [BackupRecord] {
+        let sorted = records.sorted { $0.date > $1.date }
+        let cutoff = now.addingTimeInterval(-Double(keepDays) * 86_400)
+        return sorted.enumerated().compactMap { index, record in
+            if record.pinned || index < keepLast { return nil }
+            if keepDays > 0, record.date >= cutoff { return nil }
+            return record
+        }
+    }
+
+    @discardableResult
+    public static func prune(_ profile: ServerProfile) -> [BackupRecord] {
+        let doomed = prunable(list(profile), keepLast: max(1, profile.backup.keepLast), keepDays: profile.backup.keepDays)
+        for record in doomed { try? delete(record, profile: profile) }
+        return doomed
+    }
+
+    /// Replaces the items in a backup with their saved copies. The server must be stopped.
+    public static func restore(_ record: BackupRecord, profile: ServerProfile, root: URL, from folder: URL? = nil) async throws {
+        let archive = (folder ?? destination(profile)).appendingPathComponent(record.fileName)
+        let meta = ServerPaths(root: root).meta
+        let work = meta.appendingPathComponent("restore-\(UUID().uuidString)", isDirectory: true)
+        let extracted = work.appendingPathComponent("new", isDirectory: true)
+        let replaced = work.appendingPathComponent("old", isDirectory: true)
+        try FileOps.ensureDir(extracted)
+        try FileOps.ensureDir(replaced)
+        defer { try? FileManager.default.removeItem(at: work) }
+
+        let result = try await Tool.run("/usr/bin/tar", ["-xzf", archive.path, "-C", extracted.path])
+        guard result.ok else { throw LeafError("Couldn't read that backup, so nothing was changed. \(result.err.prefix(200))") }
+
+        var moved: [(new: URL, target: URL, saved: URL?)] = []
+        do {
+            for item in FileOps.children(extracted) {
+                let target = root.appendingPathComponent(item.lastPathComponent)
+                var saved: URL?
+                if FileOps.exists(target) {
+                    saved = replaced.appendingPathComponent(item.lastPathComponent)
+                    try FileOps.move(target, to: saved!)
+                }
+                moved.append((item, target, saved))
+                try FileOps.move(item, to: target)
+            }
+        } catch {
+            // Put back whatever already moved, so a failed restore changes nothing.
+            for step in moved.reversed() {
+                if let saved = step.saved {
+                    try? FileOps.move(saved, to: step.target)
+                } else {
+                    try? FileManager.default.removeItem(at: step.target)
+                }
+            }
+            throw LeafError("The restore failed and was undone. \(error.localizedDescription)")
+        }
+    }
+}
