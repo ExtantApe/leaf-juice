@@ -120,6 +120,26 @@ public enum PlayerFiles {
             level: root["XpLevel"]?.intValue, dimension: root["Dimension"]?.stringValue)
     }
 
+    /// A Multiverse-Inventories file holds one section per game mode:
+    /// `{"SURVIVAL":{"inventoryContents":{"0":{"id":"minecraft:iron_ingot","count":7}},"enderChestContents":{}}}`.
+    public static func summary(ofInventoryFile file: URL) -> InventorySummary? {
+        guard let data = try? Data(contentsOf: file),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        func items(_ section: Any?) -> [InventoryItem] {
+            guard let slots = section as? [String: Any] else { return [] }
+            return slots.compactMap { key, value in
+                guard let item = value as? [String: Any], let id = item["id"] as? String else { return nil }
+                return InventoryItem(slot: Int(key) ?? -1, item: id, count: item["count"] as? Int ?? 1)
+            }.sorted { $0.slot < $1.slot }
+        }
+        var out = InventorySummary()
+        for mode in root.values.compactMap({ $0 as? [String: Any] }) {
+            out.items += items(mode["inventoryContents"]) + items(mode["armorContents"])
+            out.enderItems += items(mode["enderChestContents"])
+        }
+        return out
+    }
+
     /// The UUID an offline-mode server gives this name. A mode switch leaves two profiles behind.
     public static func offlineUUID(name: String) -> String {
         var bytes = Array(Insecure.MD5.hash(data: Data("OfflinePlayer:\(name)".utf8)))
@@ -193,6 +213,24 @@ public enum PlayerSnapshots {
             guard let data = try? Data(contentsOf: dir.appendingPathComponent("snapshot.json")) else { return nil }
             return try? JSONStore.decoder.decode(PlayerSnapshot.self, from: data)
         }.sorted { $0.date > $1.date }
+    }
+
+    /// Observed: an inventory-only restore puts the items wherever the player is now, even if they came from another world.
+    /// Returns both worlds when they differ.
+    public static func crossWorld(_ snapshot: PlayerSnapshot, paths: ServerPaths, profile: ServerProfile) -> (taken: String, now: String)? {
+        guard let saved = try? NBT.read(location(snapshot, profile: profile).appendingPathComponent("player.dat")),
+              let live = try? NBT.read(PlayerPaths(paths).data(snapshot.uuid)),
+              let taken = saved.root["Dimension"]?.stringValue, let now = live.root["Dimension"]?.stringValue, taken != now else { return nil }
+        func short(_ name: String) -> String { name.replacingOccurrences(of: "minecraft:", with: "") }
+        return (short(taken), short(now))
+    }
+
+    /// Observed: Minecraft upgrades old player data when it loads, but nothing can read data from a newer version.
+    public static func isFromNewerVersion(_ snapshot: PlayerSnapshot, paths: ServerPaths, profile: ServerProfile) -> Bool {
+        guard let saved = try? NBT.read(location(snapshot, profile: profile).appendingPathComponent("player.dat")),
+              let live = try? NBT.read(PlayerPaths(paths).data(snapshot.uuid)),
+              let old = saved.root["DataVersion"]?.intValue, let current = live.root["DataVersion"]?.intValue else { return false }
+        return old > current
     }
 
     public static func location(_ snapshot: PlayerSnapshot, profile: ServerProfile) -> URL {

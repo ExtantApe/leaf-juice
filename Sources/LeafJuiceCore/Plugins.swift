@@ -92,7 +92,10 @@ public enum PluginScanner {
             return n.hasSuffix(".jar") || n.hasSuffix(".jar.disabled")
         }
         let plugins = await withTaskGroup(of: InstalledPlugin.self, returning: [InstalledPlugin].self) { group in
-            for file in files {
+            var out: [InstalledPlugin] = []
+            // A few at a time: big servers have dozens of plugins, and each one starts tools and reads a whole jar.
+            for (index, file) in files.enumerated() {
+                if index >= 8, let done = await group.next() { out.append(done) }
                 group.addTask {
                     let enabled = file.pathExtension.lowercased() == "jar"
                     return InstalledPlugin(
@@ -101,7 +104,6 @@ public enum PluginScanner {
                         digests: try? Hashing.digests(of: file), size: FileOps.size(file))
                 }
             }
-            var out: [InstalledPlugin] = []
             for await p in group { out.append(p) }
             return out
         }

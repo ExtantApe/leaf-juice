@@ -46,6 +46,7 @@ extension ServerController {
         refreshConfigs()
         await refreshWorlds()
         appendWrapper("\(plan.title): done.", level: .info)
+        recordEvent(.rename, plan.title)
         if wasRunning, restart { await start() }
     }
 
@@ -75,6 +76,10 @@ extension ServerController {
     /// Tries a change on a throwaway copy of the server. The real server isn't touched.
     public func startTrial(_ change: TrialChange, keepOpen: Bool = false) async {
         guard trialPhase == nil || trialPhase == .finished else { return }
+        if state == .running, profile.software.flavor == .folia {
+            notice = "Folia can't pause saving, so stop the server before making a test copy."
+            return
+        }
         trialReport = nil
         trialChange = change
         trialPhase = .copying
@@ -97,48 +102,8 @@ extension ServerController {
             try await Trial.clone(paths.root, to: copy)
             if wasRunning { process?.send("save-on") }
 
-            // Its own identity, port and data: it must not be mistaken for the real thing.
-            let copyPaths = ServerPaths(root: copy)
-            try? FileManager.default.removeItem(at: copyPaths.meta)
-            try? FileManager.default.removeItem(at: copy.appendingPathComponent("logs"))
-            removeLocks(in: copy)
-            var doc = PropertiesDocument((try? String(contentsOf: copyPaths.properties, encoding: .utf8)) ?? "")
-            let port = Trial.freePort(after: serverPort)
-            doc.set("server-port", String(port))
-            doc.set("enable-rcon", "false")
-            doc.set("enable-query", "false")
-            doc.set("motd", "Test copy of \(profile.name)")
-            try FileOps.writeAtomic(doc.text, to: copyPaths.properties)
-            for plugin in plugins where plugin.enabled && Trial.disabledInCopies.contains(plugin.key) {
-                let jar = copyPaths.plugins.appendingPathComponent(plugin.fileName)
-                try? FileOps.move(jar, to: jar.appendingPathExtension("disabled"))
-                report.notes.append("\(plugin.name) is off in the copy, so it can't reach anything outside.")
-            }
-            for name in Trial.databasePlugins(paths) {
-                report.notes.append("\(name) uses an outside database, and the copy shares it. Test it with care.")
-            }
-
-            var p = profile
-            p.id = UUID()
-            p.name = "Test copy of \(profile.name)"
-            p.backup.enabled = false
-            p.backup.destination = copyPaths.meta.appendingPathComponent("backups").path
-            p.restart.enabled = false
-            p.launch.restartOnCrash = false
-            p.launch.startWithApp = false
-            p.launch.keepAwake = false
-            p.launch.minMemoryMB = min(p.launch.minMemoryMB, 1024)
-            p.launch.maxMemoryMB = min(p.launch.maxMemoryMB, 4096)
-            p.lastPluginCheck = Date()
-            p.software.lastCheck = Date()
-            p.playerSnapshots.enabled = false
-            try FileOps.ensureDir(copyPaths.meta)
-            let child = ServerController(root: copy, profile: p)
-            child.isTrialCopy = true
-            child.requiresEULA = requiresEULA
-            child.runtimes = runtimes
+            let child = try await prepareCopy(copy, report: &report)
             trialController = child
-            await child.refreshPlugins()
 
             trialPhase = .applying
             switch change {
@@ -197,6 +162,108 @@ extension ServerController {
         }
     }
 
+    /// Gives a copy its own identity, port and data, so it can't be mistaken for the real thing.
+    private func prepareCopy(_ copy: URL, report: inout TrialReport) async throws -> ServerController {
+        let copyPaths = ServerPaths(root: copy)
+        try? FileManager.default.removeItem(at: copyPaths.meta)
+        try? FileManager.default.removeItem(at: copy.appendingPathComponent("logs"))
+        removeLocks(in: copy)
+        var doc = PropertiesDocument((try? String(contentsOf: copyPaths.properties, encoding: .utf8)) ?? "")
+        let port = Trial.freePort(after: serverPort)
+        doc.set("server-port", String(port))
+        doc.set("enable-rcon", "false")
+        doc.set("enable-query", "false")
+        doc.set("motd", "Test copy of \(profile.name)")
+        try FileOps.writeAtomic(doc.text, to: copyPaths.properties)
+        for plugin in await PluginScanner.scan(copyPaths) where plugin.enabled && Trial.disabledInCopies.contains(plugin.key) {
+            let jar = copyPaths.plugins.appendingPathComponent(plugin.fileName)
+            try? FileOps.move(jar, to: jar.appendingPathExtension("disabled"))
+            report.notes.append("\(plugin.name) is off in the copy, so it can't reach anything outside.")
+        }
+        for name in Trial.databasePlugins(copyPaths) {
+            report.notes.append("\(name) uses an outside database, and the copy shares it. Test it with care.")
+        }
+
+        var p = profile
+        p.id = UUID()
+        p.name = "Test copy of \(profile.name)"
+        p.backup.enabled = false
+        p.backup.autoDrill = false
+        p.backup.destination = copyPaths.meta.appendingPathComponent("backups").path
+        p.restart.enabled = false
+        p.launch.restartOnCrash = false
+        p.launch.startWithApp = false
+        p.launch.keepAwake = false
+        p.launch.logGC = false
+        p.launch.minMemoryMB = min(p.launch.minMemoryMB, 1024)
+        p.launch.maxMemoryMB = min(p.launch.maxMemoryMB, 4096)
+        p.lastPluginCheck = Date()
+        p.software.lastCheck = Date()
+        p.playerSnapshots.enabled = false
+        try FileOps.ensureDir(copyPaths.meta)
+        let child = ServerController(root: copy, profile: p)
+        child.isTrialCopy = true
+        child.requiresEULA = requiresEULA
+        child.runtimes = runtimes
+        await child.refreshPlugins()
+        return child
+    }
+
+    // MARK: Backup drill
+
+    /// Proves a backup restores: unpacks it to a throwaway folder, boots it, removes it. Touches nothing real.
+    public func runBackupDrill(_ chosen: BackupRecord? = nil) async {
+        guard !drillRunning, trialPhase == nil else { return }
+        guard let record = chosen ?? backups.first(where: { $0.scope == .everything }) else {
+            notice = "A drill needs a whole-folder backup, and there isn't one yet."
+            return
+        }
+        drillRunning = true
+        defer { drillRunning = false }
+        var passed = false, detail = ""
+        let folder = paths.root.deletingLastPathComponent()
+            .appendingPathComponent(AppPaths.ownFolderName, isDirectory: true).appendingPathComponent("test-copies", isDirectory: true)
+            .appendingPathComponent("drill-\(paths.root.lastPathComponent)-\(Int(Date().timeIntervalSince1970))", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        do {
+            try FileOps.ensureDir(folder)
+            let archive = Backups.destination(profile).appendingPathComponent(record.fileName)
+            let result = try await Tool.run("/usr/bin/tar", ["-xzf", archive.path, "-C", folder.path])
+            guard result.ok else { throw LeafError("The archive couldn't be unpacked. \(result.err.prefix(200))") }
+            var report = TrialReport()
+            let child = try await prepareCopy(folder, report: &report)
+            defer { child.stopTicker() }
+            if let software = record.softwareState { child.profile.software = software }
+            if let launch = record.launch { child.profile.launch.javaPath = launch.javaPath }
+            await child.start()
+            if !child.blockers.isEmpty { throw LeafError("It couldn't start: \(child.blockers.map(\.title).joined(separator: ", ")).") }
+            let started = Date()
+            for _ in 0..<(600 * 4) {
+                if child.state == .running || child.state.canStart { break }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            passed = child.state == .running
+            let seconds = Int(Date().timeIntervalSince(started))
+            let worlds = Backups.worldFolders(folder).count
+            detail = passed ? "Started in \(seconds) seconds, with \(worlds) world folder\(worlds == 1 ? "" : "s")." : "It didn't finish starting. \(child.console.filter { $0.level >= .warn }.suffix(2).map(\.text).joined(separator: " "))"
+            if child.state.isLive { child.stop() }
+            for _ in 0..<(150 * 4) where child.state.isLive { try? await Task.sleep(for: .milliseconds(250)) }
+            if child.state.isLive { child.forceStop() }
+        } catch {
+            detail = error.localizedDescription
+        }
+        profile.lastDrill = DrillResult(date: Date(), backupDate: record.date, fileName: record.fileName, passed: passed, detail: detail)
+        recordEvent(.drill, passed ? "Backup proven restorable" : "Backup drill failed", detail: detail)
+        if !passed {
+            let now = Date()
+            reportIssue(IssueRecord(
+                id: "wrapper:drill-failed", ruleID: "wrapper-drill", title: "A backup didn't restore in a test", severity: .critical, category: "Backups",
+                explanation: "The backup from \(record.date.formatted()) was unpacked on a test copy, and it didn't start. \(detail)",
+                steps: ["Run the drill again on an older backup.", "Take a new backup now.", "Check the Issues panel for anything else that's wrong."],
+                action: IssueAction(page: "backups", label: "Open Backups"), sample: detail, firstSeen: now, lastSeen: now))
+        }
+    }
+
     private func removeLocks(in root: URL) {
         guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return }
         for case let file as URL in walker {
@@ -209,7 +276,7 @@ extension ServerController {
         let known = Set(issues.map(\.id))
         let fresh = child.issues.filter { $0.status == .open && $0.severity >= .error && !known.contains($0.id) }
         report.problems += fresh.map { $0.count > 1 ? "\($0.title) (\($0.count) times)" : $0.title }
-        let pluginRules: Set<String> = ["plugin-load-failed", "plugin-enable-failed", "plugin-unsupported-api", "plugin-unknown-dependency", "plugin-class-mismatch"]
+        let pluginRules: Set<String> = ["plugin-load-failed", "plugin-enable-failed", "plugin-unsupported-api", "plugin-unknown-dependency", "plugin-class-mismatch", "plugin-bad-file"]
         report.failedPlugins = fresh.filter { pluginRules.contains($0.ruleID ?? "") }.map { $0.plugin ?? $0.title }
         // Paper announces each plugin it enables, so a silent absence counts too.
         if report.booted, child.profile.software.flavor != .custom {
@@ -370,7 +437,7 @@ extension ServerController {
 
     /// Takes the periodic snapshot for players online. Runs from the ticker.
     func tickPlayerSnapshots(elapsed: TimeInterval) {
-        guard profile.playerSnapshots.enabled, !isTrialCopy, state == .running else { return }
+        guard profile.playerSnapshots.enabled, Modules.shared.isOn(.players), !isTrialCopy, state == .running else { return }
         let interval = Double(max(1, profile.playerSnapshots.intervalMinutes)) * 60
         for name in players {
             playSeconds[name, default: 0] += elapsed
@@ -392,9 +459,13 @@ extension ServerController {
 
     /// Restores a player without touching the world. Waits for a restart whenever the server might overwrite it.
     public func restorePlayer(_ snapshot: PlayerSnapshot, inventoryOnly: Bool, containers: [String]) throws -> SaveOutcome {
+        if PlayerSnapshots.isFromNewerVersion(snapshot, paths: paths, profile: profile) {
+            throw LeafError("This snapshot is from a newer Minecraft version than this server is on, so it can't be loaded here.")
+        }
         let online = players.contains(snapshot.name)
-        // Multiverse-Inventories keeps profiles in memory, so its files are only safe while stopped.
-        let needsStop = !state.canStart && (online || !containers.isEmpty)
+        // Multiverse-Inventories keeps profiles in memory and can reapply them on join, so with it
+        // installed a restore is only safe while the server is stopped.
+        let needsStop = !state.canStart && (online || PlayerPaths(paths).hasInventoriesPlugin)
         if needsStop {
             enqueue(PendingChange(
                 kind: .playerRestore(folder: snapshot.folder, uuid: snapshot.uuid, name: snapshot.name, inventoryOnly: inventoryOnly, containers: containers),
@@ -433,6 +504,7 @@ extension ServerController {
                 from: profile.software, toLabel: "Merge \(plan.from.title) into \(plan.to.title)", toFileName: profile.software.jarName,
                 backupFile: point.fileName, backupFolder: Backups.destination(profile).path, worlds: Backups.worldFolders(paths.root), size: point.size, isRename: true))
         }
+        recordEvent(.player, "Merged \(plan.from.title) into \(plan.to.title)")
         await refreshPlayers()
         if wasRunning { await start() }
     }
@@ -449,6 +521,7 @@ extension ServerController {
     public func cleanUp(_ items: [CleanupItem]) async throws {
         guard state.canStart else { throw LeafError("Stop the server before cleaning up its folder.") }
         _ = try Cleanup.apply(items, profile: profile, paths: paths)
+        recordEvent(.cleanup, "Moved \(items.count) leftover\(items.count == 1 ? "" : "s") aside")
         await refreshPlugins()
         await scanForCleanup()
     }
@@ -467,11 +540,123 @@ extension ServerController {
 
     // MARK: TPS, connection, disk
 
+    /// Observed: a fresh 26.x server turns the allowlist on by default, and an empty list locks everyone out.
+    public var allowlistSurprise: Bool {
+        let text = (try? String(contentsOf: paths.properties, encoding: .utf8)) ?? ""
+        guard PropertiesDocument(text).value("white-list") == "true" else { return false }
+        let list = (try? String(contentsOf: paths.root.appendingPathComponent("whitelist.json"), encoding: .utf8)) ?? "[]"
+        return PlayerList.entries(list).isEmpty
+    }
+
     /// Asks a Paper-family server for its ticks per second. The answer is kept out of the console view.
     public func requestTPS() {
-        guard state == .running, profile.software.flavor != .vanilla, let process else { return }
+        // Observed: Folia's `mspt` reads 0.0 and its `tps` is per region, so there's nothing honest to chart.
+        guard state == .running, profile.software.flavor != .folia, let process else { return }
+        if profile.software.flavor == .vanilla {
+            awaitingMSPT = 1
+            process.send("tick query")
+            return
+        }
         awaitingTPS = true
+        awaitingMSPT = 1
         process.send("tps")
+        process.send("mspt")
+    }
+
+    // MARK: Analytics
+
+    public func recordEvent(_ kind: ServerEvent.Kind, _ title: String, detail: String? = nil) {
+        guard !isTrialCopy else { return }
+        let event = ServerEvent(kind: kind, title: title, detail: detail)
+        History.record(event, paths: paths)
+        timeline.insert(event, at: 0)
+        if timeline.count > 500 { timeline.removeLast() }
+    }
+
+    public func refreshHistory() async {
+        let p = paths
+        let (events, samples, days) = await Task.detached(priority: .utility) {
+            (History.read(ServerEvent.self, from: History.events(p)), History.read(MetricSample.self, from: History.samples(p)), History.read(DailySizes.self, from: History.days(p)))
+        }.value
+        timeline = Array(events.reversed())
+        metricHistory = samples
+        sizeHistory = days
+    }
+
+    public func refreshStats() async {
+        let p = paths
+        let (stats, sessions) = await Task.detached(priority: .utility) { (PlayerStatsReader.read(p), PlayerHistory.read(p)) }.value
+        playerStats = stats
+        playerActivity = Activity.summarize(sessions)
+    }
+
+    /// Runs every five seconds, and does its real work only every minute or few.
+    func tickAnalytics(now: Date) {
+        guard state == .running || state.canStart else { return }
+        let keepingHistory = Modules.shared.isOn(.history)
+        if state == .running {
+            if keepingHistory, let m = metrics {
+                bucket.memory.append(Double(m.memoryBytes) / 1_048_576)
+                bucket.cpu.append(m.cpuPercent)
+            }
+            if keepingHistory { bucket.players = max(bucket.players, players.count) }
+            // Once a minute, and hidden from the console.
+            if now.timeIntervalSince(lastTPSRequest) >= 60 {
+                lastTPSRequest = now
+                requestTPS()
+            }
+            if keepingHistory, now.timeIntervalSince(bucket.started) >= 300 { closeBucket(now: now) }
+        }
+        // The slow things, once a day.
+        if keepingHistory, now.timeIntervalSince(lastSizeCheck) >= 86_400 {
+            lastSizeCheck = now
+            let (p, profile) = (paths, self.profile)
+            Task.detached(priority: .background) {
+                let worlds = Backups.worldFolders(p.root).reduce(Int64(0)) { $0 + FileOps.directorySize(p.root.appendingPathComponent($1)) }
+                let dest = Backups.destination(profile)
+                let row = DailySizes(date: now, worldBytes: worlds, backupBytes: FileOps.directorySize(dest), freeBytes: FileOps.freeSpace(at: p.root) ?? 0)
+                History.record(row, paths: p)
+            }
+        }
+        // A drill now and then, when nobody's playing and it can't touch a shared database.
+        if profile.backup.autoDrill, Modules.shared.isOn(.backupDrill), !drillRunning, trialPhase == nil, players.isEmpty, activity == nil,
+           now.timeIntervalSince(profile.lastDrill?.date ?? .distantPast) > 7 * 86_400,
+           now.timeIntervalSince(startedAt ?? .distantPast) > 600 || state.canStart,
+           backups.contains(where: { $0.scope == .everything }), Trial.databasePlugins(paths).isEmpty {
+            Task { await runBackupDrill() }
+        }
+    }
+
+    private func closeBucket(now: Date) {
+        func mean(_ v: [Double]) -> Double? { v.isEmpty ? nil : v.reduce(0, +) / Double(v.count) }
+        let gc = readNewGCPauses()
+        let sample = MetricSample(
+            date: now, tps: bucket.tps.min(), mspt: mean(bucket.mspt), memoryMB: bucket.memory.max(), cpu: mean(bucket.cpu),
+            players: bucket.players, gcPauseMS: gc)
+        History.record(sample, paths: paths)
+        metricHistory.append(sample)
+        if metricHistory.count > 2000 { metricHistory.removeFirst(metricHistory.count - 2000) }
+        if let tps = sample.tps, tps < 15, !lagging {
+            lagging = true
+            recordEvent(.lag, "Lag began", detail: String(format: "%.1f ticks per second", tps))
+        } else if let tps = sample.tps, tps >= 18, lagging {
+            lagging = false
+            recordEvent(.lag, "Lag ended")
+        }
+        bucket = MetricBucket()
+        bucket.started = now
+    }
+
+    private func readNewGCPauses() -> Double? {
+        let file = GCLog.file(paths)
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        if size < gcReadOffset { gcReadOffset = 0 }   // The log rotated.
+        try? handle.seek(toOffset: gcReadOffset)
+        guard let data = try? handle.readToEnd() else { return nil }
+        gcReadOffset = size
+        return GCLog.longestPause(in: String(decoding: data, as: UTF8.self))
     }
 
     public func checkConnection() async throws {

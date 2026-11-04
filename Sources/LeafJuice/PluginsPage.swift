@@ -183,11 +183,13 @@ struct PluginDetail: View {
             HStack {
                 if let page = c.pageURL.flatMap(URL.init(string:)) { Link("View", destination: page).buttonStyle(.juice) }
                 if c.downloadURL != nil {
-                    Button("Test First") {
-                        Task { await server.startTrial(.pluginUpdate(name: plugin.name)) }
+                    if Modules.shared.isOn(.testCopies) {
+                        Button("Test First") {
+                            Task { await server.startTrial(.pluginUpdate(name: plugin.name)) }
+                        }
+                        .buttonStyle(.juice).disabled(server.trialPhase != nil)
+                        .help("Tries this update on a throwaway copy of the server first")
                     }
-                    .buttonStyle(.juice).disabled(server.trialPhase != nil)
-                    .help("Tries this update on a throwaway copy of the server first")
                     Button("Install") { server.attempt { try await server.installUpdate(for: plugin) } }
                         .buttonStyle(.juicePrimary).disabled(server.activity != nil)
                 }

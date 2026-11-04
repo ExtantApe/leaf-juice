@@ -210,6 +210,37 @@ to `CleanedUp` beside the backups and can be brought back.
 
 **Testing limit:** tests have no Minecraft client, so no real player data exists in them. Player features are tested against generated files only.
 
+## History and analytics
+
+Only what leads to a decision, kept in `.leafjuice` as small append-only files, and **never sent anywhere**. Five-minute rows of TPS, MSPT, memory, CPU, players and the
+longest Java pause; one row a day of world, backup and free disk sizes; a timeline of starts, crashes, updates, config changes, backups, restores, renames and lag.
+
+**Backup drill:** unpacks a backup to a throwaway folder and boots it. Weekly when nobody's on, skipped if a plugin uses an outside database.
+
+**Players:** failed joins explained in plain words, regulars from the logs, and leaderboards and per-player stats from Minecraft's own stats files.
+
+## The Lab
+
+`~/Minecraft/lab`, marked `isLab` in its profile. Wiping needs both that mark, read from disk, and that exact folder, so a server merely named `lab` is moved aside rather than deleted. The seed is a script, not bundled files: any version, nothing of Mojang's shipped. Offline mode lets bots in, so it binds to `127.0.0.1`. Saves live in `LeafJuice/rehearsals/`.
+
+The screen is a status board: one switch and light per station, in order, each green unlocking the next. Runs are fingerprinted by version and plugin hashes, so a light goes out of date when they change. Stations: plugins (exact jars in themed groups, fresh settings), settings (optional), upgrade, fresh, new version with settings (optional). The upgrade and fresh lights are independent of each other's result, because the pair is the diagnosis.
+
+Rehearsal runs an upgrade path (the Lab's existing data if it's older than the target, otherwise a new seed on the current version) and then a wiped fresh install, with the same checks on each. Both always run, because the pair of results says more than either alone. It ends on the new version, so the next rehearsal has last time's data to migrate. EULA acceptance is asked for in the app, once, for the Lab and its rebuilds.
+
+Bots make it practical: `Bot.swift` speaks just enough of the protocol to log in and stay connected, with packet numbers from Mojang's own data generator for each version.
+
+What's been learned from real runs is in [FINDINGS.md](FINDINGS.md).
+
+## Modules
+
+Built-in features with an on/off switch, not a plugin system. An unsigned app loading third-party code would be a real risk, and Swift has no stable way to do it. `modules.json` stores only what's off, so anything added later starts on. A module going off hides its pages and buttons and stops its background work, and keeps its data. Lifecycle, console, plugins, software, configs, backups, issues and the Change Queue are the base and can't be turned off.
+
+Ideas for later modules: scheduled announcements, a player whitelist manager, a Discord webhook for crashes and restarts (off by default, since it reaches outside), offsite backup targets, chunk pre-generation, a world map preview.
+
+## Resource packs
+
+`LeafJuice/resource-packs/`: `library/` for originals, `combined/` for results. Zip work uses the system's `unzip` and `zip`, so there are still no dependencies. Unpacking is limited in size and stays inside its folder. Hosting is left to the user: a pack needs a public address, and running a web server from a Mac means opening a port.
+
 ## Later
 
 - Login item (`SMAppService` is unreliable when unsigned).

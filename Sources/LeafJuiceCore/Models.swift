@@ -88,6 +88,8 @@ public struct LaunchConfig: Codable, Equatable, Sendable {
     public var restartOnCrash = true
     public var keepAwake = true
     public var startWithApp = false
+    /// Java's own record of its pauses. Costs almost nothing, and separates memory trouble from plugin trouble.
+    public var logGC = true
     public init() {}
 }
 
@@ -111,15 +113,20 @@ public enum LaunchCommand {
         return args + ArgumentString.split(config.extraJVMArgs)
     }
 
-    public static func arguments(_ config: LaunchConfig, software: SoftwareState) -> [String] {
-        var args = jvmArguments(config, software: software) + ["-jar", software.jarName]
+    /// Written relative to the server folder, and Java 9 or newer understands it.
+    static let gcLogArgument = "-Xlog:gc:file=.leafjuice/gc.log:time,uptime:filecount=2,filesize=5M"
+
+    public static func arguments(_ config: LaunchConfig, software: SoftwareState, javaMajor: Int = 0) -> [String] {
+        var args = jvmArguments(config, software: software)
+        if config.logGC, javaMajor >= 9 { args.append(gcLogArgument) }
+        args += ["-jar", software.jarName]
         args += ArgumentString.split(config.serverArgs)
         if config.noGUI, !args.contains("nogui"), !args.contains("--nogui") { args.append("--nogui") }
         return args
     }
 
-    public static func display(java: String, _ config: LaunchConfig, software: SoftwareState) -> String {
-        ([java] + arguments(config, software: software)).map(ArgumentString.quote).joined(separator: " ")
+    public static func display(java: String, _ config: LaunchConfig, software: SoftwareState, javaMajor: Int = 0) -> String {
+        ([java] + arguments(config, software: software, javaMajor: javaMajor)).map(ArgumentString.quote).joined(separator: " ")
     }
 }
 
@@ -163,6 +170,8 @@ public struct BackupConfig: Codable, Equatable, Sendable {
     public var destination: String?
     public var keepLast = 7
     public var keepDays = 14
+    /// Occasionally boots the newest backup on a test copy, to prove it really restores.
+    public var autoDrill = true
     public var beforeUpdates = true
     public var lastRun: Date?
     public init() {}
@@ -212,6 +221,11 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
     public var restart = RestartSchedule()
     public var lastPluginCheck: Date?
     public var playerSnapshots = PlayerSnapshotConfig()
+    public var lastDrill: DrillResult?
+    /// The protected practice server. Its folder must also be the Lab's, see `LabFiles.isLab`.
+    public var isLab = false
+    public var labSeededAt: Date?
+    public var labSeededPlayers = false
     public init() {}
 }
 
@@ -264,7 +278,7 @@ public enum LogLevel: String, Codable, Comparable, Sendable {
 
 public struct Blocker: Identifiable, Equatable, Sendable {
     public enum Kind: Equatable, Sendable {
-        case eula, noJar, java(required: Int), portBusy(Int), other
+        case eula, noJar, java(required: Int), portBusy(Int), worldData, other
     }
     public let id = UUID()
     public let kind: Kind

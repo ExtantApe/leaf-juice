@@ -163,12 +163,14 @@ struct LaunchPage: View {
             Hint("Pauses after 3 crashes in 10 minutes rather than looping.")
             Toggle("Keep this Mac awake while the server runs", isOn: $server.profile.launch.keepAwake)
             Toggle("Start this server when Leaf Juice opens", isOn: $server.profile.launch.startWithApp)
+            Toggle("Keep a log of Java's pauses", isOn: $server.profile.launch.logGC)
+            Hint("Costs almost nothing, and shows on the History page whether stutters come from memory.")
         }
     }
 
     private var commandCard: some View {
         Card(title: "Full command", systemImage: "terminal") {
-            let command = LaunchCommand.display(java: server.resolvedJava()?.path ?? "java", server.profile.launch, software: server.profile.software)
+            let command = LaunchCommand.display(java: server.resolvedJava()?.path ?? "java", server.profile.launch, software: server.profile.software, javaMajor: server.resolvedJava()?.major ?? 0)
             Text(command).font(.system(.caption, design: .monospaced)).foregroundStyle(Juice.ink).textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Copy") {

@@ -64,7 +64,10 @@ public enum Backups {
 
     /// Worlds are any top-level folder containing `level.dat`, so extra world plugins are covered too.
     public static func worldFolders(_ root: URL) -> [String] {
-        FileOps.children(root).filter { FileOps.exists($0.appendingPathComponent("level.dat")) }.map(\.lastPathComponent).sorted()
+        // Folia has no level.dat until it stops, so the region folder counts too.
+        FileOps.children(root).filter {
+            FileOps.exists($0.appendingPathComponent("level.dat")) || FileOps.isDirectory($0.appendingPathComponent("region"))
+        }.map(\.lastPathComponent).sorted()
     }
 
     /// A whole-folder backup is everything needed to run as it was, offline if need be: jars, libraries and
@@ -109,7 +112,7 @@ public enum Backups {
         let listing = try await Tool.run("/usr/bin/tar", ["-tzf", archive.path])
         guard listing.ok else { throw LeafError("The backup \(record.fileName) is damaged and can't be read.") }
         let entries = Set(listing.out.split(whereSeparator: \.isNewline).map(String.init))
-        for world in worlds where !entries.contains("\(world)/level.dat") {
+        for world in worlds where !entries.contains("\(world)/level.dat") && !entries.contains("\(world)/region/") {
             throw LeafError("The backup \(record.fileName) doesn't contain the world \(world).")
         }
     }

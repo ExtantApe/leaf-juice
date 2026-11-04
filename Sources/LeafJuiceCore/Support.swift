@@ -118,11 +118,12 @@ public enum FileOps {
     }
 
     public static func size(_ url: URL) -> Int64 {
-        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { Int64($0) } ?? 0
+        // Not resourceValues: a URL caches those, so a file that grows would look unchanged.
+        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value ?? 0
     }
 
     public static func modified(_ url: URL) -> Date? {
-        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
     public static func directorySize(_ url: URL) -> Int64 {
@@ -148,6 +149,12 @@ public enum JSONStore {
     static var encoder: JSONEncoder {
         let e = JSONEncoder()
         e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        e.dateEncodingStrategy = .iso8601
+        return e
+    }
+    static var compactEncoder: JSONEncoder {
+        let e = JSONEncoder()
+        e.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         e.dateEncodingStrategy = .iso8601
         return e
     }
@@ -238,7 +245,9 @@ public enum Tool {
     /// Runs a command at utility priority and waits for it, without blocking the caller's actor.
     public static func run(_ path: String, _ args: [String], cwd: URL? = nil, lowPriority: Bool = true) async throws -> ToolResult {
         try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: lowPriority ? .utility : .userInitiated).async {
+            // Real threads, not the shared pool: this blocks while the tool runs, and enough blocked pool
+            // threads leave none free to finish the work they're waiting on. Observed hanging with 37 plugins.
+            let worker = Thread {
                 do {
                     let process = Process()
                     process.executableURL = URL(fileURLWithPath: path)
@@ -255,7 +264,7 @@ public enum Tool {
                     let errBox = Box()
                     let group = DispatchGroup()
                     group.enter()
-                    DispatchQueue.global().async {
+                    Thread.detachNewThread {
                         errBox.data = errPipe.fileHandleForReading.readDataToEndOfFile()
                         group.leave()
                     }
@@ -270,6 +279,8 @@ public enum Tool {
                     continuation.resume(throwing: error)
                 }
             }
+            worker.qualityOfService = lowPriority ? .utility : .userInitiated
+            worker.start()
         }
     }
 }

@@ -67,12 +67,14 @@ struct WorldRenameSheet: View {
             HStack {
                 Button("Cancel") { dismiss() }.buttonStyle(.juice).keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Try on a Test Copy") {
-                    let target = name
-                    dismiss()
-                    Task { await server.startTrial(.worldRename(worldName: world.name, to: target)) }
+                if Modules.shared.isOn(.testCopies) {
+                    Button("Try on a Test Copy") {
+                        let target = name
+                        dismiss()
+                        Task { await server.startTrial(.worldRename(worldName: world.name, to: target)) }
+                    }
+                    .buttonStyle(.juicePrimary).disabled(plan == nil || server.trialPhase != nil)
                 }
-                .buttonStyle(.juicePrimary).disabled(plan == nil || server.trialPhase != nil)
                 Button("Rename") {
                     guard let plan else { return }
                     dismiss()
@@ -262,6 +264,18 @@ struct PlayersPage: View {
                     }
                 }
             }
+            if !server.failedJoins.isEmpty {
+                Card(title: "Couldn't get in", systemImage: "person.fill.xmark") {
+                    ForEach(server.failedJoins.prefix(12)) { failure in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("\(failure.name), \(failure.date.formatted(.relative(presentation: .named)))").foregroundStyle(Juice.ink)
+                            Hint(failure.meaning)
+                        }
+                    }
+                }
+            }
+            LeaderboardCard(server: server)
+            RegularsCard(server: server)
             SnapshotSettings(server: server)
             Card(title: "Who was on", systemImage: "clock") {
                 if server.playerHistory.isEmpty { Hint("Nothing in the server's logs yet.") }
@@ -333,6 +347,9 @@ struct PlayerDetail: View {
             if let summary = PlayerFiles.summary(of: PlayerPaths(server.paths).data(player.uuid)) {
                 Card(title: "Saved now", systemImage: "backpack") { InventoryView(summary: summary) }
             }
+            if let stats = server.playerStats.first(where: { $0.uuid.lowercased() == player.uuid.lowercased() }) {
+                PlayerStatsCard(stats: stats)
+            }
             Card(title: "Snapshots", systemImage: "camera") {
                 if snapshots.isEmpty { Hint("None yet. They're taken every 15 minutes of play by default, and as players leave.") }
                 ForEach(snapshots) { snapshot in
@@ -345,13 +362,23 @@ struct PlayerDetail: View {
                         Button("View") { viewing = viewing == snapshot ? nil : snapshot }.buttonStyle(.juice)
                         Button("Restore…") { restoring = snapshot }.buttonStyle(.juice)
                     }
-                    if viewing == snapshot, let summary = PlayerFiles.summary(of: PlayerSnapshots.location(snapshot, profile: server.profile).appendingPathComponent("player.dat")) {
-                        InventoryView(summary: summary)
+                    if viewing == snapshot {
+                        let folder = PlayerSnapshots.location(snapshot, profile: server.profile)
+                        if let summary = PlayerFiles.summary(of: folder.appendingPathComponent("player.dat")) {
+                            InventoryView(summary: summary)
+                        }
+                        ForEach(snapshot.containers.filter { $0.hasPrefix("worlds/") }, id: \.self) { container in
+                            if let summary = PlayerFiles.summary(ofInventoryFile: folder.appendingPathComponent("inventories/\(container)")) {
+                                Text("In \(container.components(separatedBy: "/")[1])").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink).padding(.top, 4)
+                                InventoryView(summary: summary)
+                            }
+                        }
                     }
                 }
             }
         }
         .onAppear(perform: reload)
+        .task { await server.refreshStats() }
         .sheet(item: $restoring) { PlayerRestoreSheet(server: server, snapshot: $0, onDone: reload) }
     }
 
@@ -421,7 +448,10 @@ struct PlayerRestoreSheet: View {
                         set: { if $0 { chosen.insert(container) } else { chosen.remove(container) } }))
                     .toggleStyle(.checkbox)
                 }
-                Hint("These apply at the next restart if the server is running, because the plugin keeps them in memory.")
+                Hint("Leave all of these on unless you have a reason not to: the plugin can put a world's saved inventory back when a player joins. If the server is running, this applies at the next restart.")
+            }
+            if inventoryOnly, let worlds = PlayerSnapshots.crossWorld(snapshot, paths: server.paths, profile: server.profile) {
+                Callout(tone: .warning, title: "This was taken in \(worlds.taken), and \(snapshot.name) is now in \(worlds.now)", detail: "Restoring only the inventory puts the \(worlds.taken) items in \(worlds.now). Choose Everything to send them back to \(worlds.taken) as well.")
             }
             if server.players.contains(snapshot.name) { Callout(tone: .warning, title: "\(snapshot.name) is online, so this applies at the next restart.") }
             if let error { Callout(tone: .danger, title: error) }

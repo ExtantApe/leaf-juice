@@ -205,6 +205,11 @@ public enum Multiverse {
                 continue
             }
             guard current != nil, level > worldIndent, let colon = body.firstIndex(of: ":") else { continue }
+            // Observed: 5.x keeps this inside a `read-only:` section, so it's accepted at any depth.
+            if body[..<colon].lowercased() == "environment", current?.environment == nil {
+                current?.environment = clean(String(body[body.index(after: colon)...]))
+                continue
+            }
             // Fields sit one level in. Anything deeper belongs to a nested section.
             if fieldIndent == nil { fieldIndent = level }
             guard level == fieldIndent else { continue }

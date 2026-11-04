@@ -14,6 +14,7 @@ struct RootView: View {
             }
         }
         .sheet(isPresented: $model.showAddServer) { AddServerSheet(model: model) }
+        .sheet(item: $model.labSetup) { request in LabSetupSheet(model: model, then: request.then) }
         .sheet(isPresented: $model.showFolderSetup, onDismiss: offerServers) { ServersFolderSheet() }
     }
 
@@ -171,9 +172,11 @@ struct ServerWindow: View {
     }
 
     @ViewBuilder private var pageView: some View {
-        switch model.page {
+        switch model.visiblePage {
+        case .resourcePacks: ResourcePacksPage(server: server)
         case .overview: OverviewPage(model: model, server: server, renaming: $renaming)
         case .console: ConsolePage(server: server)
+        case .history: HistoryPage(server: server)
         case .players: PlayersPage(server: server)
         case .worlds: WorldsPage(model: model, server: server)
         case .cleanup: CleanupPage(server: server)
@@ -196,7 +199,7 @@ struct Sidebar: View {
 
     var body: some View {
         List(selection: pageBinding) {
-            ForEach(PageID.allCases) { page in
+            ForEach(PageID.visible) { page in
                 Label(page.title, systemImage: page.icon)
                     .badge(badge(for: page))
                     .tag(page)
@@ -210,7 +213,7 @@ struct Sidebar: View {
     }
 
     private var pageBinding: Binding<PageID?> {
-        Binding(get: { model.page }, set: { if let p = $0 { model.page = p } })
+        Binding(get: { model.visiblePage }, set: { if let p = $0 { model.page = p } })
     }
 
     private func badge(for page: PageID) -> Int {
@@ -224,16 +227,19 @@ struct Sidebar: View {
 
     private var switcher: some View {
         Menu {
-            ForEach(model.servers) { other in
+            ForEach(model.listed) { other in
                 Button {
                     model.selectedID = other.id
                 } label: {
-                    if other.id == server.id { Label(other.profile.name, systemImage: "checkmark") } else { Text(other.profile.name) }
+                    if other.id == server.id { Label(other.profile.name, systemImage: "checkmark") } else if other.isLab { Label(other.profile.name, systemImage: "flask") } else { Text(other.profile.name) }
                 }
             }
             Divider()
             Button("Add Server…") { model.showAddServer = true }
-            Button("Rename \(server.profile.name)…") { renaming = true }
+            if model.lab.server == nil, Modules.shared.isOn(.lab) {
+                Button("Set Up the Lab…") { model.setUpLab() }.disabled(model.lab.isBusy)
+            }
+            if !server.isLab { Button("Rename \(server.profile.name)…") { renaming = true } }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: server.state.icon).foregroundStyle(server.state.tone.color).accessibilityHidden(true)
@@ -375,6 +381,8 @@ struct BlockersSheet: View {
             Button("Open Software Page") { server.blockers = []; model.page = .software }.buttonStyle(.juice)
         case .portBusy:
             Button("Open Configs") { server.blockers = []; model.page = .configs }.buttonStyle(.juice)
+        case .worldData:
+            Button("Open Backups") { server.blockers = []; model.page = .backups }.buttonStyle(.juice)
         case .other:
             Button("Open Launch Page") { server.blockers = []; model.page = .launch }.buttonStyle(.juice)
         }

@@ -4,16 +4,30 @@ import Observation
 import SwiftUI
 
 enum PageID: String, CaseIterable, Identifiable, Hashable {
-    case overview, console, players, worlds, plugins, software, configs, launch, backups, changes, cleanup
+    case overview, console, history, players, worlds, plugins, software, configs, resourcePacks, launch, backups, changes, cleanup
     var id: String { rawValue }
+    /// The module a page belongs to. Nil for the essentials, which are always there.
+    var module: LeafModule? {
+        switch self {
+        case .worlds: .worlds
+        case .players: .players
+        case .history: .history
+        case .cleanup: .cleanup
+        case .resourcePacks: .resourcePacks
+        default: nil
+        }
+    }
+    @MainActor static var visible: [PageID] { allCases.filter { $0.module.map(Modules.shared.isOn) ?? true } }
     var title: String {
         switch self {
         case .overview: "Overview"
         case .console: "Console"
+        case .history: "History"
         case .players: "Players"
         case .worlds: "Worlds"
         case .cleanup: "Cleanup"
         case .plugins: "Plugins"
+        case .resourcePacks: "Resource Packs"
         case .software: "Software"
         case .configs: "Configs"
         case .launch: "Launch"
@@ -25,10 +39,12 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .overview: "gauge.with.dots.needle.33percent"
         case .console: "terminal"
+        case .history: "chart.xyaxis.line"
         case .players: "person.2"
         case .worlds: "globe.americas"
         case .cleanup: "sparkles"
         case .plugins: "puzzlepiece.extension"
+        case .resourcePacks: "photo.stack"
         case .software: "shippingbox"
         case .configs: "slider.horizontal.3"
         case .launch: "bolt"
@@ -38,10 +54,18 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+struct LabSetupRequest: Identifiable {
+    let id = UUID()
+    let then: @MainActor () -> Void
+}
+
 /// The list of servers and app-wide state.
 @MainActor @Observable
 final class AppModel {
     private(set) var servers: [ServerController] = []
+    let lab: LabController
+    /// Asks for the EULA before something that needs the Lab, then carries on with it.
+    var labSetup: LabSetupRequest?
     var selectedID: UUID? { didSet { UserDefaults.standard.set(selectedID?.uuidString, forKey: "selectedServer") } }
     var page: PageID = .overview
     var showIssues = UserDefaults.standard.object(forKey: "showIssues") as? Bool ?? true {
@@ -56,17 +80,58 @@ final class AppModel {
         didSet { UserDefaults.standard.set(checkAppUpdates, forKey: "checkAppUpdates") }
     }
 
-    var selected: ServerController? { servers.first { $0.id == selectedID } ?? servers.first }
+    var selected: ServerController? { listed.first { $0.id == selectedID } ?? listed.first }
+    /// The Lab stays on disk when its module is off, but isn't shown.
+    var listed: [ServerController] { Modules.shared.isOn(.lab) ? servers : servers.filter { !$0.isLab } }
+    /// The page to show, in case the one asked for belongs to a module that's off.
+    var visiblePage: PageID { page.module.map(Modules.shared.isOn) ?? true ? page : .overview }
     var anyLive: Bool { servers.contains { $0.state.isLive || $0.trialIsLive } }
 
     init() {
         let paths: [String] = JSONStore.load(AppPaths.registry, defaults: [])
-        servers = paths.compactMap { ServerController.open(root: URL(fileURLWithPath: $0, isDirectory: true)) }
+        var opened = paths.compactMap { ServerController.open(root: URL(fileURLWithPath: $0, isDirectory: true)) }
+        let lab = LabController(existing: opened.first(where: \.isLab))
+        self.lab = lab
+        if let found = lab.server, !opened.contains(where: { $0.id == found.id }) { opened.append(found) }
+        servers = opened
         selectedID = UserDefaults.standard.string(forKey: "selectedServer").flatMap(UUID.init) ?? servers.first?.id
         for server in servers where server.profile.launch.startWithApp {
             Task { await server.start() }
         }
         if checkAppUpdates { Task { await lookForAppUpdate() } }
+        // A wipe or restore makes a new controller for the Lab's folder.
+        lab.onServerChanged = { [weak self] old, new in
+            guard let self else { return }
+            let wasSelected = self.selectedID == old?.id
+            self.servers.removeAll { $0.id == old?.id || $0.id == new?.id }
+            if let new { self.servers.append(new) }
+            if wasSelected || self.selectedID == nil { self.selectedID = new?.id }
+            self.saveRegistry()
+        }
+    }
+
+    /// Runs something that needs the Lab, asking for the EULA first if it hasn't been accepted.
+    func withLab(_ work: @escaping @MainActor () -> Void) {
+        if lab.eulaAccepted { work() } else { labSetup = LabSetupRequest(then: work) }
+    }
+
+    /// The board lives on the Lab's Overview. If there's no Lab yet, it's made first.
+    func openLabBoard() {
+        if let found = lab.server {
+            selectedID = found.id
+            page = .overview
+        } else {
+            setUpLab()
+        }
+    }
+
+    func setUpLab() {
+        withLab { [self] in
+            Task {
+                if let real = lab.model(from: servers) { await lab.setUp(modeledOn: real) } else { await lab.setUpWithDefaults() }
+                if let found = lab.server { selectedID = found.id; page = .overview }
+            }
+        }
     }
 
     private func saveRegistry() {
@@ -82,6 +147,7 @@ final class AppModel {
 
     /// Forgets a server. Its folder stays exactly where it is.
     func remove(_ controller: ServerController) {
+        guard !controller.isLab else { return }
         controller.stopTicker()
         servers.removeAll { $0.id == controller.id }
         if selectedID == controller.id { selectedID = servers.first?.id }
@@ -93,6 +159,7 @@ final class AppModel {
     func stopAll() async {
         for server in servers {
             server.stopTrialCopy()
+            if server.isLab, lab.isBusy { server.forceStop() }
             if server.state.isLive { server.stop() }
         }
         for _ in 0..<(180 * 4) where anyLive { try? await Task.sleep(for: .milliseconds(250)) }
@@ -113,6 +180,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor static var model: AppModel?
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    #if DEBUG
+    /// Debug builds only: draws every page of every listed server to images, off screen, then quits.
+    /// `LEAFJUICE_SNAPSHOT=<folder>`, for checking screens nobody has clicked yet. Starts nothing.
+    @MainActor func applicationDidFinishLaunching(_ notification: Notification) {
+        guard let folder = ProcessInfo.processInfo.environment["LEAFJUICE_SNAPSHOT"], let model = Self.model else { return }
+        NSApp.setActivationPolicy(.accessory)
+        NSApp.windows.forEach { $0.close() }
+        Task { @MainActor in
+            model.showFolderSetup = false
+            try? FileOps.ensureDir(URL(fileURLWithPath: folder))
+            var windows: [NSWindow] = []   // Kept until the end: closing them while SwiftUI settles isn't safe.
+            for server in model.servers {
+                for page in PageID.allCases {
+                    model.selectedID = server.id
+                    model.page = page
+                    let host = NSHostingView(rootView: RootView(model: model).tint(Juice.pulp))
+                    if ProcessInfo.processInfo.environment["LEAFJUICE_SNAPSHOT_LIGHT"] != nil { host.appearance = NSAppearance(named: .aqua) }
+                    let window = NSWindow(contentRect: NSRect(x: -6000, y: -6000, width: 1280, height: 1000), styleMask: [.borderless], backing: .buffered, defer: false)
+                    window.isReleasedWhenClosed = false
+                    window.contentView = host
+                    window.orderBack(nil)
+                    try? await Task.sleep(for: .seconds(page == .overview ? 5 : 2.5))
+                    host.layoutSubtreeIfNeeded()
+                    if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                        host.cacheDisplay(in: host.bounds, to: rep)
+                        let name = "\(server.profile.name.replacingOccurrences(of: " ", with: "-"))-\(page.rawValue).png"
+                        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: folder).appendingPathComponent(name))
+                    }
+                    window.orderOut(nil)
+                    windows.append(window)
+                }
+            }
+            exit(0)
+        }
+    }
+    #endif
 
     /// A running server must get the chance to save before the app goes away.
     @MainActor
@@ -199,7 +303,7 @@ struct ServerCommands: Commands {
             Button(model.showIssues ? "Hide Issues" : "Show Issues") { model.showIssues.toggle() }
                 .keyboardShortcut("i", modifiers: [.command, .option])
             Divider()
-            ForEach(Array(PageID.allCases.prefix(9).enumerated()), id: \.element) { index, page in
+            ForEach(Array(PageID.visible.prefix(9).enumerated()), id: \.element) { index, page in
                 Button(page.title) { model.page = page }
                     .keyboardShortcut(KeyEquivalent(Character(String(index + 1))))
             }
@@ -212,7 +316,7 @@ struct StatusMenu: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        ForEach(model.servers) { server in
+        ForEach(model.listed) { server in
             Text("\(server.profile.name): \(server.state.title)")
             if server.state.canStart {
                 Button("Start \(server.profile.name)") { Task { await server.start() } }
@@ -255,9 +359,28 @@ struct SettingsView: View {
                 }
             }
             Hint("Add your own log rules as JSON files in that folder. See the README for the format.")
+            Section {
+                ForEach(LeafModule.allCases) { module in
+                    Toggle(isOn: Binding(get: { Modules.shared.isOn(module) }, set: { Modules.shared.set(module, on: $0) })) {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(module.title).foregroundStyle(Juice.ink)
+                                Text(module.summary).font(.caption).foregroundStyle(Juice.muted)
+                            }
+                        } icon: {
+                            Image(systemName: module.icon).foregroundStyle(Juice.pulp)
+                        }
+                    }
+                }
+            } header: {
+                Text("Features")
+            } footer: {
+                Text("Turning one off hides it and stops its background work. Nothing it has saved is deleted, and turning it back on picks up where it left off.")
+                    .font(.caption).foregroundStyle(Juice.muted)
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 320)
+        .frame(width: 520, height: 640)
     }
 
     private func chooseServersFolder() {

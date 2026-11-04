@@ -20,20 +20,20 @@ let builtInRulesJSON = #"""
     "samples": ["**** Unsupported Java detected (68.0). Only up to Java 25 is supported."]
   },
   {
+    "id": "jvm-memory-reserve", "title": "Java couldn't reserve the requested memory", "severity": "critical", "category": "Memory",
+    "contains": ["could not reserve enough space", "invalid maximum heap size", "initial heap size set to a larger value", "too small maximum heap", "too small initial heap"],
+    "explanation": "The memory settings can't be met. Maximum memory may exceed what's available, or minimum may be above maximum.",
+    "steps": ["Lower maximum memory on the Launch page.", "Make sure minimum memory isn't higher than maximum."],
+    "action": {"page": "launch", "label": "Open Launch"},
+    "samples": ["Error occurred during initialization of VM: Could not reserve enough space for 33554432KB object heap", "Initial heap size set to a larger value than the maximum heap size"]
+  },
+  {
     "id": "jvm-option", "title": "Java rejected a startup flag", "severity": "critical", "category": "Java",
     "contains": ["unrecognized vm option", "unrecognized option:", "could not create the java virtual machine"],
     "explanation": "One of the JVM flags isn't valid for this Java version. Flags can be removed between releases.",
     "steps": ["Check your extra JVM arguments on the Launch page for typos.", "Switch the flags preset to Recommended to compare."],
     "action": {"page": "launch", "label": "Open Launch"},
     "samples": ["Unrecognized VM option 'UseFooBar'", "Error: Could not create the Java Virtual Machine."]
-  },
-  {
-    "id": "jvm-memory-reserve", "title": "Java couldn't reserve the requested memory", "severity": "critical", "category": "Memory",
-    "contains": ["could not reserve enough space", "invalid maximum heap size", "initial heap size set to a larger value"],
-    "explanation": "The memory settings can't be met. Maximum memory may exceed what's available, or minimum may be above maximum.",
-    "steps": ["Lower maximum memory on the Launch page.", "Make sure minimum memory isn't higher than maximum."],
-    "action": {"page": "launch", "label": "Open Launch"},
-    "samples": ["Error occurred during initialization of VM: Could not reserve enough space for 33554432KB object heap", "Initial heap size set to a larger value than the maximum heap size"]
   },
   {
     "id": "native-thread", "title": "Java couldn't start a new thread", "severity": "error", "category": "Memory",
@@ -91,7 +91,7 @@ let builtInRulesJSON = #"""
   },
   {
     "id": "world-corrupt", "title": "Damaged world data", "severity": "error", "category": "World",
-    "regex": "failed to read chunk|couldn't load chunk|couldn't read chunk|chunk file at .* is in the wrong location|region file .*corrupt|recreating region|failed to (read|load) (the )?level\\.dat|exception reading .*level\\.dat|chunk .* (is|was) corrupt",
+    "regex": "failed to load world data|world files may be corrupted|failed to read chunk|couldn't load chunk|couldn't read chunk|chunk file at .* is in the wrong location|region file .*corrupt|recreating region|failed to (read|load) (the )?level\\.dat|exception reading .*level\\.dat|chunk .* (is|was) corrupt",
     "explanation": "Part of a world file couldn't be read. Common causes are a power loss, a forced stop or a failing disk. Minecraft may regenerate the affected chunks.",
     "steps": ["Stop the server and take a backup of the current state.", "Restore an earlier backup if the damage matters to you.", "Check free disk space and drive health."],
     "action": {"page": "backups", "label": "Open Backups"},
@@ -128,6 +128,58 @@ let builtInRulesJSON = #"""
     "samples": ["Can't keep up! Is the server overloaded? Running 5012ms or 100 ticks behind"]
   },
   {
+    "id": "server-failed-start", "title": "The server couldn't start", "severity": "critical", "category": "Setup",
+    "contains": ["failed to start the minecraft server", "encountered an unexpected exception"],
+    "explanation": "The server gave up while starting. The cause is usually in the lines just before this one, often a config file with a mistake in it.",
+    "steps": ["Look at the other issues listed here.", "Check any config file you changed recently. Each edit is kept in .leafjuice/config-history.", "Restore the last backup if you can't find it."],
+    "action": {"page": "configs", "label": "Open Configs"},
+    "samples": ["Failed to start the minecraft server", "Encountered an unexpected exception"]
+  },
+  {
+    "id": "plugin-bad-file", "title": "Something in the plugins folder isn't a plugin", "severity": "error", "category": "Plugins",
+    "regex": "encountered exception remapping plugins|error loading plugin: .*illegalargumentexception|does not contain a paper-plugin\\.yml or plugin\\.yml",
+    "explanation": "A file there is damaged, or isn't a Paper or Bukkit plugin. Fabric and Forge mods won't work here. A damaged jar can also stop other plugins being prepared.",
+    "steps": ["The Plugins page marks anything it can't read.", "Remove the file, or download it again from its source."],
+    "action": {"page": "plugins", "label": "Open Plugins"},
+    "samples": ["[PluginRemapper] Encountered exception remapping plugins", "[DirectoryProviderSource] Error loading plugin: java.lang.IllegalArgumentException: Directory 'plugins/a.jar' does not contain a paper-plugin.yml or plugin.yml"]
+  },
+  {
+    "id": "multiverse-world-failed", "title": "Multiverse couldn't load {subject}", "severity": "error", "category": "World",
+    "regex": "\\[multiverse-core\\] failed to autoload world '(?<subject>[^']+)'",
+    "explanation": "Multiverse has this world listed, but its folder is missing or damaged. Players can't go there, and anything linking to it may misbehave.",
+    "steps": ["If it was deleted on purpose, use Remove from Multiverse on the Worlds page.", "Otherwise restore it from a backup."],
+    "action": {"page": "worlds", "label": "Open Worlds"},
+    "samples": ["[Multiverse-Core] Failed to autoload world 'creative': Failure{reason=WORLD_FOLDER_INVALID}: World 'creative' folder"]
+  },
+  {
+    "id": "harmless-note", "title": "Routine notes while starting", "severity": "info", "category": "Setup",
+    "regex": "no key layers in maplike|spawn location from world\\.dat file was unsafe|\\[multiverse-core\\] (original|new) location",
+    "explanation": "These are logged as warnings but don't affect anything.",
+    "steps": ["Nothing to do."],
+    "samples": ["No key layers in MapLike[{}]", "[Multiverse-Core] Spawn location from world.dat file was unsafe. Adjusting..."]
+  },
+  {
+    "id": "world-layout-migration", "title": "Minecraft is moving worlds to its new layout", "severity": "info", "category": "World",
+    "regex": "\\[worldfoldermigration\\]",
+    "explanation": "The first start on Minecraft 26 reorganizes world folders. It waits 30 seconds first, as a chance to stop if there's no backup, and it can take a while on a big world.",
+    "steps": ["Let it finish. Stopping it partway isn't safe.", "An upgrade through Leaf Juice has already made a restore point."],
+    "samples": ["[WorldFolderMigration] World storage migration is required during startup.", "[WorldFolderMigration] Continuing in 30 seconds...", "[WorldFolderMigration] If you do not have a backup: interrupt the server now. Use Ctrl+C, your panel", "[WorldFolderMigration] ====================================================="]
+  },
+  {
+    "id": "version-check-offline", "title": "Paper couldn't check for newer versions", "severity": "info", "category": "Setup",
+    "regex": "\\[paperversionfetcher\\]|error obtaining version information",
+    "explanation": "Paper looks for updates when it starts, and it couldn't reach the internet this time. The server runs normally without it.",
+    "steps": ["Nothing to do, unless this server should have internet access."],
+    "samples": ["[PaperVersionFetcher] Error while parsing version list", "*** Error obtaining version information! Cannot fetch version info ***"]
+  },
+  {
+    "id": "plugin-update-check", "title": "A plugin couldn't check for its own updates", "severity": "info", "category": "Plugins",
+    "regex": "updatechecker\\]|update.?checker.*(error|failed)|(could not|couldn't|failed to) check for updates?",
+    "explanation": "The plugin looks online for a newer version, and that didn't work this time. Often it's a rate limit, and the plugin runs normally.",
+    "steps": ["Nothing to do, unless it keeps happening. Leaf Juice checks for updates separately on the Plugins page."],
+    "samples": ["[nl.pim16aap2.animatedarchitecture.core.util.updater.UpdateChecker] Received unexpected update state: 'ERROR' for URL: 'https://api.github.com/repos/x/y/releases/latest'", "[nl.pim16aap2.animatedarchitecture.core.util.updater.UpdateChecker] Failed to read URL 'https://api.github.com/repos/x/y/releases/latest'"]
+  },
+  {
     "id": "plugin-unknown-dependency", "title": "{subject} is missing a plugin it needs", "severity": "error", "category": "Plugins",
     "regex": "could not load '?plugins[/\\\\](?<subject>[^']+?)'?.*(unknown ?dependency|unknown/missing dependency)|unknowndependencyexception",
     "explanation": "This plugin needs another plugin that isn't installed, so it wasn't loaded.",
@@ -145,11 +197,11 @@ let builtInRulesJSON = #"""
   },
   {
     "id": "plugin-load-failed", "title": "{subject} failed to load", "severity": "error", "category": "Plugins",
-    "regex": "could not load '?plugins[/\\\\](?<subject>[^']+?)'? in folder|error loading plugin '?(?<x>[^' ]+)|invalid plugin\\.yml|jar does not contain plugin\\.yml",
+    "regex": "could not load (?:plugin )?'?(?:plugins[/\\\\](?:\\.paper-remapped[/\\\\])?)?(?<subject>[^'/]+?)'? in (?:folder )?'|error loading plugin '?(?<x>[^' ]+)|invalid plugin\\.yml|jar does not contain plugin\\.yml",
     "explanation": "The server couldn't load this jar. It may be damaged, or not a plugin at all. Mods for Fabric or Forge won't load on Paper.",
     "steps": ["Check the error beneath this line for the reason.", "Download the plugin again from its source."],
     "action": {"page": "plugins", "label": "Open Plugins"},
-    "samples": ["Could not load 'plugins/Foo.jar' in folder 'plugins'", "org.bukkit.plugin.InvalidDescriptionException: Invalid plugin.yml"]
+    "samples": ["Could not load 'plugins/Foo.jar' in folder 'plugins'", "org.bukkit.plugin.InvalidDescriptionException: Invalid plugin.yml", "[ModernPluginLoadingStrategy] Could not load 'plugins/.paper-remapped/Needy.jar' in 'plugins/.paper-remapped'", "[ModernPluginLoadingStrategy] Could not load plugin 'Hollow.jar' in folder 'plugins/.paper-remapped'"]
   },
   {
     "id": "plugin-ambiguous", "title": "Two jars contain the same plugin", "severity": "warning", "category": "Plugins",
@@ -239,7 +291,7 @@ let builtInRulesJSON = #"""
   },
   {
     "id": "offline-mode", "title": "The server isn't verifying accounts", "severity": "warning", "category": "Security",
-    "regex": "server is running in offline/insecure mode|the server will make no attempt to authenticate",
+    "regex": "server is running in offline/insecure mode|the server will make no attempt to authenticate|to change this, set .online-mode. to .true|this makes the game possible to play without internet|opens up the ability for",
     "explanation": "With online-mode off, anyone can join under any name, including an operator's. This is only safe behind a proxy like Velocity that verifies players itself.",
     "steps": ["Unless you run a proxy, set online-mode to true in server.properties."],
     "action": {"page": "configs", "label": "Open Configs"},
@@ -255,11 +307,11 @@ let builtInRulesJSON = #"""
   },
   {
     "id": "version-behind", "title": "A newer server build is available", "severity": "info", "category": "Software",
-    "regex": "you are (running )?\\d+ version\\(?s?\\)? behind|this server is running .* version .* is outdated|version is outdated|update your paper",
+    "regex": "you are (running )?\\d+ version\\(?s?\\)? behind|you are \\d+ release\\(?s?\\)? behind|this server is running .* version .* is outdated|version is outdated|update your paper|recommended that you update as soon as possible|papermc\\.io/downloads/paper|running the latest build for your minecraft version|^\\*{20,}$",
     "explanation": "The server itself noticed it's out of date.",
     "steps": ["Check the Software page for the latest build."],
     "action": {"page": "software", "label": "Open Software"},
-    "samples": ["*** You are 12 version(s) behind ***"]
+    "samples": ["*** You are 12 version(s) behind ***", "However, you are 6 release(s) behind the latest stable release (26.3)!"]
   },
   {
     "id": "experimental-build", "title": "This is an experimental build", "severity": "info", "category": "Software",

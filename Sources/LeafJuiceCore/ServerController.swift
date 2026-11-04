@@ -48,6 +48,20 @@ public final class ServerController: Identifiable {
     public internal(set) var cleanupItems: [CleanupItem] = []
     public internal(set) var cleanupBatches: [CleanupBatch] = []
     public internal(set) var tps: TPSReading?
+    public internal(set) var mspt: Double?
+    public internal(set) var timeline: [ServerEvent] = []
+    public internal(set) var metricHistory: [MetricSample] = []
+    public internal(set) var sizeHistory: [DailySizes] = []
+    public internal(set) var playerStats: [PlayerStats] = []
+    public internal(set) var playerActivity: [PlayerActivity] = []
+    public internal(set) var drillRunning = false
+    var lastTPSRequest = Date.distantPast
+    var lastSizeCheck = Date.distantPast
+    var lagging = false
+    public internal(set) var failedJoins: [FailedJoin] = []
+    var awaitingMSPT = 0
+    var bucket = MetricBucket()
+    var gcReadOffset: UInt64 = 0
     public internal(set) var diskWarning: String?
     public internal(set) var connectResult: ConnectResult?
     public internal(set) var trialPhase: TrialPhase?
@@ -90,6 +104,7 @@ public final class ServerController: Identifiable {
     private var waiters: [(needles: [String], resume: (String?) -> Void)] = []
     private var ticker: Task<Void, Never>?
     private var backingUp = false
+    private var startedStopWhileStarting = false
     private var sleepAssertion: NSObjectProtocol?
     private var pendingRestorePoint: BackupRecord?
 
@@ -114,9 +129,21 @@ public final class ServerController: Identifiable {
     /// Opens a folder that's already managed by Leaf Juice.
     public static func open(root: URL) -> ServerController? {
         let paths = ServerPaths(root: root)
-        guard FileOps.exists(paths.profile) else { return nil }
-        return ServerController(root: root, profile: JSONStore.load(paths.profile, defaults: ServerProfile()))
+        guard let profile = readProfile(root: root) else { return nil }
+        let controller = ServerController(root: root, profile: profile)
+        // The Lab is disposable, so it skips restore points, schedules and analytics.
+        controller.isTrialCopy = LabFiles.isLab(root: root, profile: profile)
+        return controller
     }
+
+    static func readProfile(root: URL) -> ServerProfile? {
+        let paths = ServerPaths(root: root)
+        guard FileOps.exists(paths.profile) else { return nil }
+        return JSONStore.load(paths.profile, defaults: ServerProfile())
+    }
+
+    /// The Lab can't be removed or renamed.
+    public var isLab: Bool { LabFiles.isLab(root: paths.root, profile: profile) }
 
     /// Starts managing an existing folder. Only `.leafjuice` is written; the server is left as it was.
     public static func adopt(root: URL, name: String?) async throws -> ServerController {
@@ -144,7 +171,14 @@ public final class ServerController: Identifiable {
         activeUpgrade = (try? Data(contentsOf: paths.activeUpgrade)).flatMap { try? JSONStore.decoder.decode(UpgradeRecord.self, from: $0) }
         shelved = JSONStore.load(paths.shelved, defaults: [])
         let saved: [IssueRecord] = JSONStore.load(paths.issues, defaults: [])
-        saved.forEach { analyzer.restore($0) }
+        // Rules improve between versions, so an issue saved as uncategorized gets another look.
+        saved.forEach { issue in
+            if !issue.isKnown, issue.status == .open, analyzer.ruleMatches(issue.sample) {
+                analyzer.ingest(issue.sample, at: issue.lastSeen)
+            } else {
+                analyzer.restore(issue)
+            }
+        }
         analyzer.markClean()
         issues = analyzer.sorted
         refreshConfigs()
@@ -174,6 +208,7 @@ public final class ServerController: Identifiable {
     /// Renames the server. Moving the folder is optional, and only possible while it's stopped.
     public func rename(to name: String, moveFolderTo folderName: String?) throws -> URL? {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isLab else { throw LeafError("The Lab keeps its name, so Leaf Juice can always find it.") }
         guard !clean.isEmpty else { throw LeafError("The name can't be empty.") }
         var moved: URL?
         if let folderName, folderName != paths.root.lastPathComponent {
@@ -223,6 +258,14 @@ public final class ServerController: Identifiable {
             // Starting a newer jar would silently upgrade the world again.
             out.append(Blocker(kind: .noJar, title: "The jar doesn't match this world", detail: "\(profile.software.jarName) is for Minecraft \(named), but this server is on \(profile.software.mcVersion). Choose the matching jar on the Software page."))
         }
+        // Observed: with level.dat gone the server starts anyway and writes new world data, losing the seed.
+        let propsText = (try? String(contentsOf: paths.properties, encoding: .utf8)) ?? ""
+        let level = PropertiesDocument(propsText).value("level-name").flatMap { $0.isEmpty ? nil : $0 } ?? "world"
+        let world = paths.root.appendingPathComponent(level)
+        if profile.software.flavor != .folia, !FileOps.exists(world.appendingPathComponent("level.dat")),
+           FileOps.isDirectory(world.appendingPathComponent("region")) || FileOps.isDirectory(world.appendingPathComponent("dimensions")) {
+            out.append(Blocker(kind: .worldData, title: "The main world is missing level.dat", detail: "Starting now would create new world data, losing its seed and settings. Restore a backup first."))
+        }
         if requiresEULA, !EULA.isAccepted(paths) {
             out.append(Blocker(kind: .eula, title: "Accept the Minecraft EULA", detail: "Minecraft servers can't run until their owner accepts Mojang's End User License Agreement."))
         }
@@ -259,7 +302,9 @@ public final class ServerController: Identifiable {
 
     private func launch() {
         guard let java = resolvedJava() else { return }
-        let arguments = LaunchCommand.arguments(profile.launch, software: profile.software)
+        let arguments = LaunchCommand.arguments(profile.launch, software: profile.software, javaMajor: java.major)
+        try? FileOps.ensureDir(paths.meta)
+        gcReadOffset = 0
         let child = ServerProcess(java: java.path, arguments: arguments, directory: paths.root)
         child.onLine = { [weak self] line in
             Task { @MainActor in self?.bufferLine(line) }
@@ -280,6 +325,7 @@ public final class ServerController: Identifiable {
         players = []
         expectingStop = false
         state = .starting
+        recordEvent(.start, "Started \(profile.software.label)")
         try? JSONStore.save(child.pid, to: paths.pid)
         appendWrapper("Starting \(profile.software.label) with Java \(java.major > 0 ? String(java.major) : java.path)…", level: .info)
         if profile.launch.keepAwake {
@@ -290,9 +336,11 @@ public final class ServerController: Identifiable {
     public func stop() {
         guard state == .running || state == .starting, let process else { return }
         expectingStop = true
+        startedStopWhileStarting = state == .starting
         state = .stopping
         restartPlan = nil
-        process.send("stop")
+        // Observed: while starting, the server isn't reading its console yet, so `stop` would sit unread.
+        if state == .stopping, startedStopWhileStarting { process.terminate() } else { process.send("stop") }
         stopDeadline?.cancel()
         stopDeadline = Task { [weak self] in
             // Big worlds can take a while to save, so escalate gently.
@@ -322,6 +370,8 @@ public final class ServerController: Identifiable {
 
     private func handleExit(_ code: Int32) {
         flushLines()
+        // Observed: a broken config makes the server quit with code 0. Giving up isn't a clean stop.
+        let failedToStart = state == .starting && !expectingStop
         stopDeadline?.cancel()
         stopDeadline = nil
         process = nil
@@ -337,8 +387,9 @@ public final class ServerController: Identifiable {
         Task { await refreshPluginsAndConfigs() }
 
         // Exit code 0 is a clean stop, even when someone typed /stop in the game.
-        if expectingStop || code == 0 {
+        if !failedToStart, expectingStop || code == 0 {
             appendWrapper("Server stopped.", level: .info)
+            recordEvent(.stop, "Stopped")
             state = .stopped
             if restartAfterStop {
                 restartAfterStop = false
@@ -351,10 +402,12 @@ public final class ServerController: Identifiable {
 
         restartAfterStop = false
         state = .crashed(code: code)
-        appendWrapper("The server exited unexpectedly (code \(code)).", level: .error)
+        appendWrapper(failedToStart ? "The server gave up before it finished starting. The Issues panel has what it reported." : "The server exited unexpectedly (code \(code)).", level: .error)
+        recordEvent(.crash, "Crashed", detail: "Exit code \(code)")
         reportCrash(code: code)
         crashTimes = crashTimes.filter { Date().timeIntervalSince($0) < 600 } + [Date()]
-        guard profile.launch.restartOnCrash else { return }
+        // Starting again won't help something that can't start.
+        guard profile.launch.restartOnCrash, !failedToStart else { return }
         if crashTimes.count >= 3 {
             appendWrapper("Crashed \(crashTimes.count) times in 10 minutes, so automatic restarts are paused. Check the Issues panel.", level: .error)
             return
@@ -440,8 +493,23 @@ public final class ServerController: Identifiable {
             let parsed = ParsedLogLine(line)
             if let reading = TPS.parse(parsed.message) {
                 tps = reading
+                bucket.tps.append(reading.oneMinute)
                 // Asked for by the app, so it shouldn't fill the console every few seconds.
                 if awaitingTPS { awaitingTPS = false; continue }
+            }
+            if awaitingMSPT > 0 {
+                if TickTimes.isHeader(parsed.message) || TickTimes.isVanillaExtra(parsed.message) { continue }
+                if let value = TickTimes.parse(parsed.message) {
+                    mspt = value
+                    bucket.mspt.append(value)
+                    awaitingMSPT -= 1
+                    continue
+                }
+            }
+            if parsed.level != .debug, let refused = JoinFailures.parse(parsed.message, online: players) {
+                failedJoins.insert(refused, at: 0)
+                if failedJoins.count > 100 { failedJoins.removeLast() }
+                recordEvent(.player, "\(refused.name) couldn't join", detail: refused.meaning)
             }
             append(line, level: parsed.level, origin: .server)
             analyzer.ingest(line)
@@ -475,6 +543,8 @@ public final class ServerController: Identifiable {
         }
         if state == .starting, Self.donePattern.firstMatch(in: line.message) != nil {
             state = .running
+            // The server has just written its settings files, so there's more to show.
+            refreshConfigs()
             crashTimes.removeAll()
         }
         if let m = Self.joinPattern.firstMatch(in: line.message), m.numberOfRanges == 3,
@@ -487,7 +557,7 @@ public final class ServerController: Identifiable {
                 players.remove(name)
                 playSeconds[name] = nil
                 // The server writes their data as they leave, so this catches their final state.
-                if profile.playerSnapshots.enabled, !isTrialCopy {
+                if profile.playerSnapshots.enabled, Modules.shared.isOn(.players), !isTrialCopy {
                     Task { [weak self] in
                         try? await Task.sleep(for: .seconds(3))
                         self?.takeAutomaticSnapshot(name: name, trigger: "left")
@@ -577,7 +647,7 @@ public final class ServerController: Identifiable {
     /// Launch settings differ from what the running server started with.
     public var launchChangedSinceStart: Bool {
         guard let launchedCommand else { return false }
-        return launchedCommand != LaunchCommand.arguments(profile.launch, software: profile.software)
+        return launchedCommand != LaunchCommand.arguments(profile.launch, software: profile.software, javaMajor: resolvedJava()?.major ?? 0)
     }
 
     public var needsRestart: Bool { state.isLive && (!pending.isEmpty || launchChangedSinceStart) }
@@ -641,6 +711,7 @@ public final class ServerController: Identifiable {
                     appendWrapper(conflict, level: .warn)
                 } else {
                     appendWrapper("Applied: \(change.summary)", level: .info)
+                    recordEvent(change.eventKind, change.summary)
                 }
             } catch {
                 change.conflict = error.localizedDescription
@@ -765,6 +836,7 @@ public final class ServerController: Identifiable {
         tickCount += 1
         if tickCount % 12 == 1 { tickDisk() }
         if isTrialCopy { return }
+        tickAnalytics(now: now)
         if let pid = process?.pid { metrics = sampler.sample(pid: pid) }
         analyzer.setPlugins(plugins)
         persistIssues()
@@ -783,8 +855,13 @@ public final class ServerController: Identifiable {
         // Scheduled backups run only while the server is up: a stopped world isn't changing.
         if profile.backup.enabled, !backingUp, state == .running, hasWorld,
            now.timeIntervalSince(profile.backup.lastRun ?? .distantPast) >= Double(profile.backup.intervalHours) * 3600 {
-            do { try await backupNow(trigger: "scheduled") }
-            catch { appendWrapper("Scheduled backup failed: \(error.localizedDescription)", level: .error) }
+            if profile.software.flavor == .folia {
+                appendWrapper("Skipped the scheduled backup: Folia can only be backed up while stopped.", level: .warn)
+                profile.backup.lastRun = now
+            } else {
+                do { try await backupNow(trigger: "scheduled") }
+                catch { appendWrapper("Scheduled backup failed: \(error.localizedDescription)", level: .error) }
+            }
         }
         // Daily background checks, spread out by only running while nothing else is happening.
         let day: TimeInterval = 86_400
@@ -1272,6 +1349,10 @@ public final class ServerController: Identifiable {
     public func backupNow(trigger: String = "manual", scope: BackupScope? = nil) async throws -> BackupRecord {
         guard !backingUp else { throw LeafError("A backup is already running.") }
         guard state == .running || state.canStart else { throw LeafError("Wait until the server has finished starting or stopping.") }
+        // Observed: Folia has no save-off or save-all, so a running world can't be held still.
+        if state == .running, profile.software.flavor == .folia {
+            throw LeafError("Folia can't pause saving, so it can only be backed up while stopped. Stop the server, then back up.")
+        }
         backingUp = true
         defer { backingUp = false }
         pinBackupFolder()
@@ -1292,6 +1373,7 @@ public final class ServerController: Identifiable {
         Backups.prune(profile)
         refreshBackups()
         appendWrapper("Backup finished: \(Format.bytes(record.size)).", level: .info)
+        recordEvent(.backup, "Backed up", detail: "\(Format.bytes(record.size)), \(trigger)")
         return record
     }
 
@@ -1303,6 +1385,7 @@ public final class ServerController: Identifiable {
         setActivity("Restoring backup…")
         defer { setActivity(nil) }
         try await Backups.restore(record, profile: profile, root: paths.root)
+        recordEvent(.restore, "Restored the backup from \(record.date.formatted(date: .abbreviated, time: .shortened))")
         // A whole-folder backup knows exactly what it ran, so it can start straight away.
         if record.scope == .everything, let software = record.softwareState,
            FileOps.exists(paths.root.appendingPathComponent(software.jarName)) {
@@ -1412,6 +1495,7 @@ public final class ServerController: Identifiable {
         saveShelved()
         setActiveUpgrade(nil)
         appendWrapper("Rolled back to \(software.label). The upgraded server is on the Shelf.", level: .info)
+        recordEvent(.restore, "Undid: \(upgrade.toLabel)")
         await refreshPluginsAndConfigs()
         await refreshWorlds()
         refreshBackups()

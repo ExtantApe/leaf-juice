@@ -65,6 +65,49 @@ newer version won't open on an older one. So any version change or software swit
 
 Before upgrading, **Check Plugins** on the Software page shows which plugins have a release for the target version.
 
+## The Lab: rehearse before you upgrade
+
+The Lab is a practice server in `~/Minecraft/lab`, with its own worlds and bot players that really join and hold items. It
+only listens on your Mac, and it can't be removed or renamed in the app. **Save This Lab** keeps it under a readable name like
+`2026-11-03_20-15_paper-1.21.11-build132_before-26-upgrade.tar.gz`, you can restore any save, and **Wipe and Start Fresh** rebuilds it.
+
+The Lab's **status board** runs its tests one switch at a time. Flick a switch, wait for its light, and a green light unlocks the
+switch below. Optional rows can stay off, and a red light offers **Continue Anyway**. If you have several servers, you pick which one the Lab models.
+
+1. **Plugins load:** your version and exact jars, added a few at a time in groups by theme, with fresh settings, so a failure names its group.
+2. **Your plugin settings** (optional): the same plugins with your real settings, so a plugin problem and a settings problem are different answers.
+3. **Upgrade:** the Lab's data moved to the new version, with updated plugins.
+4. **Fresh install:** wiped and installed new on that version, with the same checks.
+5. **New version with your settings** (optional).
+
+Plugins that reach outside your Mac, such as map web servers and cloud backups, don't run in the Lab, and one using an outside database
+keeps fresh settings. Lights go out of date if your plugins or version change. Upgrade and Fresh together suggest:
+
+| Upgrade | Fresh | What it suggests |
+|---|---|---|
+| Pass | Pass | Nothing here stands in the way |
+| Fail | Pass | The version and plugins are fine, but moving data across isn't |
+| Pass | Fail | Something relies on a setup only older data had |
+| Fail | Fail | A real incompatibility |
+
+Your server's plugin list and jars are read, and nothing else: its worlds, players and settings aren't copied, and it keeps
+running. A pass means these checks passed, and the board lists what they don't cover. The upgrade itself still makes a restore point.
+
+## Features you can turn off
+
+Worlds and Multiverse, Players, History, Cleanup, Test copies, Backup drills, the Lab and Resource packs are all switches in **Settings**, and all
+on by default. Off hides the feature and stops its background work. Nothing it saved is deleted, and turning it back on picks up where it left off.
+These are built in: Leaf Juice doesn't load third-party code.
+
+## Resource packs
+
+Look through a pack's textures, then combine packs into one for your server. The top of the list wins, as in Minecraft's own list, and you can pick a
+different winner for any file or leave out parts of a pack, such as its sounds. Languages, sounds, fonts, atlases and item model overrides are
+merged rather than replaced. Your original files are never changed.
+
+Players' games download a pack from the web, so Leaf Juice gives you the file and its SHA-1 to upload, for example to mc-packs.net, then sets the
+address on your server through the usual Change Queue.
+
 ## Install
 
 1. Download the `.dmg` from [Releases](https://github.com/mgilardi/leaf-juice/releases) and drag Leaf Juice to Applications.
@@ -142,6 +185,10 @@ Paper, Modrinth, Hangar, Spiget, GitHub and Jenkins services (downloads a few hu
 
 To boot real Paper with real Multiverse in a temporary folder, add `--real-paper --i-accept-the-minecraft-eula`.
 That second flag is your own acceptance of the [Minecraft EULA](https://aka.ms/MinecraftEULA).
+
+`--sandbox` keeps a longer-lived test server with bot players in `.sandbox/`, `--lab` runs the Lab and a real rehearsal there,
+and `--experiments` tries things on real servers and writes down what happened. All three need that same flag, and what
+they've found so far is in [docs/FINDINGS.md](docs/FINDINGS.md).
 
 The design is explained in [docs/PLAN.md](docs/PLAN.md) and [brand/README.md](brand/README.md).
 

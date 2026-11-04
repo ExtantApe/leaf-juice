@@ -2,6 +2,12 @@
 //   swift run leafjuice-check          Offline suite, plus the full server lifecycle against a small
 //                                      stand-in jar (compiled here if a JDK is available). No Minecraft.
 //   ... --live                         Also calls the real Paper, Modrinth, Hangar, Spiget, GitHub APIs.
+//   ... --sandbox --i-accept-the-minecraft-eula
+//                                      A lasting test server in .sandbox/, seeded with bot players and several worlds.
+//                                      Each run tests a throwaway clone. Add --sandbox-wipe to start it afresh.
+//   ... --lab --i-accept-the-minecraft-eula
+//   ... --experiments <versions,failures,multiverse,players,renames,restore|all> --i-accept-the-minecraft-eula
+//                                      Tries things and writes down what really happened, in .sandbox/findings/.
 //   ... --real-paper --i-accept-the-minecraft-eula
 //                                      Boots real Paper. The second flag is your own acceptance of
 //                                      https://aka.ms/MinecraftEULA, for a throwaway server in a temp folder.
@@ -306,7 +312,7 @@ do {
             equal(a.sorted.first?.ruleID, rule.id, "sample routes to \(rule.id): \(sample)")
         }
     }
-    let pages = Set(["launch", "plugins", "configs", "software", "backups", "changes", "console", "overview"])
+    let pages = Set(["launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
     for rule in rules { if let a = rule.action { check(pages.contains(a.page), "\(rule.id) action page") } }
     check(rules.allSatisfy { !$0.title.isEmpty && !$0.explanation.isEmpty }, "rules have text")
 }
@@ -1237,6 +1243,293 @@ do {
     let none = try await BackupCompare.compare(older, older, profile: profile, paths: paths); check(none.isEmpty, "same backup: no differences")
 }
 
+section("Analytics")
+do {
+    equal(TickTimes.parse("◴ 1.2/0.9/3.1, 1.5/0.8/4.0, 2.5/0.7/9.9"), 2.5, "Paper's minute average")
+    do {
+        var soft = SoftwareState(); soft.flavor = .paper; soft.mcVersion = "1.21.11"; soft.build = 132
+        var parts = DateComponents(); parts.year = 2026; parts.month = 11; parts.day = 3; parts.hour = 20; parts.minute = 15
+        let when = Calendar.current.date(from: parts)!
+        equal(LabFiles.saveName(date: when, software: soft, note: "Before 26 upgrade!"), "2026-11-03_20-15_paper-1.21.11-build132_before-26-upgrade.tar.gz", "save names read well")
+        equal(LabFiles.saveName(date: when, software: soft, note: "../../etc"), "2026-11-03_20-15_paper-1.21.11-build132_etc.tar.gz", "notes can't reach outside the folder")
+        equal(LabFiles.saveName(date: when, software: soft, note: ""), "2026-11-03_20-15_paper-1.21.11-build132.tar.gz", "the note is optional")
+        func path(_ title: String, _ outcomes: [LabCheck.Outcome]) -> RehearsalPath {
+            var p = RehearsalPath(title: title, route: ""); p.checks = outcomes.enumerated().map { LabCheck("c\($0.offset)", $0.element) }; return p
+        }
+        func verdict(_ a: [LabCheck.Outcome], _ b: [LabCheck.Outcome]) -> RehearsalReport.Verdict {
+            RehearsalReport(date: Date(), serverName: "s", from: "a", to: "b", migrated: path("m", a), fresh: path("f", b)).verdict
+        }
+        equal(verdict([.passed, .skipped], [.passed]), .bothPassed, "pass and pass; skipped isn't failed")
+        equal(verdict([.failed], [.passed]), .upgradeFailed, "only the upgrade fails")
+        equal(verdict([.passed], [.failed]), .freshFailed, "only fresh fails")
+        equal(verdict([.failed], [.failed]), .bothFailed, "both fail")
+        equal(verdict([], [.passed]), .upgradeFailed, "no checks run is not a pass")
+    }
+    do { // A rename reaches Multiverse-Inventories' last world, and only exact matches.
+        let r = folder("last-world")
+        let players = r.appendingPathComponent("plugins/Multiverse-Inventories/players")
+        write(#"{"playerData":{"lastWorld":"mining","lastKnownName":"Bob"}}"#, players.appendingPathComponent("a.json"))
+        write(#"{"playerData":{"lastWorld":"mining2","lastKnownName":"mining"}}"#, players.appendingPathComponent("b.json"))
+        write("x", r.appendingPathComponent("mining/level.dat"))
+        let entry = WorldEntry(name: "mining", relativePath: "mining")
+        let plan = WorldRename.plan(world: entry, to: "quarry", paths: ServerPaths(root: r))
+        let edits = plan.items.filter { $0.description == "A player's last world" }
+        equal(edits.count, 1, "only the player who was there")
+        if case let .replaceFile(path, text)? = edits.first?.action {
+            check(path.hasSuffix("a.json"), "the right file"); check(text.contains(#""lastWorld":"quarry""#) && text.contains("Bob"), "the last world changes: \(text)")
+        } else { failures.append("no file edit") }
+    }
+    do { // Nether links, both as the world linked from and the world linked to.
+        let r = folder("nether-links")
+        let links = "plugins/Multiverse-NetherPortals/links.yml"
+        write("mining:\n  nether: deep\nother:\n  nether: deep2\n", r.appendingPathComponent(links))
+        write("x", r.appendingPathComponent("mining/level.dat")); write("x", r.appendingPathComponent("deep/level.dat"))
+        func edited(_ plan: RenamePlan) -> String? {
+            for item in plan.items { if case let .replaceFile(path, text) = item.action, path == links { return text } }
+            return nil
+        }
+        equal(edited(WorldRename.plan(world: WorldEntry(name: "mining", relativePath: "mining"), to: "quarry", paths: ServerPaths(root: r))), "quarry:\n  nether: deep\nother:\n  nether: deep2\n", "linked from")
+        let to = WorldRename.plan(world: WorldEntry(name: "deep", relativePath: "deep"), to: "abyss", paths: ServerPaths(root: r))
+        equal(edited(to), "mining:\n  nether: abyss\nother:\n  nether: deep2\n", "linked to, and only that name")
+        check(!to.mentions.contains(links), "no longer just a mention")
+    }
+    do { // Observed hanging for good with 37 plugins: blocked pool threads waiting on the pool.
+        let finished = await withTimeLimit(seconds: 60) {
+            await withTaskGroup(of: Bool.self, returning: Int.self) { group in
+                for _ in 0..<200 { group.addTask { (try? await Tool.run("/bin/echo", ["hi"]))?.ok == true } }
+                var count = 0
+                for await ok in group where ok { count += 1 }
+                return count
+            }
+        }
+        equal(finished, 200, "far more tools at once than the system's shared threads")
+        let many = folder("many-plugins")
+        for n in 0..<120 { write("not really a jar \(n)", ServerPaths(root: many).plugins.appendingPathComponent("P\(n).jar")) }
+        let scanned = await withTimeLimit(seconds: 60) { await PluginScanner.scan(ServerPaths(root: many)).count }
+        equal(scanned, 120, "scanning a very large plugins folder finishes")
+    }
+    do { // The form Multiverse 5 really writes.
+        let yaml = "minecraft:deep:\n  alias: ''\n  auto-load: true\n  difficulty: easy\n  entry-fee:\n    enabled: false\n  read-only:\n    environment: nether\n    legacy-world-name: deep\n  version: 1.3\nminecraft:mining:\n  alias: ''\n  read-only:\n    environment: normal\n"
+        let worlds = Multiverse.parseWorlds(yaml)
+        equal(worlds.first { $0.name == "minecraft:deep" }?.environment, "nether", "a Nether world is read as one, from read-only")
+        equal(worlds.first { $0.name == "minecraft:mining" }?.environment, "normal", "and the next world keeps its own")
+    }
+    do { // Issues saved before a rule existed are read again when opened.
+        let r = folder("old-issues"); let paths = ServerPaths(root: r)
+        let now = Date()
+        let old = [
+            IssueRecord(id: "unknown:a", ruleID: nil, title: "No key layers in MapLike[{}]", severity: .critical, category: "Uncategorized", explanation: "", steps: [], action: nil, sample: "[10:00:00 ERROR]: No key layers in MapLike[{}]", firstSeen: now, lastSeen: now),
+            IssueRecord(id: "unknown:b", ruleID: nil, title: "Something else entirely", severity: .warning, category: "Uncategorized", explanation: "", steps: [], action: nil, sample: "[10:00:00 WARN]: Something else entirely", firstSeen: now, lastSeen: now),
+        ]
+        try! FileOps.ensureDir(paths.meta)
+        try! JSONStore.save(old, to: paths.issues)
+        let c = ServerController(root: r, profile: ServerProfile())
+        defer { c.stopTicker() }
+        equal(c.issues.first { $0.title.contains("Routine") }?.severity, .info, "an old uncategorized issue now matches its rule")
+        check(!c.issues.contains { $0.title.contains("MapLike") }, "and isn't listed twice")
+        check(c.issues.contains { $0.title == "Something else entirely" }, "others are kept")
+    }
+    do { // Naming the plugin from a stack trace, in the form Paper really prints.
+        let a = IssueAnalyzer(rules: RuleBook.builtIn)
+        var d = PluginDescriptor(name: "ActionHealth"); d.main = "com.zeshanaslam.actionhealth.Main"
+        a.setPlugins([InstalledPlugin(fileName: "ActionHealth-3.5.9-all.jar", enabled: true, descriptor: d, digests: nil, size: 1)])
+        a.ingest("[01:19:35] [Server thread/WARN]: java.lang.ClassNotFoundException: org.bukkit.craftbukkit.craftbukkit.entity.CraftPlayer")
+        a.ingest("[01:19:35] [Server thread/WARN]: \tat java.base/java.lang.Class.forName(Class.java:1)")
+        a.ingest("[01:19:35] [Server thread/WARN]: \tat ActionHealth-3.5.9-all.jar//com.zeshanaslam.actionhealth.utils.HealthUtil.sendHealth(HealthUtil.java:1)")
+        equal(a.sorted.first?.plugin, "ActionHealth", "the plugin in the stack trace gets the blame")
+    }
+    do { // Modules: on by default, remembered, and off means off.
+        let store = Modules.shared
+        store.reload()
+        check(LeafModule.allCases.allSatisfy(store.isOn), "everything starts on")
+        store.set(.history, on: false)
+        check(!store.isOn(.history), "off"); check(store.isOn(.players), "only that one")
+        store.reload()
+        check(!store.isOn(.history), "remembered")
+        let raw = try? String(contentsOf: AppPaths.home.appendingPathComponent("modules.json"), encoding: .utf8)
+        check(raw?.contains("history") == true && raw?.contains("players") == false, "only what's off is stored, so a new module starts on")
+        let c = ServerController(root: folder("module-history"), profile: ServerProfile())
+        defer { c.stopTicker() }
+        let oldCheck = Date().addingTimeInterval(-90_000)
+        c.lastSizeCheck = oldCheck
+        c.tickAnalytics(now: Date())
+        equal(c.lastSizeCheck, oldCheck, "history off stops its background work")
+        store.set(.history, on: true)
+        c.tickAnalytics(now: Date())
+        check(c.lastSizeCheck != oldCheck, "and on starts it")
+    }
+    await resourcePackChecks()
+    do { // Themed groups.
+        func plugin(_ name: String, depends: [String] = []) -> InstalledPlugin {
+            var d = PluginDescriptor(name: name); d.depend = depends
+            return InstalledPlugin(fileName: "\(name).jar", enabled: true, descriptor: d, digests: nil, size: 1)
+        }
+        let groups = PluginThemes.batches([plugin("TARDIS"), plugin("Multiverse-Core"), plugin("Multiverse-Portals", depends: ["Multiverse-Core"]), plugin("LuckPerms"), plugin("ChestSort"), plugin("Mystery"), plugin("NeedsMystery", depends: ["Mystery2"]), plugin("Mystery2")])
+        equal(groups.first?.title, "Worlds and permissions", "worlds and permissions first, because the seed needs them")
+        check(groups.first?.plugins.contains { $0.name == "Multiverse-Core" } == true, "Multiverse is in it")
+        equal(groups.map(\.title).last, "Everything else", "unknown plugins go last")
+        equal(groups.flatMap(\.plugins).count, 8, "nobody lost or doubled")
+        let many = PluginThemes.batches((1...14).map { plugin("Other\($0)") })
+        equal(many.map(\.plugins.count), [6, 6, 2], "a few at a time")
+        let backwards = PluginThemes.batches([plugin("ChestSort", depends: ["LaterThing"]), plugin("LaterThing")])
+        equal(backwards.first?.plugins.map(\.name).sorted(), ["ChestSort", "LaterThing"], "what a plugin needs moves up to it")
+        check(LabController.reachesOutside(plugin("DriveBackupV2")), "cloud backups stay out"); check(LabController.reachesOutside(plugin("BlueMap")), "web maps stay out")
+        check(!LabController.reachesOutside(plugin("TARDIS")), "others run")
+    }
+    do { // Settings: copied, but never data, and never for an outside database.
+        let from = folder("model-settings"), to = folder("lab-settings")
+        let m = ServerPaths(root: from), l = ServerPaths(root: to)
+        write("greeting: hi\n", m.plugins.appendingPathComponent("Friendly/config.yml"))
+        write("binary", m.plugins.appendingPathComponent("Friendly/data.db"))
+        write("storage-method: mysql\n", m.plugins.appendingPathComponent("Shared/config.yml"))
+        write("old\n", l.plugins.appendingPathComponent("Friendly/config.yml"))
+        let notes = try! LabController.copySettings(from: m, to: l, plugins: ["Friendly", "Shared", "NoFolder"])
+        equal(try? String(contentsOf: l.plugins.appendingPathComponent("Friendly/config.yml"), encoding: .utf8), "greeting: hi\n", "settings copied over the fresh ones")
+        check(!FileOps.exists(l.plugins.appendingPathComponent("Friendly/data.db")), "data isn't")
+        check(!FileOps.exists(l.plugins.appendingPathComponent("Shared/config.yml")), "an outside database's settings aren't")
+        check(notes.contains { $0.contains("Shared") }, "and it says so: \(notes)")
+        // Observed: copying everything brought real players' inventories and a world list naming folders the Lab doesn't have.
+        let inv = folder("inventories-plugin").appendingPathComponent("Multiverse-Inventories")
+        for name in ["config.yml", "groups.yml", "playernames.json", "worlds/creative/Steve.json", "groups/default/Steve.json", "players/abc.json"] { write("x", inv.appendingPathComponent(name)) }
+        equal(LabController.settingsToCopy(in: inv), ["config.yml"], "only the behavior, not players or worlds")
+        let core = folder("core-plugin").appendingPathComponent("Multiverse-Core")
+        for name in ["config.yml", "worlds.yml"] { write("x", core.appendingPathComponent(name)) }
+        equal(LabController.settingsToCopy(in: core), ["config.yml"], "the real world list stays behind")
+        let other = folder("other-plugin").appendingPathComponent("Friendly")
+        for name in ["config.yml", "language/en.yml", "worlds.yml", "data/saved.yml"] { write("x", other.appendingPathComponent(name)) }
+        equal(Set(LabController.settingsToCopy(in: other)), ["config.yml", "language/en.yml", "worlds.yml"], "another plugin's worlds.yml is only skipped by name for Multiverse")
+        func batch(_ fresh: LabCheck.Outcome, _ settings: LabCheck.Outcome?) -> MirrorBatch.Outcome {
+            var b = MirrorBatch(title: "t", plugins: []); b.fresh = [LabCheck("a", fresh)]; b.withSettings = settings.map { [LabCheck("a", $0)] }; return b.outcome
+        }
+        // The board's locks. Runs nothing: results are placed directly.
+        do {
+            let base = folder("board")
+            let earlier = getenv("LEAFJUICE_SERVERS").map { String(cString: $0) }
+            setenv("LEAFJUICE_SERVERS", base.path, 1)
+            defer { if let earlier { setenv("LEAFJUICE_SERVERS", earlier, 1) } else { unsetenv("LEAFJUICE_SERVERS") } }
+            let c = ServerController(root: folder("board-model"), profile: ServerProfile())
+            defer { c.stopTicker() }
+            let lab = LabController()
+            equal(lab.light(.plugins, model: c), .ready, "the first switch is ready")
+            if case .locked = lab.light(.settings, model: c) { passed += 1 } else { failures.append("settings should be locked") }
+            if case .locked = lab.light(.upgrade, model: c) { passed += 1 } else { failures.append("upgrade should be locked") }
+            lab.place(.plugins, outcome: .passed, model: c)
+            equal(lab.light(.plugins, model: c), .passed, "green"); equal(lab.light(.settings, model: c), .ready, "green unlocks settings")
+            if case let .locked(why) = lab.light(.upgrade, model: c) { equal(why, "Choose a version", "upgrade still needs a version") } else { failures.append("no version chosen") }
+            lab.chooseTarget(SoftwareBuild(flavor: .paper, mcVersion: "26.3", build: 1, channel: "STABLE", downloadURL: "https://x", fileName: "p.jar", hashes: ExpectedHashes()))
+            equal(lab.light(.upgrade, model: c), .ready, "a version unlocks upgrade")
+            lab.place(.upgrade, outcome: .failed, model: c)
+            equal(lab.light(.fresh, model: c), .ready, "a failed upgrade still unlocks fresh, because the pair is the diagnosis")
+            if case .locked = lab.light(.freshSettings, model: c) { passed += 1 } else { failures.append("fresh settings should wait") }
+            lab.place(.plugins, outcome: .failed, model: c)
+            equal(lab.light(.plugins, model: c), .failed(acknowledged: false), "red")
+            if case .locked = lab.light(.settings, model: c) { passed += 1 } else { failures.append("red locks what's below") }
+            lab.continueAnyway(.plugins)
+            equal(lab.light(.plugins, model: c), .failed(acknowledged: true), "stays red after continuing")
+            equal(lab.light(.settings, model: c), .ready, "but what's below unlocks")
+            c.profile.software.mcVersion = "1.21.11"
+            equal(lab.light(.plugins, model: c), .stale, "a change makes the light out of date")
+            lab.clear(.plugins)
+            equal(lab.light(.plugins, model: c), .ready, "flicking off clears it")
+            equal(lab.result(.upgrade), nil, "and what relied on it")
+        }
+        equal(batch(.passed, nil), .passed, "fresh only"); equal(batch(.passed, .passed), .passed, "both")
+        equal(batch(.failed, nil), .pluginProblem, "fails fresh is the plugin"); equal(batch(.passed, .failed), .settingsProblem, "fails only with settings is the settings")
+    }
+    do { // Restores that would surprise.
+        let r = folder("snapshot-guards"); let paths = ServerPaths(root: r)
+        var profile = ServerProfile(); profile.backup.destination = r.appendingPathComponent("b").path
+        let id = "11111111-2222-3333-4444-555555555555"
+        func player(_ dim: String, _ version: Int32) -> NBT.Document {
+            var root = NBT.compound([]); root["Dimension"] = .string(dim); root["DataVersion"] = .int(version)
+            return NBT.Document(root: root)
+        }
+        let live = PlayerPaths(paths).data(id)
+        try! FileOps.ensureDir(live.deletingLastPathComponent())
+        try! NBT.write(player("minecraft:overworld", 4671), to: live)
+        let snap = PlayerSnapshot(folder: "s", uuid: id, name: "Alice", date: Date(), trigger: "manual", containers: [])
+        let at = PlayerSnapshots.location(snap, profile: profile); try! FileOps.ensureDir(at)
+        try! NBT.write(player("minecraft:mining", 4671), to: at.appendingPathComponent("player.dat"))
+        equal(PlayerSnapshots.crossWorld(snap, paths: paths, profile: profile)?.taken, "mining", "another world is noticed")
+        check(!PlayerSnapshots.isFromNewerVersion(snap, paths: paths, profile: profile), "same version is fine")
+        try! NBT.write(player("minecraft:overworld", 5023), to: at.appendingPathComponent("player.dat"))
+        check(PlayerSnapshots.crossWorld(snap, paths: paths, profile: profile) == nil, "same world isn't")
+        check(PlayerSnapshots.isFromNewerVersion(snap, paths: paths, profile: profile), "a snapshot from a newer version is refused")
+    }
+    equal(TPS.parse("TPS from last 5s, 1m, 5m, 15m: 20.0, 19.9, 19.8, 19.7")?.oneMinute, 19.9, "Purpur's four figures")
+    equal(TPS.parse("TPS from last 5s, 1m, 5m, 15m: 20.0, 19.9, 19.8, 19.7")?.fifteenMinutes, 19.7, "Purpur's 15m")
+    equal(TPS.parse("TPS from last 1m, 5m, 15m: *20.0, 19.5, 18.25")?.oneMinute, 20, "Paper's three figures")
+    equal(ParsedLogLine("[23:01:14 INFO]: System chat: Saved the game").message, "Saved the game", "26.x label removed")
+    equal(ParsedLogLine("[23:04:09] [Server thread/INFO]: System chat: Alice joined the game").message, "Alice joined the game", "26.x label, vanilla format")
+    check(ConsoleText.clean("> mspt") == nil, "26.x command echo dropped"); equal(ConsoleText.clean("[23:01:25 INFO]: > hello"), "[23:01:25 INFO]: > hello", "real lines kept")
+    check(TickTimes.isVanillaExtra("Percentiles: P50: 1.7ms P95: 2.7ms"), "vanilla extras")
+    do { let a = IssueAnalyzer(rules: RuleBook.builtIn)
+        for line in ["[23:00:00 WARN]: **** SERVER IS RUNNING IN OFFLINE/INSECURE MODE!", "[23:00:00 WARN]: To change this, set \"online-mode\" to \"true\" in the server.properties file.", "[23:00:00 WARN]: While this makes the game possible to play without internet access, it also opens up the ability for hackers to connect", "[23:00:00 WARN]: *************************************************************************************", "[23:00:00 WARN]: You are running the latest build for your Minecraft version (1.21.11)", "[23:00:00 WARN]: However, you are 6 release(s) behind the latest stable release (26.3)!", "[23:00:00 WARN]: It is recommended that you update as soon as possible", "[23:00:00 WARN]: https://papermc.io/downloads/paper"] { a.ingest(line) }
+        equal(a.sorted.filter { !$0.isKnown }.map(\.title), [], "banners group into one issue each"); equal(a.sorted.count, 2, "offline-mode and version") }
+    do { let a = IssueAnalyzer(rules: RuleBook.builtIn)
+        a.ingest("[23:00:00 WARN]: [ModernPluginLoadingStrategy] Could not load plugin 'Hollow.jar' in folder 'plugins/.paper-remapped'")
+        equal(a.sorted.first?.title, "Hollow failed to load", "modern plugin error names the plugin") }
+    do { let r = folder("folia-world"); write("x", r.appendingPathComponent("world/region/r.0.0.mca")); write("x", r.appendingPathComponent("notes/a.txt"))
+        equal(Backups.worldFolders(r), ["world"], "a world with no level.dat yet still counts") }
+    equal(TickTimes.parse("Average time per tick: 3.2ms (Target: 50.0ms)"), 3.2, "vanilla tick query"); check(TickTimes.parse("hello 1.2") == nil, "not tick times")
+    check(TickTimes.isHeader("Server tick times (avg/min/max) from last 5s, 10s, 1m:"), "header")
+    equal(GCLog.longestPause(in: "[2026][1.0s] GC(1) Pause Young (Normal) (G1 Evacuation Pause) 100M->50M(200M) 12.345ms\n[2026][2.0s] GC(2) Pause Young 90M->50M(200M) 250.5ms\n[3s] GC(3) Concurrent Mark 900.0ms\n"), 250.5, "longest pause, not concurrent work")
+    check(GCLog.longestPause(in: "nothing") == nil, "no pauses")
+    var l = LaunchConfig(); l.preset = .none; var sw = SoftwareState(); sw.jarName = "p.jar"
+    check(LaunchCommand.arguments(l, software: sw, javaMajor: 21).contains { $0.hasPrefix("-Xlog:gc") }, "GC log on modern Java")
+    check(!LaunchCommand.arguments(l, software: sw, javaMajor: 8).contains { $0.hasPrefix("-Xlog") }, "not on Java 8")
+    l.logGC = false; check(!LaunchCommand.arguments(l, software: sw, javaMajor: 21).contains { $0.hasPrefix("-Xlog") }, "can be off")
+    equal(JoinFailures.parse("Steve lost connection: You are not whitelisted on this server!")?.name, "Steve", "allowlist")
+    check(JoinFailures.parse("Steve lost connection: You are not whitelisted on this server!")?.meaning.contains("allowlist") == true, "explained")
+    equal(JoinFailures.parse("Disconnecting Steve (/1.2.3.4:5000): You are banned from this server.")?.name, "Steve", "banned")
+    check(JoinFailures.parse("Steve lost connection: Disconnected") == nil, "ordinary leaving isn't a refusal")
+    check(JoinFailures.parse("Steve lost connection: Timed out", online: ["Steve"]) == nil, "someone who got in wasn't refused")
+    check(JoinFailures.parse("Random line about a banned thing") == nil, "only real disconnects")
+    // Storage.
+    let hroot = folder("history-files"); let hp = ServerPaths(root: hroot)
+    let now = Date()
+    History.record(ServerEvent(date: now, kind: .crash, title: "Crashed"), paths: hp)
+    History.record(ServerEvent(date: now, kind: .start, title: "Started"), paths: hp)
+    equal(History.read(ServerEvent.self, from: History.events(hp)).map(\.kind), [.crash, .start], "timeline persists in order")
+    History.record(MetricSample(date: now, tps: 19.5, mspt: 12, memoryMB: 2000, players: 3), paths: hp)
+    equal(History.read(MetricSample.self, from: History.samples(hp)).first?.players, 3, "metrics persist")
+    let big = hroot.appendingPathComponent("big.jsonl")
+    for i in 0..<30 { History.append(ServerEvent(date: now, kind: .stop, title: "\(i)"), to: big, limit: 5) }
+    check(History.read(ServerEvent.self, from: big).count < 30, "files trim themselves"); equal(History.read(ServerEvent.self, from: big).last?.title, "29", "newest kept")
+    // Trends.
+    func day(_ n: Double, free: Int64) -> DailySizes { DailySizes(date: now.addingTimeInterval(n * 86_400), worldBytes: 0, backupBytes: 0, freeBytes: free) }
+    let g = Int64(1 << 30)
+    equal(Trend.daysUntilFull([day(0, free: 100 * g), day(5, free: 90 * g), day(10, free: 80 * g)]), 40, "forecast"); check(Trend.daysUntilFull([day(0, free: 80 * g), day(5, free: 90 * g), day(10, free: 100 * g)]) == nil, "not falling"); check(Trend.daysUntilFull([day(0, free: 1)]) == nil, "too soon")
+    var hourSamples: [MetricSample] = []
+    var cal2 = Calendar(identifier: .gregorian); cal2.timeZone = TimeZone(identifier: "UTC")!
+    let start = cal2.date(from: DateComponents(year: 2026, month: 1, day: 1))!
+    for i in 0..<300 { let d = start.addingTimeInterval(Double(i) * 300); hourSamples.append(MetricSample(date: d, players: cal2.component(.hour, from: d) == 4 ? 0 : 5)) }
+    equal(Trend.quietestHour(hourSamples, calendar: cal2), 4, "quiet hour"); check(Trend.quietestHour(Array(hourSamples.prefix(5))) == nil, "needs a day of data")
+    let trendEvents = [ServerEvent(date: now, kind: .crash, title: "c"), ServerEvent(date: now, kind: .start, title: "s"), ServerEvent(date: now.addingTimeInterval(-90 * 86_400), kind: .crash, title: "old")]
+    equal(Trend.uptime(trendEvents, since: now.addingTimeInterval(-86_400)).crashes, 1, "only the period")
+    // Stats and regulars.
+    let sroot = folder("stats-files"); let sp2 = ServerPaths(root: sroot)
+    write("level-name=world\n", sp2.properties); write("x", sroot.appendingPathComponent("world/level.dat"))
+    let aid = "069a79f4-44e9-4726-a5be-fca90e38aaf5", bid = "aaaaaaaa-44e9-4726-a5be-fca90e38aaf5"
+    write(#"[{"name":"Ann","uuid":"\#(aid)"},{"name":"Ben","uuid":"\#(bid)"}]"#, sroot.appendingPathComponent("usercache.json"))
+    write(#"{"stats":{"minecraft:custom":{"minecraft:play_time":144000,"minecraft:deaths":3,"minecraft:walk_one_cm":100000,"minecraft:sprint_one_cm":100000},"minecraft:mined":{"minecraft:stone":10,"minecraft:dirt":5}},"DataVersion":1}"#, sroot.appendingPathComponent("world/stats/\(aid).json"))
+    write(#"{"stats":{"minecraft:custom":{"minecraft:play_one_minute":72000,"minecraft:deaths":9}},"DataVersion":1}"#, sroot.appendingPathComponent("world/stats/\(bid).json"))
+    let stats = PlayerStatsReader.read(sp2)
+    let play = PlayerStat.all.first { $0.id == "play" }!, deaths = PlayerStat.all.first { $0.id == "deaths" }!, mined = PlayerStat.all.first { $0.id == "mined" }!, walked = PlayerStat.all.first { $0.id == "walked" }!
+    equal(PlayerStatsReader.leaderboard(stats, stat: play).map(\.name), ["Ann", "Ben"], "time played, in both file formats"); equal(PlayerStatsReader.leaderboard(stats, stat: deaths).first?.name, "Ben", "deaths")
+    equal(stats.first { $0.name == "Ann" }?.value(mined), 15, "a whole category adds up"); equal(PlayerStatsReader.leaderboard(stats, stat: mined).count, 1, "zeroes aren't on the board")
+    equal(play.display(144000), "2.0 h", "hours"); equal(walked.display(200000), "2.0 km", "kilometres")
+    let ago = { (d: Double) in now.addingTimeInterval(-d * 86_400) }
+    let acts = Activity.summarize([
+        PlayerSession(name: "New", start: ago(1), end: ago(0.9)),
+        PlayerSession(name: "Reg", start: ago(20), end: ago(19.9)), PlayerSession(name: "Reg", start: ago(10), end: ago(9.9)), PlayerSession(name: "Reg", start: ago(2), end: ago(1.9)),
+        PlayerSession(name: "Gone", start: ago(90), end: ago(89.9)), PlayerSession(name: "Gone", start: ago(80), end: ago(79.9)), PlayerSession(name: "Gone", start: ago(70), end: ago(69.9)),
+        PlayerSession(name: "Once", start: ago(50), end: ago(49.9)),
+    ], now: now)
+    func status(_ n: String) -> PlayerActivity.Status? { acts.first { $0.name == n }?.status }
+    equal(status("New"), .new, "new"); equal(status("Reg"), .regular, "regular"); equal(status("Gone"), .drifted, "drifted"); equal(status("Once"), .occasional, "occasional")
+}
+
 section("Backup location")
 do {
     let servers = AppPaths.servers
@@ -1469,6 +1762,66 @@ do {
 }
 
 // MARK: Live and lifecycle
+
+if let flag = CommandLine.arguments.firstIndex(of: "--experiments") {
+    guard CommandLine.arguments.contains("--i-accept-the-minecraft-eula"), flag + 1 < CommandLine.arguments.count else {
+        print("--experiments <groups> needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+        exit(2)
+    }
+    await runExperiments(CommandLine.arguments[flag + 1].components(separatedBy: ","))
+    try? FileManager.default.removeItem(at: scratch)
+    exit(0)
+}
+
+if let flag = CommandLine.arguments.firstIndex(of: "--lab-model") {
+    guard CommandLine.arguments.contains("--i-accept-the-minecraft-eula"), flag + 2 < CommandLine.arguments.count else {
+        print("--lab-model <server folder> <minecraft version> [--with-settings] needs --i-accept-the-minecraft-eula.")
+        exit(2)
+    }
+    await runLabModel(URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true), mc: CommandLine.arguments[flag + 2], settings: CommandLine.arguments.contains("--with-settings"))
+    print("\(passed) passed, \(failures.count) failed")
+    for failure in failures { print("  FAIL \(failure)") }
+    exit(failures.isEmpty ? 0 : 1)
+}
+if CommandLine.arguments.contains("--lab-demo") {
+    // Fills the status board with example results, for looking at the screen. Never touches a real server folder.
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox/snap", isDirectory: true)
+    setenv("LEAFJUICE_HOME", base.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", base.appendingPathComponent("servers").path, 1)
+    guard let model = ServerController.open(root: base.appendingPathComponent("servers/Demo", isDirectory: true)) else { print("no Demo"); exit(1) }
+    await model.refreshPlugins()
+    let lab = LabController(existing: nil)
+    lab.acceptEULA()
+    let ok = ["Starts", "A player can join", "Inventory came through", "Per-world inventory came through", "Stops cleanly", "A change survives a restart"].map { LabCheck($0, .passed) }
+    lab.place(.plugins, outcome: .passed, model: model, groups: [MirrorBatch(title: "Worlds and permissions", plugins: ["LuckPerms", "Multiverse-Core", "Multiverse-Inventories"], fresh: ok)], note: "Paper 1.21.11 build 132", leftOut: ["BlueMap reaches outside this Mac, so it doesn't run here."])
+    var bad = MirrorBatch(title: "Everyday comforts 1", plugins: ["ActionHealth", "ChestSort"], fresh: [])
+    bad.withSettings = [LabCheck("ActionHealth: A plugin doesn't match this server version (235 times)", .failed, "java.lang.ClassNotFoundException: org.bukkit.craftbukkit.craftbukkit.entity.CraftPlayer")]
+    lab.place(.settings, outcome: .failed, model: model, groups: [bad], note: "World lists and player data stay the Lab's own.")
+    if let build = try? await SoftwareCatalog.latestBuild(.paper, mc: "26.3") { lab.chooseTarget(build) }
+    lab.place(.upgrade, outcome: .passed, model: model, checks: ok, note: "Kept the Lab's data from Paper 1.21.11 build 132, then moved it to 26.3 build 240")
+    exit(0)
+}
+if CommandLine.arguments.contains("--lab") {
+    guard CommandLine.arguments.contains("--i-accept-the-minecraft-eula") else {
+        print("--lab needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+        exit(2)
+    }
+    await runLabScenario()
+    print("\(passed) passed, \(failures.count) failed")
+    for failure in failures { print("  FAIL \(failure)") }
+    exit(failures.isEmpty ? 0 : 1)
+}
+if CommandLine.arguments.contains("--sandbox") {
+    guard CommandLine.arguments.contains("--i-accept-the-minecraft-eula") else {
+        print("--sandbox needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+        exit(2)
+    }
+    await runSandbox()
+    try? FileManager.default.removeItem(at: scratch)
+    print("\n\(passed) passed, \(failures.count) failed")
+    for failure in failures { print("  - \(failure)") }
+    exit(failures.isEmpty ? 0 : 1)
+}
 
 await runLifecycleWithStandIn()
 if CommandLine.arguments.contains("--live") { await runLiveAPIs() }
@@ -1853,6 +2206,8 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
         for (var plugin : Objects.requireNonNull(new File("plugins").list())) if (plugin.endsWith(".jar")) log("INFO", "Enabling " + plugin);
         for (var plugin : Objects.requireNonNull(new File("plugins").list())) if (plugin.equals("Bad.jar")) { log("ERROR", "Error occurred while enabling Bad v1.0 (Is it up to date?)"); }
         if (new File("crash-on-boot").exists()) { log("ERROR", "Simulated boot failure"); System.exit(5); }
+        if (new File("quit-on-boot").exists()) { log("ERROR", "Failed to start the minecraft server"); System.exit(0); }
+        if (new File("slow-boot").exists()) { Thread.sleep(15000); }
         log("INFO", "Done (1.234s)! For help, type \"help\"");
         var reader = new BufferedReader(new InputStreamReader(System.in));
         String line;
@@ -1886,6 +2241,7 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
               else if (p2[1].equals("unload")) log("INFO", "World '" + p2[2] + "' unloaded!");
             }
             case "tps" -> log("INFO", "TPS from last 1m, 5m, 15m: *20.0, 19.5, 18.25");
+            case "mspt" -> { log("INFO", "Server tick times (avg/min/max) from last 5s, 10s, 1m:"); log("INFO", "1.2/0.9/3.1, 1.5/0.8/4.0, 2.5/0.7/9.9"); }
             case "stop" -> { log("INFO", "Stopping the server"); socket.close(); System.exit(0); }
             default -> log("INFO", "Unknown command");
           }
@@ -2017,6 +2373,10 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
             await checkUntil(5, "tps read") { c.tps != nil }
             equal(c.tps?.oneMinute, 20, "tps value"); equal(c.tps?.fifteenMinutes, 18.25, "tps 15m")
             check(!c.console.dropFirst(linesBefore).contains { $0.text.contains("TPS from") }, "the app's own tps check stays out of the console")
+            await checkUntil(5, "mspt read") { c.mspt != nil }
+            equal(c.mspt, 2.5, "mspt value")
+            check(!c.console.dropFirst(linesBefore).contains { $0.text.contains("tick times") || $0.text.contains("1.2/0.9") }, "mspt stays out of the console too")
+            check(c.timeline.contains { $0.kind == .start }, "start on the timeline")
 
             equal(c.multiverseMajor, 5, "multiverse detected")
             var refused = ""
@@ -2106,11 +2466,51 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
             await c.findTrialCulprit()
             check(c.trialReport?.culprit?.contains("even with no plugins") == true, "not blamed on a plugin: \(c.trialReport?.culprit ?? "")")
             await c.collapseTrial()
+            await c.startTrial(.custom(title: "Quits cleanly while starting", { child in write("x", child.paths.root.appendingPathComponent("quit-on-boot")) }))
+            equal(c.trialReport?.booted, false, "a clean exit while starting isn't success")
+            check(c.trialController?.issues.contains { $0.ruleID == "server-failed-start" } == true, "and is explained"); if case .crashed = c.trialController?.state { passed += 1 } else { failures.append("giving up should read as a failure: \(String(describing: c.trialController?.state))") }
+            await c.collapseTrial()
             await c.startTrial(.custom(title: "Throws", { _ in throw LeafError("It went wrong") }))
             equal(c.trialReport?.failure, "It went wrong", "failure reported"); await c.collapseTrial()
             check(c.state == .running, "real server ran throughout")
             try? FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("DiscordSRV.jar"))
+            // The drill proves a backup boots, without touching the real server.
+            let drillBackup = try await c.backupNow(trigger: "manual", scope: .everything)
+            await c.runBackupDrill(drillBackup)
+            equal(c.profile.lastDrill?.passed, true, "good backup proven: \(c.profile.lastDrill?.detail ?? "")")
+            check(c.state == .running, "real server kept running"); check(c.timeline.contains { $0.kind == .drill }, "on the timeline")
+            check(FileOps.children(c.paths.root.deletingLastPathComponent().appendingPathComponent("LeafJuice/test-copies")).isEmpty, "drill folder removed")
+            let badArchive = Backups.destination(c.profile).appendingPathComponent(drillBackup.fileName)
+            let goodBytes = try Data(contentsOf: badArchive)
+            try Data(goodBytes.prefix(goodBytes.count / 2)).write(to: badArchive)
+            await c.runBackupDrill(drillBackup)
+            equal(c.profile.lastDrill?.passed, false, "damaged backup caught: \(c.profile.lastDrill?.detail ?? "")")
+            check(c.issues.contains { $0.id == "wrapper:drill-failed" }, "and raised as an issue")
+            try goodBytes.write(to: badArchive)
             await c.refreshPlugins()
+        }
+
+        // Stopping while it's still starting mustn't hang.
+        if c.profile.software.jarName == "standin.jar" {
+            c.stop()
+            await checkUntil(30, "stopped first") { c.state == .stopped }
+            write("x", c.paths.root.appendingPathComponent("slow-boot"))
+            await c.start()
+            try? await Task.sleep(for: .seconds(1))
+            let stopAt = Date()
+            c.stop()
+            await checkUntil(12, "stops promptly while starting: \(c.state)") { c.state == .stopped }
+            check(Date().timeIntervalSince(stopAt) < 12, "well under the two minute wait")
+            try? FileManager.default.removeItem(at: c.paths.root.appendingPathComponent("slow-boot"))
+            // A missing level.dat blocks a start rather than quietly making a new one.
+            let dat = c.paths.root.appendingPathComponent("world/level.dat")
+            let keep = try Data(contentsOf: dat)
+            try FileManager.default.removeItem(at: dat)
+            let blocked = await c.preflight()
+            check(blocked.contains { $0.kind == .worldData }, "missing level.dat blocks starting: \(blocked.map(\.title))")
+            try keep.write(to: dat)
+            await c.start()
+            await checkUntil(startupTimeout, "back up") { c.state == .running }
         }
 
         // Stop cleanly.
@@ -2161,6 +2561,698 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
     print("    worlds.yml keys: \(yml.split(separator: "\n").filter { !$0.hasPrefix(" ") && !$0.hasPrefix("#") })")
     let first = yml.split(separator: "\n").prefix(46).filter { $0.contains("alias") || $0.contains("environment") || $0.contains("gamemode") || $0.contains("difficulty") || $0.contains("auto-load") || !$0.hasPrefix(" ") }
     print("    worlds.yml sample: \(first.prefix(10))")
+}
+
+// MARK: The sandbox
+
+@MainActor func runSandbox() async {
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox", isDirectory: true)
+    let servers = base.appendingPathComponent("servers", isDirectory: true)
+    setenv("LEAFJUICE_HOME", base.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", servers.path, 1)
+    if CommandLine.arguments.contains("--sandbox-wipe") {
+        try? FileManager.default.removeItem(at: servers)
+        print("Sandbox wiped.")
+    }
+    let seed = servers.appendingPathComponent("seed", isDirectory: true)
+    do {
+        let runtimes = await JavaManager.discover()
+        guard let java = JavaManager.best(for: 21, in: runtimes) else { failures.append("no Java 21"); return }
+        let cache = base.appendingPathComponent("protocol", isDirectory: true)
+        let table = try await ProtocolTable.load(mc: "1.21.11", cache: cache, java: java.path)
+        print("    protocol \(table.version): \(table.ids.count) packets")
+
+        if !FileOps.exists(seed.appendingPathComponent("seeded")) {
+            section("SEEDING the sandbox")
+            try? FileManager.default.removeItem(at: seed)
+            try await seedSandbox(seed, table: table)
+        } else {
+            print("    using the existing seed")
+        }
+
+        section("SANDBOX: player features on real data")
+        let run = servers.appendingPathComponent("run-\(Int(Date().timeIntervalSince1970))", isDirectory: true)
+        try await Trial.clone(seed, to: run)
+        defer { try? FileManager.default.removeItem(at: run) }
+        try? FileManager.default.removeItem(at: ServerPaths(root: run).meta)
+        try? FileManager.default.removeItem(at: run.appendingPathComponent("seeded"))
+        let c = try await ServerController.adopt(root: run, name: "Sandbox run")
+        defer { c.forceStop(); c.stopTicker() }
+        c.profile.backup.enabled = false
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        c.profile.launch.restartOnCrash = false
+        c.profile.launch.maxMemoryMB = 2048; c.profile.launch.minMemoryMB = 1024
+        c.profile.backup.destination = base.appendingPathComponent("run-backups/\(run.lastPathComponent)").path
+        defer { try? FileManager.default.removeItem(at: URL(fileURLWithPath: c.profile.backup.destination ?? "/nonexistent")) }
+        await c.refreshPlugins()
+        try await playerScenario(c, table: table, port: 25580)
+    } catch { failures.append("sandbox: \(error)") }
+}
+
+@MainActor func bootOK(_ c: ServerController, _ label: String) async {
+    await c.start()
+    await checkUntil(240, "\(label): boots (blockers \(c.blockers.map(\.title)), last \(c.console.suffix(3).map(\.text)))") { c.state == .running }
+}
+
+@MainActor func shutOK(_ c: ServerController) async {
+    c.stop()
+    await checkUntil(90, "stops: \(c.state)") { c.state == .stopped }
+}
+
+/// Connects a bot and waits until it's really in the game.
+@MainActor func join(_ name: String, _ c: ServerController, _ table: ProtocolTable, port: Int) async throws -> Bot {
+    let bot = try Bot(name: name, port: port, table: table)
+    await checkUntil(40, "\(name) joins (\(bot.disconnectReason ?? "no message"))") { c.players.contains(name) }
+    try? await Task.sleep(for: .milliseconds(500))
+    return bot
+}
+
+@MainActor func leave(_ bot: Bot, _ c: ServerController) async {
+    bot.leave()
+    await checkUntil(20, "\(bot.name) leaves") { !c.players.contains(bot.name) }
+}
+
+/// Sends a console command and returns the line matching `expecting`.
+@MainActor func ask(_ c: ServerController, _ command: String, expecting needle: String) async -> String? {
+    let start = c.console.last?.id ?? -1
+    c.send(command)
+    for _ in 0..<40 {
+        try? await Task.sleep(for: .milliseconds(250))
+        if let line = c.console.first(where: { $0.id > start && $0.origin == .server && $0.text.contains(needle) }) { return line.text }
+    }
+    return nil
+}
+
+@MainActor func expectLine(_ c: ServerController, _ command: String, _ needle: String, _ label: String, line: Int = #line) async {
+    let found = await ask(c, command, expecting: needle)
+    check(found != nil, "\(label) (last: \(c.console.suffix(3).map(\.text)))", line: line)
+}
+
+/// Makes a real zip from a list of files.
+func makePack(_ name: String, _ files: [String: String], inside: String? = nil) async -> URL {
+    let work = folder("pack-\(name)"), base = inside.map { work.appendingPathComponent($0) } ?? work
+    for (path, text) in files { write(text, base.appendingPathComponent(path)) }
+    let zip = folder("packs-made").appendingPathComponent("\(name).zip")
+    try? FileManager.default.removeItem(at: zip)
+    _ = try? await Tool.run("/usr/bin/zip", ["-q", "-r", zip.path, "."], cwd: work)
+    return zip
+}
+
+@MainActor func resourcePackChecks() async {
+    print("• Resource packs")
+    func json(_ url: URL) -> [String: Any] { ((try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: Any]) ?? [:] }
+    let top = await makePack("Top", [
+        "pack.mcmeta": #"{"pack":{"pack_format":46,"description":"§aTop pack"}}"#,
+        "assets/minecraft/textures/block/stone.png": "top-stone",
+        "assets/minecraft/textures/item/apple.png": "top-apple",
+        "assets/minecraft/lang/en_us.json": #"{"a":"top","b":"top"}"#,
+        "assets/minecraft/sounds.json": #"{"x":{"sounds":["top"]},"y":{"replace":true,"sounds":["top-y"]}}"#,
+        "assets/minecraft/atlases/blocks.json": #"{"sources":[{"type":"top"}]}"#,
+        "assets/minecraft/models/item/stick.json": #"{"parent":"top","overrides":[{"model":"top"}]}"#,
+        "assets/minecraft/sounds/ding.ogg": "top-ding",
+    ])
+    let lower = await makePack("Lower", [
+        "pack.mcmeta": #"{"pack":{"pack_format":34,"supported_formats":[20,34],"description":[{"text":"Lower "},{"text":"pack"}]}}"#,
+        "pack.png": "lower-icon",
+        "assets/minecraft/textures/block/stone.png": "lower-stone",
+        "assets/minecraft/textures/block/dirt.png": "lower-dirt",
+        "assets/minecraft/lang/en_us.json": #"{"b":"lower","c":"lower"}"#,
+        "assets/minecraft/sounds.json": #"{"x":{"sounds":["lower"]},"y":{"sounds":["lower-y"]},"z":{"sounds":["lower-z"]}}"#,
+        "assets/minecraft/atlases/blocks.json": #"{"sources":[{"type":"lower"}]}"#,
+        "assets/minecraft/models/item/stick.json": #"{"parent":"lower","overrides":[{"model":"lower"}]}"#,
+        "assets/custom/textures/entity/thing.png": "lower-thing",
+    ], inside: "Some Folder")
+    let hollow = await makePack("Hollow", ["assets/minecraft/textures/block/stone.png": "x"])
+    let notZip = folder("packs-made").appendingPathComponent("NotZip.zip")
+    write("this isn't a zip", notZip)
+    do {
+        let a = try await ResourcePacks.add(top), b = try await ResourcePacks.add(lower)
+        equal(a.description, "Top pack", "color codes removed"); equal(a.format, 46, "format read")
+        equal(b.description, "Lower pack", "rich text flattened")
+        check(b.fileCount > 5, "a pack inside a top folder is found: \(b.fileCount)")
+        var refused = 0
+        do { _ = try await ResourcePacks.add(hollow) } catch { refused += 1 }
+        do { _ = try await ResourcePacks.add(notZip) } catch { refused += 1 }
+        equal(refused, 2, "a zip with no pack.mcmeta, and a non-zip, are refused")
+        equal(await ResourcePacks.list().count, 2, "only real packs are in the library")
+        equal(ResourcePacks.category(of: "assets/minecraft/textures/block/stone.png"), "Blocks", "category"); equal(ResourcePacks.category(of: "assets/x/sounds/a.ogg"), "Sounds", "sounds")
+        equal(try await ResourcePacks.images(in: a).count, 2, "images listed")
+
+        var recipe = PackRecipe()
+        recipe.name = "My Pack!"
+        recipe.entries = [PackRecipe.Entry(fileName: a.fileName), PackRecipe.Entry(fileName: b.fileName)]
+        let conflicts = try await ResourcePacks.conflicts(recipe)
+        equal(conflicts.map(\.path), ["assets/minecraft/textures/block/stone.png"], "what merges isn't a conflict, and the rest is")
+        equal(conflicts.first?.winner, a.fileName, "top wins by default")
+
+        func built(_ result: CombineResult) async throws -> URL { try await ResourcePacks.unpack(result.file) }
+        let result = try await ResourcePacks.combine(recipe)
+        equal(result.file.lastPathComponent, "my-pack-.zip", "name made safe")
+        let out = try await built(result)
+        func text(_ path: String) -> String { (try? String(contentsOf: out.appendingPathComponent(path), encoding: .utf8)) ?? "" }
+        equal(text("assets/minecraft/textures/block/stone.png"), "top-stone", "top wins")
+        equal(text("assets/minecraft/textures/block/dirt.png"), "lower-dirt", "only the lower one has it")
+        equal(text("assets/custom/textures/entity/thing.png"), "lower-thing", "from inside the top folder, at the root")
+        equal(text("pack.png"), "lower-icon", "an icon is kept")
+        check(!FileOps.exists(out.appendingPathComponent("Some Folder")), "the folder doesn't come along")
+        let lang = json(out.appendingPathComponent("assets/minecraft/lang/en_us.json")) as? [String: String]
+        equal(lang, ["a": "top", "b": "top", "c": "lower"], "languages merge, top wins each key")
+        let sounds = json(out.appendingPathComponent("assets/minecraft/sounds.json"))
+        equal((sounds["x"] as? [String: Any])?["sounds"] as? [String], ["top", "lower"], "sounds add up")
+        equal((sounds["y"] as? [String: Any])?["sounds"] as? [String], ["top-y"], "unless the higher one replaces")
+        equal((sounds["z"] as? [String: Any])?["sounds"] as? [String], ["lower-z"], "others carry over")
+        equal((json(out.appendingPathComponent("assets/minecraft/atlases/blocks.json"))["sources"] as? [[String: String]])?.map { $0["type"] ?? "" }, ["top", "lower"], "atlases add up")
+        let stick = json(out.appendingPathComponent("assets/minecraft/models/item/stick.json"))
+        equal(stick["parent"] as? String, "top", "item model from the top pack"); equal((stick["overrides"] as? [[String: String]])?.count, 2, "with both packs' overrides")
+        let meta = json(out.appendingPathComponent("pack.mcmeta"))["pack"] as? [String: Any]
+        equal(meta?["pack_format"] as? Int, 46, "newest format"); equal(meta?["supported_formats"] as? [Int], [20, 46], "wide enough for all")
+        check(result.warnings.contains { $0.contains("different Minecraft versions") }, "mismatched versions are mentioned")
+        check(result.sha1.count == 40, "a SHA-1 to give the server")
+
+        recipe.winners["assets/minecraft/textures/block/stone.png"] = b.fileName
+        let picked = try await built(try await ResourcePacks.combine(recipe))
+        equal(try? String(contentsOf: picked.appendingPathComponent("assets/minecraft/textures/block/stone.png"), encoding: .utf8), "lower-stone", "picking another pack's copy")
+        recipe.winners = [:]
+        recipe.entries[1].excluded = ["Blocks"]
+        let less = try await built(try await ResourcePacks.combine(recipe))
+        check(!FileOps.exists(less.appendingPathComponent("assets/minecraft/textures/block/dirt.png")), "leaving out a category")
+        recipe.entries[1].excluded = []
+        recipe.entries[0].enabled = false
+        let solo = try await built(try await ResourcePacks.combine(recipe))
+        equal(try? String(contentsOf: solo.appendingPathComponent("assets/minecraft/textures/block/stone.png"), encoding: .utf8), "lower-stone", "turning a pack off")
+        recipe.entries[1].enabled = false
+        var empty = false
+        do { _ = try await ResourcePacks.combine(recipe) } catch { empty = true }
+        check(empty, "nothing chosen is refused")
+        equal(try? String(contentsOf: ResourcePacks.library.appendingPathComponent(a.fileName), encoding: .utf8).isEmpty, nil, "originals stay binary zips")
+
+        // A hostile zip can't write outside its folder.
+        let trap = folder("trap"), inner = trap.appendingPathComponent("a/b")
+        write(#"{"pack":{"pack_format":46,"description":"x"}}"#, inner.appendingPathComponent("pack.mcmeta"))
+        write("escaped", trap.appendingPathComponent("a/evil.txt"))
+        let evil = folder("packs-made").appendingPathComponent("Evil.zip")
+        _ = try await Tool.run("/usr/bin/zip", ["-q", evil.path, "pack.mcmeta", "../evil.txt"], cwd: inner)
+        let unpacked = try await ResourcePacks.unpack(evil)
+        check(!FileOps.exists(unpacked.deletingLastPathComponent().appendingPathComponent("evil.txt")), "a path with .. stays inside")
+        equal(ResourcePacks.bytes(inSummary: "1,234 files, 5,678 bytes uncompressed, 910 bytes compressed:  84.0%"), 5678, "unpacked size read")
+
+        // Server settings, in the form real files use.
+        let real = "resource-pack=https\\://download.mc-packs.net/pack/abc.zip\nresource-pack-sha1=abc\nrequire-resource-pack=true\nmotd=hi\n"
+        let current = ResourcePacks.current(real)
+        equal(current.url, "https://download.mc-packs.net/pack/abc.zip", "web address unescaped"); check(current.required, "required read")
+        let sha = String(repeating: "a", count: 40)
+        let applied = try ResourcePacks.applying(url: "https://example.com/p.zip", sha1: sha, required: false, to: real)
+        let again = ResourcePacks.current(applied)
+        equal(again.url, "https://example.com/p.zip", "address written"); equal(again.sha1, sha, "SHA-1 written"); check(!again.required, "requirement written")
+        check(applied.contains("motd=hi"), "other settings left alone"); check(applied.contains("resource-pack-id="), "a new id, so games don't keep the old pack")
+        var bad = 0
+        for (u, h) in [("not a url", sha), ("ftp://x/y.zip", sha), ("https://x/y.zip", "short")] {
+            do { _ = try ResourcePacks.applying(url: u, sha1: h, required: false, to: real) } catch { bad += 1 }
+        }
+        equal(bad, 3, "bad addresses and hashes are refused")
+    } catch { failures.append("resource packs threw: \(error)") }
+}
+
+/// A hang should fail a check, not stop the suite forever.
+@MainActor func withTimeLimit<T: Sendable>(seconds: Int, _ work: @escaping @Sendable () async -> T) async -> T? {
+    await withTaskGroup(of: T?.self) { group in
+        group.addTask { await work() }
+        group.addTask { try? await Task.sleep(for: .seconds(seconds)); return nil }
+        let first = await group.next() ?? nil
+        group.cancelAll()
+        return first
+    }
+}
+
+/// The Lab on real software, inside the sandbox folder: protection, seed, saves, and a real rehearsal.
+@MainActor func runLabScenario() async {
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox", isDirectory: true)
+    setenv("LEAFJUICE_HOME", base.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", base.appendingPathComponent("servers").path, 1)
+    let root = LabFiles.root
+    check(root.path.contains(".sandbox"), "the test Lab is in the sandbox: \(root.path)")
+    guard root.path.contains(".sandbox") else { return }
+    try? FileManager.default.removeItem(at: root)
+    try? FileManager.default.removeItem(at: LabFiles.saves)
+    try? FileManager.default.removeItem(at: LabFiles.state)
+    do {
+        print("• LAB: someone else's folder called lab is kept")
+        try FileOps.ensureDir(root)
+        write("mine", root.appendingPathComponent("precious.txt"))
+        let lab = LabController()
+        check(lab.server == nil, "a plain folder called lab isn't the Lab")
+        var didRefuse = false
+        await lab.setUpWithDefaults()
+        didRefuse = lab.failure?.contains("EULA") == true
+        check(didRefuse, "no Lab without the EULA: \(lab.failure ?? "-")")
+        check(FileOps.exists(root.appendingPathComponent("precious.txt")), "and nothing moved")
+        lab.acceptEULA()
+
+        print("• LAB: set up on 1.21.11 with the built-in seed")
+        let old = try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")!
+        await lab.setUp(LabSpec(build: old))
+        check(lab.failure == nil, "set up: \(lab.failure ?? "") \(lab.log.suffix(4))")
+        let aside = FileOps.children(root.deletingLastPathComponent()).first { $0.lastPathComponent.hasPrefix("lab-previous-") }
+        check(aside.map { FileOps.exists($0.appendingPathComponent("precious.txt")) } == true, "that folder was moved aside, whole")
+        if let aside { try? FileManager.default.removeItem(at: aside) }
+        guard let c = lab.server else { failures.append("no Lab"); return }
+        check(c.isLab, "it's a Lab"); check(c.isTrialCopy, "and has no restore points or schedules")
+        equal(c.state, .stopped, "it stops after seeding")
+        check(FileOps.isDirectory(root.appendingPathComponent("mining")) || FileOps.isDirectory(root.appendingPathComponent("world/dimensions")), "worlds made")
+        equal(Set(PlayerFiles.list(c.paths).compactMap(\.name)), ["Alice", "Bob", "Carol"], "bot players made")
+        let props = PropertiesDocument(try String(contentsOf: c.paths.properties, encoding: .utf8))
+        equal(props.value("server-ip"), "127.0.0.1", "only listens on this Mac"); equal(props.value("online-mode"), "false", "bots allowed in")
+        var refused = false
+        do { _ = try c.rename(to: "Other", moveFolderTo: "other") } catch { refused = true }
+        check(refused, "the Lab can't be renamed"); check(FileOps.exists(root), "still there")
+
+        print("• LAB: save, change, restore")
+        await lab.save(note: "Clean seed")
+        check(lab.failure == nil, "saved: \(lab.failure ?? "")")
+        equal(lab.saves.count, 1, "one save listed")
+        print("    \(lab.saves.first?.fileName ?? "") \(Format.bytes(lab.saves.first?.size ?? 0))")
+        check(lab.saves.first?.fileName.hasSuffix("_clean-seed.tar.gz") == true, "named from the note")
+        write("scribble", root.appendingPathComponent("scribble.txt"))
+        let before = c.id
+        await lab.restore(lab.saves[0])
+        check(lab.failure == nil, "restored: \(lab.failure ?? "")")
+        check(!FileOps.exists(root.appendingPathComponent("scribble.txt")), "later changes are gone")
+        equal(lab.server?.id, before, "same server, as far as the app can tell")
+        equal(Set(PlayerFiles.list(lab.server!.paths).compactMap(\.name)), ["Alice", "Bob", "Carol"], "players are back")
+
+        print("• LAB: wipe and start fresh")
+        await lab.wipeAndStartFresh()
+        check(lab.failure == nil, "wiped: \(lab.failure ?? "") \(lab.log.suffix(3))")
+        equal(lab.server?.profile.software.mcVersion, "1.21.11", "same version"); check(lab.server?.plugins.contains { $0.key == "multiverse-core" } == true, "same plugins")
+        equal(lab.saves.count, 1, "saves survive a wipe")
+
+        print("• LAB: rehearse a stand-in server's upgrade to 26.3, using the seeded Lab as last time's data")
+        let targetRoot = base.appendingPathComponent("servers/lab-rehearsal-target", isDirectory: true)
+        try? FileManager.default.removeItem(at: targetRoot)
+        try FileOps.ensureDir(targetRoot)
+        let target = try await ServerController.adopt(root: targetRoot, name: "Pretend")
+        defer { target.stopTicker(); try? FileManager.default.removeItem(at: targetRoot) }
+        target.profile.software.flavor = .paper; target.profile.software.mcVersion = "1.21.11"
+        target.profile.backup.enabled = false; target.profile.lastPluginCheck = Date(); target.profile.software.lastCheck = Date()
+        for source in LabRecipe.defaultPlugins { try await target.addPlugin(source: source) }
+        await target.refreshPlugins()
+        let new = try await SoftwareCatalog.latestBuild(.paper, mc: "26.3")!
+        await lab.rehearse(for: target, to: new)
+        check(lab.failure == nil, "rehearsal ran: \(lab.failure ?? "") \(lab.log.suffix(4))")
+        guard let report = lab.report else { failures.append("no report"); return }
+        print("    \(report.headline)")
+        for path in [report.migrated, report.fresh] {
+            print("    \(path.title): \(path.route)")
+            for line in path.checks { print("      [\(line.outcome.rawValue)] \(line.title) \(line.detail.prefix(160))") }
+        }
+        check(report.migrated.route.contains("Kept the Lab's data"), "it used the data from last time")
+        check(report.migrated.passed, "the upgrade path passes on good software: \(report.migrated.failures.map(\.title))")
+        check(report.fresh.passed, "and so does the fresh path: \(report.fresh.failures.map(\.title))")
+        equal(report.verdict, .bothPassed, "verdict")
+        equal(Set(report.migrated.checks.filter { $0.outcome != .failed }.map(\.title)), Set(report.fresh.checks.filter { $0.outcome != .failed }.map(\.title)), "the same checks on both")
+        check(!report.migrated.checks.contains { $0.outcome == .skipped }, "nothing skipped")
+        equal(lab.server?.profile.software.mcVersion, "26.3", "the Lab ends on the new version, ready for next time")
+        equal(Set(FileOps.children(targetRoot).map(\.lastPathComponent)).contains("world"), false, "the target server wasn't started or touched")
+
+        // A check that can't fail proves nothing, so break things on purpose.
+        print("• LAB: damaged data on the upgrade path only")
+        await lab.restore(lab.saves[0])
+        check(lab.failure == nil, "back to the 1.21.11 save: \(lab.failure ?? "")")
+        guard let damaged = lab.server else { failures.append("no Lab"); return }
+        let alice = PlayerPaths(damaged.paths).data(PlayerFiles.offlineUUID(name: "Alice"))
+        check(FileOps.exists(alice), "Alice's file found to damage")
+        try FileManager.default.removeItem(at: alice)
+        for container in PlayerPaths(damaged.paths).inventoryContainers(name: "Alice") {
+            try? FileManager.default.removeItem(at: PlayerPaths(damaged.paths).inventories.appendingPathComponent(container))
+        }
+        await lab.rehearse(for: target, to: new)
+        if let r = lab.report {
+            for line in r.migrated.failures { print("      [upgrade failed] \(line.title) \(line.detail.prefix(140))") }
+            for line in r.fresh.failures { print("      [fresh failed] \(line.title) \(line.detail.prefix(140))") }
+            equal(r.verdict, .upgradeFailed, "lost data fails the upgrade path, not the fresh one")
+            check(r.migrated.failures.contains { $0.title == "Inventory came through" }, "and says what was lost")
+        } else { failures.append("no report") }
+
+        print("• LAB: a plugin that can't load fails both paths")
+        write("not a jar at all", target.paths.plugins.appendingPathComponent("Broken.jar"))
+        await target.refreshPlugins()
+        print("    target plugins: \(target.plugins.map { "\($0.fileName) enabled=\($0.enabled)" })")
+        await lab.rehearse(for: target, to: new)
+        if let r = lab.report {
+            for line in r.migrated.failures { print("      [upgrade failed] \(line.title) \(line.detail.prefix(140))") }
+            for line in r.fresh.failures { print("      [fresh failed] \(line.title) \(line.detail.prefix(140))") }
+            equal(r.verdict, .bothFailed, "a bad plugin fails both")
+        } else { failures.append("no report") }
+        check(lab.failure == nil, "those ran to the end: \(lab.failure ?? "")")
+        lab.server?.stopTicker()
+    } catch { failures.append("Lab scenario threw: \(error)") }
+}
+
+/// Tests a real server's plugins in the sandbox's Lab. The real folder is only read: its jars and settings
+/// files are copied to a stand-in folder first, and that's what gets adopted.
+@MainActor func runLabModel(_ source: URL, mc: String, settings: Bool) async {
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox", isDirectory: true)
+    setenv("LEAFJUICE_HOME", base.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", base.appendingPathComponent("servers").path, 1)
+    guard LabFiles.root.path.contains(".sandbox") else { failures.append("not in the sandbox"); return }
+    let stand = base.appendingPathComponent("servers/lab-model", isDirectory: true)
+    try? FileManager.default.removeItem(at: stand)
+    do {
+        let from = ServerPaths(root: source), to = ServerPaths(root: stand)
+        try FileOps.ensureDir(to.plugins)
+        for item in FileOps.children(from.plugins) where item.pathExtension == "jar" {
+            try FileManager.default.copyItem(at: item, to: to.plugins.appendingPathComponent(item.lastPathComponent))
+        }
+        for folder in FileOps.children(from.plugins) where FileOps.isDirectory(folder) {
+            for rel in LabController.settingsToCopy(in: folder) {
+                let target = to.plugins.appendingPathComponent(folder.lastPathComponent).appendingPathComponent(rel)
+                try FileOps.ensureDir(target.deletingLastPathComponent())
+                try FileManager.default.copyItem(at: folder.appendingPathComponent(rel), to: target)
+            }
+        }
+        let model = try await ServerController.adopt(root: stand, name: "Model")
+        defer { model.stopTicker() }
+        model.isTrialCopy = true
+        model.profile.software.flavor = .paper; model.profile.software.mcVersion = mc
+        model.profile.backup.enabled = false; model.profile.lastPluginCheck = Date(); model.profile.software.lastCheck = Date()
+        await model.refreshPlugins()
+        let lab = LabController()
+        lab.acceptEULA()
+        func show(_ station: LabStation) {
+            guard let result = lab.result(station) else { print("    \(station.title): no result. \(lab.failure ?? "") \(lab.log.suffix(3))"); return }
+            print("    \(station.title): \(result.outcome.rawValue)  \(result.note)")
+            for line in result.leftOut { print("      \(line)") }
+            for line in result.checks where line.outcome != .passed { print("      [\(line.outcome.rawValue)] \(line.title) \(line.detail.prefix(200))") }
+            for batch in result.groups {
+                print("      [\(batch.outcome.rawValue)] \(batch.title): \(batch.plugins.joined(separator: ", "))")
+                for line in batch.fresh where line.outcome != .passed { print("          [\(line.outcome.rawValue)] \(line.title) \(line.detail.prefix(200))") }
+                for line in batch.withSettings ?? [] where line.outcome != .passed { print("          [\(line.outcome.rawValue)] \(line.title) \(line.detail.prefix(200))") }
+                for note in batch.notes { print("          note: \(note)") }
+            }
+        }
+        await lab.run(.plugins, model: model)
+        show(.plugins)
+        if settings {
+            lab.continueAnyway(.plugins)
+            await lab.run(.settings, model: model)
+            show(.settings)
+        }
+        lab.server?.stopTicker()
+    } catch { failures.append("threw: \(error)") }
+}
+
+@MainActor func seedSandbox(_ root: URL, table: ProtocolTable) async throws {
+    try FileOps.ensureDir(root)
+    write("server-port=25580\nonline-mode=false\nview-distance=4\nsimulation-distance=4\nmotd=Leaf Juice sandbox\nlevel-type=minecraft\\:flat\nnetwork-compression-threshold=-1\nspawn-protection=0\nmax-tick-time=-1\n", root.appendingPathComponent("server.properties"))
+    let c = try await ServerController.adopt(root: root, name: "Sandbox seed")
+    defer { c.forceStop(); c.stopTicker() }
+    c.profile.backup.enabled = false
+    c.profile.backup.destination = root.appendingPathComponent(".leafjuice/backups").path
+    c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+    c.profile.launch.restartOnCrash = false
+    c.profile.launch.maxMemoryMB = 2048; c.profile.launch.minMemoryMB = 1024
+    try EULA.accept(c.paths)
+    let build = try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")!
+    try await c.installSoftware(build)
+    try await c.addPlugin(source: Multiverse.source)
+    try await c.addPlugin(source: .modrinth(project: "multiverse-inventories", allowBeta: false))
+    try await c.addPlugin(source: .modrinth(project: "luckperms", allowBeta: false))
+    await c.refreshPlugins()
+    print("    plugins: \(c.plugins.map { "\($0.name) \($0.version)" })")
+    await bootOK(c, "seed")
+    for (name, env, type) in [("mining", WorldEnvironment.normal, WorldType.flat), ("creative", .normal, .flat), ("deep", .nether, .normal)] {
+        var w = NewWorld(); w.name = name; w.environment = env; w.type = type
+        try await c.createWorld(w)
+        equal(c.worldOperation?.succeeded, true, "\(name) created: \(c.console.suffix(3).map(\.text))")
+    }
+
+    let alice = try await join("Alice", c, table, port: 25580)
+    let bob = try await join("Bob", c, table, port: 25580)
+    let carol = try await join("Carol", c, table, port: 25580)
+    for (who, item, n) in [("Alice", "diamond", 5), ("Alice", "golden_apple", 2), ("Bob", "emerald", 9), ("Carol", "netherite_ingot", 1)] {
+        let done = await ask(c, "give \(who) minecraft:\(item) \(n)", expecting: "Gave ")
+        check(done != nil, "gave \(who) \(item)")
+    }
+    // Into another world: Multiverse-Inventories keeps a separate inventory there.
+    await expectLine(c, "mv tp Alice mining", "Alice", "Alice sent to mining: \(c.console.suffix(3).map(\.text))")
+    try? await Task.sleep(for: .seconds(3))
+    let inMining = await ask(c, "data get entity Alice Inventory", expecting: "entity data")
+    print("    Alice in mining: \(inMining ?? "-")")
+    await expectLine(c, "give Alice minecraft:iron_ingot 7", "Gave ", "gave Alice iron in mining")
+    await expectLine(c, "mv tp Bob creative", "Bob", "Bob sent to creative")
+    try? await Task.sleep(for: .seconds(3))
+    await expectLine(c, "give Bob minecraft:bedrock 3", "Gave ", "gave Bob bedrock in creative")
+    await expectLine(c, "mv tp Alice world", "Alice", "Alice back")
+    await expectLine(c, "mv tp Bob world", "Bob", "Bob back")
+    try? await Task.sleep(for: .seconds(3))
+    for bot in [alice, bob, carol] { await leave(bot, c) }
+    await shutOK(c)
+    let p = PlayerPaths(c.paths)
+    print("    data files: \(FileOps.children(p.dataFolder).map(\.lastPathComponent))")
+    print("    inventories: \(p.inventoryContainers(name: "Alice"))")
+    let sample = FileOps.children(p.inventories.appendingPathComponent("worlds/mining")).first
+    if let sample, let text = try? String(contentsOf: sample, encoding: .utf8) { print("    real inventory file \(sample.lastPathComponent): \(text.prefix(500))") }
+    check(!PlayerFiles.list(c.paths).isEmpty, "real player data exists")
+    write("ok", root.appendingPathComponent("seeded"))
+}
+
+@MainActor func playerScenario(_ c: ServerController, table: ProtocolTable, port: Int) async throws {
+    let p = PlayerPaths(c.paths)
+    let players = PlayerFiles.list(c.paths)
+    print("    players: \(players.map { "\($0.title) \(Int($0.playTime ?? 0))s" })")
+    let alice = players.first { $0.name == "Alice" }!
+    equal(Set(players.compactMap(\.name)), ["Alice", "Bob", "Carol"], "all three players read from real files")
+    equal(alice.uuid.lowercased(), PlayerFiles.offlineUUID(name: "Alice"), "offline UUID matches the server's own")
+    check((alice.playTime ?? 0) > 0, "play time read from real stats")
+    let worldFile = PlayerFiles.summary(ofInventoryFile: p.inventories.appendingPathComponent("worlds/mining/Alice.json"))
+    check(worldFile?.items.contains { $0.item == "minecraft:iron_ingot" && $0.count == 7 } == true, "real per-world file previewed: \(worldFile?.items.map(\.item) ?? [])")
+    let summary = PlayerFiles.summary(of: p.data(alice.uuid))
+    check(summary?.items.contains { $0.item == "minecraft:diamond" && $0.count == 5 } == true, "real inventory read: \(summary?.items.map(\.item) ?? [])")
+    let containers = p.inventoryContainers(name: "Alice")
+    print("    Alice's containers: \(containers)")
+    check(containers.contains { $0.contains("mining") }, "per-world inventory exists: \(containers)")
+    check(PlayerHistory.read(c.paths).contains { $0.name == "Alice" }, "real sessions read from real logs")
+
+    // Real file round trip: every real player file survives read and write.
+    let doc = try NBT.read(p.data(alice.uuid))
+    equal(try NBT.decode(try NBT.encode(doc)), doc, "real player file round trips")
+    let level = try NBT.read(p.world.appendingPathComponent("level.dat"))
+    equal(try NBT.decode(try NBT.encode(level)), level, "real level.dat round trips")
+
+    // Snapshot while playing, grief both worlds, restore, and ask the game.
+    await bootOK(c, "first")
+    var aliceBot = try await join("Alice", c, table, port: port)
+    c.profile.playerSnapshots.intervalMinutes = 1
+    _ = await ask(c, "save-all flush", expecting: "Saved the game")
+    c.tickPlayerSnapshots(elapsed: 61)
+    let live = PlayerSnapshots.list(uuid: alice.uuid.lowercased(), profile: c.profile) + PlayerSnapshots.list(uuid: alice.uuid, profile: c.profile)
+    equal(live.first?.trigger, "playing", "snapshot taken mid-game")
+    await expectLine(c, "clear Alice", "Removed", "griefed in the main world")
+    await expectLine(c, "mv tp Alice mining", "Alice", "off to mining")
+    try? await Task.sleep(for: .seconds(3))
+    let mining = await ask(c, "data get entity Alice Inventory", expecting: "entity data")
+    check(mining?.contains("iron_ingot") == true, "per-world inventory is really separate: \(mining ?? "-")")
+    _ = await ask(c, "clear Alice", expecting: "Removed")
+    _ = await ask(c, "mv tp Alice world", expecting: "Alice")
+    try? await Task.sleep(for: .seconds(3))
+    let emptied = await ask(c, "data get entity Alice Inventory", expecting: "entity data")
+    check(emptied?.contains("diamond") == false, "griefed: \(emptied ?? "-")")
+    await leave(aliceBot, c)
+    await checkUntil(8, "snapshot as she left") { PlayerSnapshots.list(uuid: alice.uuid, profile: c.profile).contains { $0.trigger == "left" } }
+
+    // Multiverse-Inventories is in use, so this waits for a restart.
+    let snapshot = live.first!
+    print("    snapshot holds: \(snapshot.containers)")
+    let outcome = try c.restorePlayer(snapshot, inventoryOnly: true, containers: snapshot.containers)
+    equal(outcome, .staged, "restore waits for the restart with per-world data")
+    c.restart(reason: "Test")
+    await checkUntil(240, "restart applies it: \(c.pending.map { $0.conflict ?? $0.summary })") { c.state == .running && c.pending.isEmpty }
+    aliceBot = try await join("Alice", c, table, port: port)
+    try? await Task.sleep(for: .seconds(1))
+    let back = await ask(c, "data get entity Alice Inventory", expecting: "entity data")
+    check(back?.contains("diamond") == true && back?.contains("golden_apple") == true, "IN GAME: main inventory restored: \(back ?? "-")")
+    _ = await ask(c, "mv tp Alice mining", expecting: "Alice")
+    try? await Task.sleep(for: .seconds(3))
+    let minedBack = await ask(c, "data get entity Alice Inventory", expecting: "entity data")
+    check(minedBack?.contains("iron_ingot") == true, "IN GAME: per-world inventory restored: \(minedBack ?? "-")")
+    _ = await ask(c, "mv tp Alice world", expecting: "Alice")
+    try? await Task.sleep(for: .seconds(3))
+    await leave(aliceBot, c)
+
+    // Griefed, gone, and the plugin has saved the griefed state. Restoring must still win.
+    let carol = players.first { $0.name == "Carol" }!
+    var carolBot = try await join("Carol", c, table, port: port)
+    _ = await ask(c, "save-all flush", expecting: "Saved the game")
+    let carolSnap = try PlayerSnapshots.take(uuid: carol.uuid, name: "Carol", trigger: "manual", paths: c.paths, profile: c.profile)
+    _ = await ask(c, "clear Carol", expecting: "Removed")
+    await leave(carolBot, c)
+    try? await Task.sleep(for: .seconds(1))
+    print("    Carol's snapshot holds: \(carolSnap.containers)")
+    equal(try c.restorePlayer(carolSnap, inventoryOnly: true, containers: carolSnap.containers), .staged, "with the plugin installed, a restore always waits for the restart")
+    c.restart(reason: "Test")
+    await checkUntil(240, "restart applies Carol's restore") { c.state == .running && c.pending.isEmpty }
+    carolBot = try await join("Carol", c, table, port: port)
+    try? await Task.sleep(for: .seconds(1))
+    let carolInv = await ask(c, "data get entity Carol Inventory", expecting: "entity data")
+    check(carolInv?.contains("netherite_ingot") == true, "IN GAME: restored after griefing: \(carolInv ?? "-")")
+    await leave(carolBot, c)
+    await shutOK(c)
+
+    // From a backup, without touching the world.
+    let backup = try await c.backupNow(trigger: "manual")
+    let fromBackup = try await PlayerSnapshots.fromBackup(backup, uuid: alice.uuid, name: "Alice", paths: c.paths, profile: c.profile)
+    check(FileOps.exists(PlayerSnapshots.location(fromBackup, profile: c.profile).appendingPathComponent("player.dat")), "player pulled from a real backup")
+    check(!fromBackup.containers.isEmpty, "with per-world files: \(fromBackup.containers)")
+
+    // Comparing real backups shows real item changes.
+    await bootOK(c, "for compare")
+    carolBot = try await join("Carol", c, table, port: port)
+    _ = await ask(c, "give Carol minecraft:cake 4", expecting: "Gave ")
+    await leave(carolBot, c)
+    await shutOK(c)
+    let after = try await c.backupNow(trigger: "manual")
+    let diff = try await BackupCompare.compare(backup, after, profile: c.profile, paths: c.paths)
+    let carolChange = diff.players.first { $0.name == "Carol" }
+    check(carolChange?.items.contains { $0.item == "minecraft:cake" && $0.before == 0 && $0.after == 4 } == true, "real diff finds the item: \(diff.players.map { "\($0.name ?? "?"): \($0.items.map(\.item))" })")
+
+    // A real name change: Bob comes back as Robert, on a new profile (as offline mode does).
+    await bootOK(c, "for rename")
+    let robert = try await join("Robert", c, table, port: port)
+    _ = await ask(c, "give Robert minecraft:cookie 8", expecting: "Gave ")
+    await leave(robert, c)
+    await shutOK(c)
+    let bobID = players.first { $0.name == "Bob" }!.uuid
+    let robertID = PlayerFiles.offlineUUID(name: "Robert")
+    check(FileOps.exists(p.data(robertID)), "new profile was created")
+    print("    Bob's containers: \(p.inventoryContainers(name: "Bob")), Robert's: \(p.inventoryContainers(name: "Robert"))")
+    var plan = MergePlan(from: PlayerRef(uuid: bobID, name: "Bob"), to: PlayerRef(uuid: robertID, name: "Robert"))
+    plan.keepFromSource = true
+    print("    conflicts: \(PlayerMerge.conflicts(plan, paths: c.paths))")
+    for conflict in PlayerMerge.conflicts(plan, paths: c.paths) { plan.useOldContainer[conflict] = true }
+    let oldStats = PlayerFiles.playTicks(p.stats(bobID)) ?? 0, newStats = PlayerFiles.playTicks(p.stats(robertID)) ?? 0
+    try await c.mergePlayers(plan)
+    check(!FileOps.exists(p.data(bobID)), "old profile merged away")
+    equal(PlayerFiles.playTicks(p.stats(robertID)), oldStats + newStats, "play time adds up")
+    await bootOK(c, "after merge")
+    let merged = try await join("Robert", c, table, port: port)
+    try? await Task.sleep(for: .seconds(1))
+    let mergedInv = await ask(c, "data get entity Robert Inventory", expecting: "entity data")
+    check(mergedInv?.contains("emerald") == true, "IN GAME: Bob's items, as Robert: \(mergedInv ?? "-")")
+    let uuidLine = await ask(c, "data get entity Robert UUID", expecting: "entity data")
+    print("    Robert's UUID in game: \(uuidLine ?? "-")")
+    let want = NBT.uuid(UUID(uuidString: robertID)!)
+    if case let .intArray(words) = want { check(uuidLine?.contains("\(words[0])") == true, "IN GAME: identifies as the kept profile") }
+    _ = await ask(c, "mv tp Robert creative", expecting: "Robert")
+    try? await Task.sleep(for: .seconds(3))
+    let creative = await ask(c, "data get entity Robert Inventory", expecting: "entity data")
+    check(creative?.contains("bedrock") == true, "IN GAME: Bob's per-world inventory follows the rename: \(creative ?? "-")")
+    _ = await ask(c, "mv tp Robert world", expecting: "Robert")
+    try? await Task.sleep(for: .seconds(3))
+    await leave(merged, c)
+    await shutOK(c)
+    c.keepUpgrade()
+
+    // Cleanup on a real server: apply everything it's sure of, and the server still runs.
+    write("x", c.paths.root.appendingPathComponent("hs_err_pid99.log"))
+    write("x", c.paths.root.appendingPathComponent("bukkit.yml.old"))
+    await c.refreshPlugins()
+    await c.scanForCleanup()
+    print("    cleanup: \(c.cleanupItems.map { "\($0.path) [\($0.confidence)]" })")
+    let sure = c.cleanupItems.filter { $0.confidence == .safe }
+    check(!sure.contains { $0.path.hasPrefix("world") || $0.path == c.profile.software.jarName }, "nothing essential suggested")
+    try await c.cleanUp(sure)
+    await bootOK(c, "after cleanup")
+    let againAlice = try await join("Alice", c, table, port: port)
+    await leave(againAlice, c)
+    await shutOK(c)
+
+    // Real stats, regulars, failed joins, MSPT and GC.
+    await c.refreshStats()
+    print("    stats: \(c.playerStats.map { "\($0.name): \(PlayerStat.all[0].display($0.value(PlayerStat.all[0])))" })")
+    check(c.playerStats.contains { $0.name == "Alice" && $0.value(PlayerStat.all[0]) > 0 }, "real stats read")
+    check(c.playerActivity.contains { $0.name == "Alice" }, "real regulars read")
+    await bootOK(c, "for analytics")
+    c.requestTPS()
+    await checkUntil(10, "real MSPT read: \(c.console.suffix(3).map(\.text))") { c.mspt != nil }
+    print("    tps \(String(describing: c.tps?.oneMinute)) mspt \(String(describing: c.mspt))")
+    check(!c.console.suffix(6).contains { $0.text.contains("tick times") }, "real MSPT stays out of the console")
+    check(FileOps.exists(GCLog.file(c.paths)), "real GC log written")
+    print("    gc pause: \(String(describing: GCLog.longestPause(in: (try? String(contentsOf: GCLog.file(c.paths), encoding: .utf8)) ?? "")))")
+    _ = await ask(c, "whitelist on", expecting: "white")
+    let refused = try Bot(name: "Stranger", port: port, table: table)
+    await checkUntil(15, "refused join recorded: \(c.console.suffix(4).map(\.text))") { c.failedJoins.contains { $0.name == "Stranger" } }
+    print("    refused: \(String(describing: c.failedJoins.first))")
+    refused.leave()
+    _ = await ask(c, "whitelist off", expecting: "white")
+    let drillRecord = try await c.backupNow(trigger: "manual", scope: .everything)
+    await c.runBackupDrill(drillRecord)
+    equal(c.profile.lastDrill?.passed, true, "real backup drill: \(c.profile.lastDrill?.detail ?? "")")
+    print("    drill: \(c.profile.lastDrill?.detail ?? "")")
+    await shutOK(c)
+    await c.refreshHistory()
+    print("    timeline: \(c.timeline.prefix(8).map(\.title))")
+    check(c.timeline.contains { $0.kind == .player && $0.title.contains("Merged") }, "merge on the real timeline")
+
+    // World rename with real per-world inventories.
+    await c.refreshWorlds()
+    let miningWorld = c.worlds.first { $0.title == "mining" }!
+    try await c.applyRename(c.worldRenamePlan(miningWorld, to: "quarry"), rebuild: { c.worldRenamePlan(miningWorld, to: "quarry") })
+    check(FileOps.exists(p.inventories.appendingPathComponent("worlds/quarry")), "per-world inventories follow a world rename")
+    await bootOK(c, "after world rename")
+    let tester = try await join("Alice", c, table, port: port)
+    let listing = await ask(c, "mv list", expecting: "quarry")
+    check(listing?.contains("UNLOADED") == false, "renamed world loaded: \(listing ?? "-")")
+    _ = await ask(c, "mv tp Alice quarry", expecting: "Alice")
+    try? await Task.sleep(for: .seconds(3))
+    let quarried = await ask(c, "data get entity Alice Inventory", expecting: "entity data")
+    check(quarried?.contains("iron_ingot") == true, "IN GAME: inventory followed the world's new name: \(quarried ?? "-")")
+    _ = await ask(c, "mv tp Alice world", expecting: "Alice")
+    try? await Task.sleep(for: .seconds(3))
+    await leave(tester, c)
+    await shutOK(c)
+    c.keepUpgrade()
+
+    // And all of it on Minecraft 26.x.
+    section("SANDBOX: the same on Minecraft 26.3")
+    let table26 = try await ProtocolTable.load(mc: "26.3", cache: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".sandbox/protocol"), java: c.runtimes.first { $0.major >= 25 }?.path ?? "/usr/bin/java")
+    print("    protocol \(table26.version)")
+    if !c.runtimes.contains(where: { $0.major >= 25 }) { try await c.installJava(major: 25) }
+    let newest = try await SoftwareCatalog.latestBuild(.paper, mc: "26.3")!
+    try await c.installSoftware(newest)
+    c.keepUpgrade()
+    await bootOK(c, "26.3")
+    let p26 = PlayerPaths(c.paths)
+    check(p26.dataFolder.path.hasSuffix("players/data"), "player data moved: \(p26.dataFolder.path)")
+    let modernAlice = try await join("Alice", c, table26, port: port)
+    let invModern = await ask(c, "data get entity Alice Inventory", expecting: "entity data")
+    check(invModern?.contains("diamond") == true, "IN GAME on 26.3: inventory survived: \(invModern ?? "-")")
+    _ = await ask(c, "save-all flush", expecting: "Saved the game")
+    let list26 = PlayerFiles.list(c.paths)
+    print("    26.x players: \(list26.map(\.title))")
+    check(list26.contains { $0.name == "Alice" }, "players read in the new layout")
+    let snap26 = try PlayerSnapshots.take(uuid: PlayerFiles.offlineUUID(name: "Alice"), name: "Alice", trigger: "manual", paths: c.paths, profile: c.profile)
+    check(FileOps.exists(PlayerSnapshots.location(snap26, profile: c.profile).appendingPathComponent("player.dat")), "snapshot in the new layout")
+    _ = await ask(c, "clear Alice", expecting: "Removed")
+    await leave(modernAlice, c)
+    await shutOK(c)
+    try PlayerSnapshots.restore(snap26, inventoryOnly: true, containers: snap26.containers, paths: c.paths, profile: c.profile)
+    await c.refreshWorlds()
+    print("    26.x worlds: \(c.worlds.map { "\($0.name)=\($0.relativePath ?? "-")" })")
+    let creativeWorld = c.worlds.first { $0.title == "creative" }
+    check(creativeWorld != nil, "extra world found on 26.x")
+    if let creativeWorld {
+        try await c.applyRename(c.worldRenamePlan(creativeWorld, to: "workshop"), rebuild: { c.worldRenamePlan(creativeWorld, to: "workshop") })
+        c.keepUpgrade()
+    }
+    await bootOK(c, "26.3 after rename")
+    let last = try await join("Alice", c, table26, port: port)
+    try? await Task.sleep(for: .seconds(1))
+    let invBack = await ask(c, "data get entity Alice Inventory", expecting: "entity data")
+    check(invBack?.contains("diamond") == true, "IN GAME on 26.3: restored: \(invBack ?? "-")")
+    let list26b = await ask(c, "mv list", expecting: "workshop")
+    check(list26b != nil && list26b?.contains("UNLOADED") == false, "IN GAME on 26.3: renamed world loaded: \(list26b ?? "-"); \(c.console.suffix(8).map(\.text))")
+    await leave(last, c)
+    await shutOK(c)
 }
 
 @MainActor func until(_ seconds: Int, _ condition: () -> Bool) async -> Bool {

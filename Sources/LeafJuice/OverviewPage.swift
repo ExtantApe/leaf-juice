@@ -18,17 +18,23 @@ struct OverviewPage: View {
                     Text("since \(startedAt.formatted(date: .omitted, time: .shortened))").font(.callout).foregroundStyle(Juice.muted)
                 }
                 Spacer()
-                Button("Rename…") { renaming = true }.buttonStyle(.juice)
+                if !server.isLab { Button("Rename…") { renaming = true }.buttonStyle(.juice) }
                 Button("Show in Finder") { NSWorkspace.shared.open(server.paths.root) }.buttonStyle(.juice)
-                Menu {
-                    Button("Remove from Leaf Juice…") { confirmRemove = true }.disabled(server.state.isLive)
-                } label: {
-                    Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
+                if !server.isLab {
+                    Menu {
+                        Button("Remove from Leaf Juice…") { confirmRemove = true }.disabled(server.state.isLive)
+                    } label: {
+                        Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
+                    }
+                    .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("More actions").help("More actions")
                 }
-                .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("More actions").help("More actions")
             }
 
+            if server.isLab, Modules.shared.isOn(.lab) { LabPanel(model: model, server: server) }
             UpgradeBanner(server: server)
+            if server.allowlistSurprise {
+                Callout(tone: .info, title: "The allowlist is on", detail: "New servers on Minecraft 26 start with it on, so only players you add can join. Turn it off in Configs under Players, or add people to the allowlist there.")
+            }
             if server.needsRestart {
                 Callout(tone: .warning, title: "Restart needed", detail: pendingDetail) {
                     Button("Review") { model.page = .changes }.buttonStyle(.juice)
@@ -47,13 +53,6 @@ struct OverviewPage: View {
                 pluginsCard
                 backupsCard
                 issuesCard
-            }
-        }
-        .task(id: server.state) {
-            // Only while this page is showing, so it adds nothing to the log otherwise.
-            while server.state == .running, !Task.isCancelled {
-                server.requestTPS()
-                try? await Task.sleep(for: .seconds(30))
             }
         }
         .confirmationDialog("Remove \(server.profile.name) from Leaf Juice?", isPresented: $confirmRemove) {
@@ -79,7 +78,8 @@ struct OverviewPage: View {
     private var connectCard: some View {
         Card(title: "Connect", systemImage: "network") {
             let port = server.serverPort
-            let local = SystemInfo.lanAddress().map { port == 25565 ? $0 : "\($0):\(port)" }
+            // The Lab only listens on this Mac, so a network address would just fail.
+            let local = server.isLab ? nil : SystemInfo.lanAddress().map { port == 25565 ? $0 : "\($0):\(port)" }
             Fact(label: "On this Mac", value: port == 25565 ? "localhost" : "localhost:\(port)")
             if let local { Fact(label: "On your network", value: local) }
             Fact(label: "Server message", value: server.serverMessage ?? "Not set")
@@ -87,7 +87,7 @@ struct OverviewPage: View {
             if !server.players.isEmpty {
                 Text(server.players.sorted().joined(separator: ", ")).font(.callout).foregroundStyle(Juice.ink)
             }
-            ConnectCheckRow(server: server)
+            if !server.isLab { ConnectCheckRow(server: server) }
             if let local {
                 Button("Copy Network Address") {
                     NSPasteboard.general.clearContents()
@@ -108,6 +108,9 @@ struct OverviewPage: View {
                 }
                 .accessibilityElement(children: .combine)
                 .help("20 is perfect. Below about 18, players start to notice lag. Last 5 and 15 minutes: \(String(format: "%.1f", tps.fiveMinutes)), \(String(format: "%.1f", tps.fifteenMinutes)).")
+            }
+            if let mspt = server.mspt, server.state == .running {
+                Fact(label: "Time per tick", value: String(format: "%.1f ms of 50", mspt))
             }
             if let m = server.metrics {
                 Fact(label: "Memory in use", value: Format.bytes(m.memoryBytes))
@@ -156,6 +159,9 @@ struct OverviewPage: View {
                 Fact(label: "Latest", value: "None yet")
             }
             Fact(label: "Automatic", value: server.profile.backup.enabled ? "Every \(server.profile.backup.intervalHours) h" : "Off")
+            if let drill = server.profile.lastDrill {
+                Fact(label: drill.passed ? "Last proven" : "Last drill", value: drill.passed ? drill.date.formatted(.relative(presentation: .named)) : "Failed")
+            }
             Button("Back Up Now") { server.attempt { try await server.backupNow() } }
                 .buttonStyle(.juice).disabled(server.isBackingUp)
         }

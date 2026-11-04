@@ -22,6 +22,7 @@ struct BackupsPage: View {
                 if server.isBackingUp { ProgressView().controlSize(.small).accessibilityLabel("Backing up") }
             }
             UpgradeBanner(server: server)
+            if Modules.shared.isOn(.backupDrill) { drillCard }
             settingsCard
             listCard
             ShelfCard(server: server)
@@ -45,6 +46,23 @@ struct BackupsPage: View {
     }
     private var deleteShown: Binding<Bool> {
         Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
+    }
+
+    private var drillCard: some View {
+        Card(title: "Backup drill", systemImage: "checkmark.shield") {
+            if let drill = server.profile.lastDrill {
+                Callout(tone: drill.passed ? .good : .danger, title: drill.passed ? "Last proven \(drill.date.formatted(.relative(presentation: .named)))" : "The last drill failed", detail: "Backup from \(drill.backupDate.formatted(date: .abbreviated, time: .shortened)). \(drill.detail)")
+            } else {
+                Hint("A backup you've never restored is a backup you hope works. A drill unpacks one to a throwaway folder, starts it on its own port, then removes it.")
+            }
+            HStack {
+                Button(server.drillRunning ? "Testing…" : "Test Latest Backup") { Task { await server.runBackupDrill() } }
+                    .buttonStyle(.juice).disabled(server.drillRunning || server.trialPhase != nil || server.backups.isEmpty)
+                if server.drillRunning { ProgressView().controlSize(.small).accessibilityLabel("Testing the backup") }
+                Toggle("Test automatically each week, when nobody's on", isOn: $server.profile.backup.autoDrill).toggleStyle(.checkbox)
+            }
+            Hint("Your real server keeps running. Plugins that reach outside are off in the test, and it won't run automatically if a plugin uses an outside database.")
+        }
     }
 
     private var settingsCard: some View {

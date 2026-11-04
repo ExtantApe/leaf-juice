@@ -1,0 +1,66 @@
+import Foundation
+import Observation
+
+/// Major features that can be switched off. All compiled in and all on by default: there's no third-party code here.
+/// Off hides a feature and stops its background work. Its data stays where it is.
+public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
+    case worlds, players, history, cleanup, testCopies, backupDrill, lab, resourcePacks
+
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .worlds: "Worlds and Multiverse"
+        case .players: "Players"
+        case .history: "History"
+        case .cleanup: "Cleanup"
+        case .testCopies: "Test copies"
+        case .backupDrill: "Backup drills"
+        case .lab: "Lab"
+        case .resourcePacks: "Resource packs"
+        }
+    }
+    public var summary: String {
+        switch self {
+        case .worlds: "Create, rename and manage worlds, with Multiverse built in."
+        case .players: "Inventory snapshots, restores, merging names, stats and leaderboards."
+        case .history: "Charts of performance and size over time, and the timeline."
+        case .cleanup: "Find leftover folders and old files, with undo."
+        case .testCopies: "Try a change on a throwaway copy of a server first."
+        case .backupDrill: "Prove a backup restores by booting it somewhere safe."
+        case .lab: "A practice server with bot players, the status board and upgrade rehearsals."
+        case .resourcePacks: "Look through resource packs, and combine them into one."
+        }
+    }
+    public var icon: String {
+        switch self {
+        case .worlds: "globe.americas"
+        case .players: "person.2"
+        case .history: "chart.xyaxis.line"
+        case .cleanup: "sparkles"
+        case .testCopies: "doc.on.doc"
+        case .backupDrill: "checkmark.shield"
+        case .lab: "flask"
+        case .resourcePacks: "photo.stack"
+        }
+    }
+}
+
+@MainActor @Observable
+public final class Modules {
+    public static let shared = Modules()
+    /// Stored as what's off, so a module added later starts on.
+    public private(set) var off: Set<String>
+    private var file: URL { AppPaths.home.appendingPathComponent("modules.json") }
+
+    init() { off = JSONStore.load(AppPaths.home.appendingPathComponent("modules.json"), defaults: []) }
+
+    public func isOn(_ module: LeafModule) -> Bool { !off.contains(module.rawValue) }
+
+    public func set(_ module: LeafModule, on: Bool) {
+        if on { off.remove(module.rawValue) } else { off.insert(module.rawValue) }
+        try? JSONStore.save(off, to: file)
+    }
+
+    /// Reads the file again. Tests move where it lives.
+    func reload() { off = JSONStore.load(file, defaults: []) }
+}

@@ -198,7 +198,8 @@ public struct TPSReading: Equatable, Sendable {
 }
 
 public enum TPS {
-    private static let pattern = regex(#"TPS from last 1m, 5m, 15m:\s*\*?([\d.]+),\s*\*?([\d.]+),\s*\*?([\d.]+)"#)
+    // Purpur adds a 5s figure: `TPS from last 5s, 1m, 5m, 15m: 20.0, 19.9, 19.9, 19.9`.
+    private static let pattern = regex(#"TPS from last (?:5s, )?1m, 5m, 15m:\s*(?:\*?[\d.]+,\s*(?=\*?[\d.]+,\s*\*?[\d.]+,\s*\*?[\d.]+))?\*?([\d.]+),\s*\*?([\d.]+),\s*\*?([\d.]+)"#)
 
     public static func parse(_ line: String) -> TPSReading? {
         guard let m = pattern.firstMatch(in: line), m.numberOfRanges == 4 else { return nil }
@@ -312,7 +313,7 @@ public enum Trial {
     /// Plugins that talk to the outside world. A copy shouldn't post to your Discord or count votes.
     public static let disabledInCopies: Set<String> = [
         "discordsrv", "essentialsdiscord", "essentialsdiscordlink", "discordintegration", "nuvotifier", "votifier", "votingplugin",
-        "dynmap", "bluemap", "plan", "bungeecord", "velocity", "tcpshield", "geyser-spigot", "floodgate",
+        "dynmap", "bluemap", "plan", "drivebackupv2", "bungeecord", "velocity", "tcpshield", "geyser-spigot", "floodgate",
     ]
     private static let sharedDatabase = regex(#"^\s*(storage-method|type|driver|database-type|storage|use-mysql|mysql)\s*:\s*['"]?(mysql|mariadb|postgres\w*|postgresql|mongodb|true)['"]?\s*(#.*)?$"#, [.caseInsensitive, .anchorsMatchLines])
 

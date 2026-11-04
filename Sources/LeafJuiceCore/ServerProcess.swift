@@ -84,6 +84,8 @@ public enum ConsoleText {
         while line.hasSuffix("\r") { line.removeLast() }
         if let last = line.lastIndex(of: "\r") { line = String(line[line.index(after: last)...]) }
         if line == ">" || line == "> " { return nil }
+        // Newer servers echo console commands back. Real output always starts with a timestamp.
+        if line.hasPrefix("> ") { return nil }
         return line
     }
 }

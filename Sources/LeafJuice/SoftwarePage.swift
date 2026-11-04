@@ -12,7 +12,7 @@ struct SoftwarePage: View {
             UpgradeBanner(server: server)
             currentCard
             if server.profile.software.flavor.canDownload { updatesCard }
-            ChangeVersionCard(server: server)
+            ChangeVersionCard(model: model, server: server)
             IdentifyCard(server: server)
             if !server.archivedJars.isEmpty { rollbackCard }
         }
@@ -96,6 +96,7 @@ struct SoftwarePage: View {
 
 /// Moving to another Minecraft version, with a check that plugins will come along.
 struct ChangeVersionCard: View {
+    let model: AppModel
     let server: ServerController
     @State private var flavor: Flavor = .paper
     @State private var versions: [String] = []
@@ -125,16 +126,30 @@ struct ChangeVersionCard: View {
             if !target.isEmpty { moveMessage }
             HStack {
                 Button("Check Plugins") { checkReadiness() }.buttonStyle(.juice).disabled(target.isEmpty || checking || server.plugins.isEmpty)
+                if Modules.shared.isOn(.testCopies) {
                 Button("Try on a Test Copy") { prepare(trial: true) }
                     .buttonStyle(.juicePrimary)
                     .disabled(target.isEmpty || move == .downgrade || move == .same || server.activity != nil || server.trialPhase != nil)
                     .help("Tries this on a throwaway copy of the server first. The real server isn't touched.")
+                }
                 Button(server.state.canStart ? "Install…" : "Install at Restart…") { prepare(trial: false) }
                     .buttonStyle(.juice)
                     .disabled(target.isEmpty || move == .downgrade || move == .same || server.activity != nil)
+                if !server.isLab, Modules.shared.isOn(.lab) {
+                    Button("Rehearse in the Lab") { rehearse() }
+                        .buttonStyle(.juice)
+                        .disabled(target.isEmpty || move == .downgrade || model.lab.isBusy)
+                        .help("Opens the Lab's status board, set to this server and this version.")
+                }
                 if checking { ProgressView().controlSize(.small).accessibilityLabel("Checking plugins") }
             }
             if let readiness { readinessList(readiness) }
+            if !server.isLab, model.lab.isBusy || model.lab.failure != nil { LabProgress(lab: model.lab) }
+            if !server.isLab, !model.lab.isBusy, let report = model.lab.report, report.serverName == server.profile.name, report.to.contains(target) {
+                Callout(tone: report.verdict == .bothPassed && !report.settingsProblem ? .good : .warning, title: report.headline, detail: report.explanation) {
+                    Button("See the Board") { model.openLabBoard() }.buttonStyle(.juice)
+                }
+            }
         }
         .task(id: flavor) { await load() }
         .onChange(of: target) { readiness = nil }
@@ -215,6 +230,21 @@ struct ChangeVersionCard: View {
         Task {
             readiness = await server.readiness(for: version, flavor: flavor)
             checking = false
+        }
+    }
+
+    private func rehearse() {
+        Task {
+            do {
+                let channels = showPre ? ["STABLE", "BETA", "ALPHA"] : server.profile.software.channels
+                guard let found = try await SoftwareCatalog.latestBuild(flavor, mc: target, channels: channels) else {
+                    loadError = "No build of \(target) on the channels you accept."
+                    return
+                }
+                model.lab.chooseModel(server)
+                model.lab.chooseTarget(found)
+                model.openLabBoard()
+            } catch { loadError = error.localizedDescription }
         }
     }
 

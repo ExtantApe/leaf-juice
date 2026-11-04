@@ -215,6 +215,8 @@ public enum WorldRename {
         ("plugins/Citizens/saves.yml", [.values(["world"])], "Citizens NPC locations"),
         ("plugins/dynmap/worlds.txt", [.values(["name"])], "Dynmap worlds"),
         ("plugins/WorldGuard/config.yml", [.values(["world"])], "WorldGuard settings"),
+        // Observed format: `mining:` then `  nether: deep`, written by `mvnp link`.
+        ("plugins/Multiverse-NetherPortals/links.yml", [.key(section: nil), .values(["nether", "end"])], "Multiverse Nether links"),
     ]
 
     /// Per-world folders inside plugins.
@@ -312,6 +314,23 @@ public enum WorldRename {
                 if FileOps.isDirectory(paths.root.appendingPathComponent(from)) {
                     plan.items.append(RenameItem(action: .moveFolder(from: from, to: "\(folder.path)/\(n)"), description: folder.label, changes: ["\(o) → \(n)"]))
                 }
+            }
+        }
+
+        // Observed: Multiverse-Inventories remembers the world each player was last in, and a rename left that stale.
+        let inventoryPlayers = "plugins/Multiverse-Inventories/players"
+        for file in FileOps.children(paths.root.appendingPathComponent(inventoryPlayers)) where file.pathExtension == "json" {
+            guard var text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            var changes: [String] = []
+            for (o, n) in names where !o.contains(":") {
+                let pattern = "\"lastWorld\"\\s*:\\s*\"\(NSRegularExpression.escapedPattern(for: o))\""
+                if text.range(of: pattern, options: .regularExpression) != nil {
+                    text = text.replacingOccurrences(of: pattern, with: "\"lastWorld\":\"\(n)\"", options: .regularExpression)
+                    changes.append("\(o) → \(n)")
+                }
+            }
+            if !changes.isEmpty {
+                plan.items.append(RenameItem(action: .replaceFile(path: "\(inventoryPlayers)/\(file.lastPathComponent)", text: text), description: "A player's last world", changes: changes))
             }
         }
 

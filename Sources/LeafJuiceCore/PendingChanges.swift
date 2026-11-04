@@ -31,6 +31,15 @@ public struct PendingChange: Codable, Identifiable, Equatable, Sendable {
         }
     }
 
+    var eventKind: ServerEvent.Kind {
+        switch kind {
+        case .config: .config
+        case .software: .software
+        case .pluginInstall, .pluginRemove, .pluginToggle: .plugin
+        case .playerRestore: .player
+        }
+    }
+
     public var needsBackup: Bool {
         switch kind {
         case let .software(_, _, needsBackup): needsBackup

@@ -27,6 +27,8 @@ public struct ParsedLogLine: Sendable {
                 break
             }
         }
+        // Minecraft 26.x labels command output and game messages like this.
+        if message.hasPrefix("System chat: ") { message = String(message.dropFirst(13)) }
         self.level = level
         self.message = message
         hasPrefix = prefixed
@@ -183,6 +185,16 @@ public final class IssueAnalyzer {
     }
 
     /// Feeds one log line. `at` is overridable for scanning old logs.
+    /// Whether any rule recognizes this line now.
+    public func ruleMatches(_ raw: String) -> Bool {
+        let line = ParsedLogLine(raw)
+        let lower = line.message.lowercased()
+        return rules.contains { compiled in
+            guard compiled.needles.isEmpty || compiled.needles.contains(where: lower.contains) else { return false }
+            return compiled.pattern.map { $0.firstMatch(in: line.message) != nil } ?? true
+        }
+    }
+
     public func ingest(_ raw: String, at date: Date = Date()) {
         let line = ParsedLogLine(raw)
         if line.isStackFrame || !line.hasPrefix { attach(line, raw: raw) } else { lastRecordID = nil }
@@ -216,7 +228,9 @@ public final class IssueAnalyzer {
     private func pluginFromStack(_ frame: String) -> String? {
         let trimmed = frame.drop { $0 == " " || $0 == "\t" }
         guard trimmed.hasPrefix("at ") else { return nil }
-        let symbol = trimmed.dropFirst(3)
+        var symbol = trimmed.dropFirst(3)
+        // Observed on Paper: `at ActionHealth-3.5.9-all.jar//com.zeshanaslam.actionhealth.LookThread.run(...)`.
+        if let split = symbol.range(of: "//") { symbol = symbol[split.upperBound...] }
         return pluginPackages.first { symbol.hasPrefix($0.prefix + ".") }?.name
     }
 
