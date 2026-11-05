@@ -208,7 +208,8 @@ public enum ConfigCatalog {
     ]
 
     /// A plugin's settings files, relative to its folder: main ones first, a few levels deep, within reason.
-    static func settingsFiles(in folder: URL, limit: Int = 40) -> [String] {
+    /// Observed: real plugins can have 68 settings files, so this is high enough to only stop something pathological.
+    static func settingsFiles(in folder: URL, limit: Int = 300) -> [String] {
         var found: [String] = []
         var queue: [(URL, String, Int)] = [(folder, "", 0)]
         while !queue.isEmpty, found.count < limit {
@@ -268,7 +269,8 @@ public enum ConfigCatalog {
             let dirName = folder.lastPathComponent
             let plugin = byFolder[dirName.lowercased()]
             let group: String
-            if plugins == nil || plugin != nil {
+            // Observed: these belong to no plugin of that name. bStats is shared by many, and Paper includes spark.
+            if plugins == nil || plugin != nil || ["bstats", "spark", "pluginmetrics"].contains(dirName.lowercased()) {
                 group = plugin.map { $0.enabled ? $0.name : "\($0.name) (disabled)" } ?? dirName
             } else {
                 group = "Leftover plugin folders"

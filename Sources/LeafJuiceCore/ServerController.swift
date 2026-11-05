@@ -131,6 +131,11 @@ public final class ServerController: Identifiable {
         let paths = ServerPaths(root: root)
         guard let profile = readProfile(root: root) else { return nil }
         let controller = ServerController(root: root, profile: profile)
+        // An unreadable settings file is set aside, so without this the server would just look reset.
+        let saved = ServerPaths(root: root).profile
+        if FileOps.exists(saved.appendingPathExtension("corrupt")), !FileOps.exists(saved) {
+            controller.notice = "This server's Leaf Juice settings couldn't be read, so they're back to their defaults. The old file was kept as server.json.corrupt in its .leafjuice folder."
+        }
         // The Lab is disposable, so it skips restore points, schedules and analytics.
         controller.isTrialCopy = LabFiles.isLab(root: root, profile: profile)
         return controller
@@ -439,8 +444,11 @@ public final class ServerController: Identifiable {
     /// A server left running by a previous session, or started outside Leaf Juice.
     public func detectExternalServer() async {
         guard process == nil else { return }
+        // After a reboot the saved number can belong to something else, even another Java program.
+        // It's only this server if it's also running in this folder.
         if let pid: Int32 = try? JSONStore.decoder.decode(Int32.self, from: Data(contentsOf: paths.pid)),
-           SystemInfo.isAlive(pid: pid), let command = await SystemInfo.commandLine(pid: pid), command.contains("java") {
+           SystemInfo.isAlive(pid: pid), let command = await SystemInfo.commandLine(pid: pid), command.contains("java"),
+           SystemInfo.workingDirectory(pid: pid)?.standardizedFileURL.resolvingSymlinksInPath().path == paths.root.standardizedFileURL.resolvingSymlinksInPath().path {
             state = .external(pid: pid)
             return
         }
@@ -451,6 +459,10 @@ public final class ServerController: Identifiable {
     /// Asks a server we no longer own to shut down cleanly.
     public func stopExternalServer() async {
         guard case let .external(pid) = state else { return }
+        guard SystemInfo.workingDirectory(pid: pid)?.standardizedFileURL.resolvingSymlinksInPath().path == paths.root.standardizedFileURL.resolvingSymlinksInPath().path else {
+            await detectExternalServer()
+            return
+        }
         kill(pid, SIGTERM)
         for _ in 0..<60 where SystemInfo.isAlive(pid: pid) { try? await Task.sleep(for: .seconds(1)) }
         await detectExternalServer()
@@ -781,8 +793,7 @@ public final class ServerController: Identifiable {
 
     private func swapJar(from staged: URL, build: SoftwareBuild) throws {
         guard FileOps.exists(staged) else { throw LeafError("The downloaded jar is missing. Download it again.") }
-        let old = paths.root.appendingPathComponent(profile.software.jarName)
-        if !profile.software.jarName.isEmpty, FileOps.exists(old), profile.software.jarName != build.fileName {
+        if let old = FileOps.child(profile.software.jarName, of: paths.root), FileOps.exists(old), profile.software.jarName != build.fileName {
             try FileOps.move(old, to: paths.jarArchive.appendingPathComponent(profile.software.jarName))
         }
         try FileOps.move(staged, to: paths.root.appendingPathComponent(build.fileName))
@@ -962,9 +973,11 @@ public final class ServerController: Identifiable {
             }
             if parts.count >= 3 { profile.software.build = Int(parts.last ?? "") }
         }
-        let current = paths.root.appendingPathComponent(profile.software.jarName)
-        if FileOps.exists(current) { try FileOps.move(current, to: paths.jarArchive.appendingPathComponent(profile.software.jarName)) }
-        try FileOps.move(paths.jarArchive.appendingPathComponent(name), to: paths.root.appendingPathComponent(name))
+        if let current = FileOps.child(profile.software.jarName, of: paths.root), FileOps.exists(current) {
+            try FileOps.move(current, to: paths.jarArchive.appendingPathComponent(profile.software.jarName))
+        }
+        guard let archived = FileOps.child(name, of: paths.jarArchive), let target = FileOps.child(name, of: paths.root) else { throw LeafError("That isn't a jar name.") }
+        try FileOps.move(archived, to: target)
         profile.software.jarName = name
     }
 
@@ -1370,7 +1383,7 @@ public final class ServerController: Identifiable {
         defer { if wasRunning { self.process?.send("save-on") } }
         let record = try await Backups.create(profile, root: paths.root, trigger: trigger, scope: scope)
         profile.backup.lastRun = record.date
-        Backups.prune(profile)
+        Backups.prune(profile, protecting: record.fileName)
         refreshBackups()
         appendWrapper("Backup finished: \(Format.bytes(record.size)).", level: .info)
         recordEvent(.backup, "Backed up", detail: "\(Format.bytes(record.size)), \(trigger)")
@@ -1379,6 +1392,10 @@ public final class ServerController: Identifiable {
 
     public func restoreBackup(_ record: BackupRecord) async throws {
         guard state.canStart else { throw LeafError("Stop the server before restoring a backup.") }
+        // Making the safety copy runs retention, which could otherwise remove the very backup being restored.
+        let wasPinned = record.pinned
+        if !wasPinned { try? Backups.setPinned(record, pinned: true, profile: profile) }
+        defer { if !wasPinned { try? Backups.setPinned(record, pinned: false, profile: profile); refreshBackups() } }
         // A safety copy of the present first, in case this was a mistake. It's pinned so pruning can't take it.
         let safety = try await backupNow(trigger: "before-restore", scope: record.scope)
         try? Backups.setPinned(safety, pinned: true, profile: profile)
@@ -1482,8 +1499,8 @@ public final class ServerController: Identifiable {
         setActivity("Restoring the server from before the upgrade…")
         let current = profile.software
         try await Backups.restore(record, profile: profile, root: paths.root, from: folder)
-        if current.jarName != upgrade.from.jarName {
-            try? FileManager.default.removeItem(at: paths.root.appendingPathComponent(current.jarName))
+        if current.jarName != upgrade.from.jarName, let jar = FileOps.child(current.jarName, of: paths.root) {
+            try? FileManager.default.removeItem(at: jar)
         }
         var software = upgrade.from
         software.lastCheck = current.lastCheck
@@ -1515,8 +1532,8 @@ public final class ServerController: Identifiable {
         setActivity("Bringing back \(entry.label)…")
         defer { setActivity(nil) }
         try await Backups.restore(record, profile: profile, root: paths.root, from: folder)
-        if before.jarName != entry.software.jarName {
-            try? FileManager.default.removeItem(at: paths.root.appendingPathComponent(before.jarName))
+        if before.jarName != entry.software.jarName, let jar = FileOps.child(before.jarName, of: paths.root) {
+            try? FileManager.default.removeItem(at: jar)
         }
         var software = entry.software
         software.lastCheck = before.lastCheck

@@ -345,6 +345,15 @@ public struct MergePlan: Equatable, Sendable {
 }
 
 public enum PlayerMerge {
+    /// Observed: on an offline server, `Alice` and `alice` are different players, but on a Mac disk one's
+    /// Multiverse-Inventories file overwrites the other's, because files there are named by player.
+    public static func caseCollisions(_ paths: ServerPaths, players: [PlayerInfo]) -> [[String]] {
+        let text = (try? String(contentsOf: paths.properties, encoding: .utf8)) ?? ""
+        guard PropertiesDocument(text).value("online-mode") == "false", PlayerPaths(paths).hasInventoriesPlugin else { return [] }
+        let names = Set(players.compactMap(\.name))
+        return Dictionary(grouping: names) { $0.lowercased() }.values.filter { $0.count > 1 }.map { $0.sorted() }.sorted { $0[0] < $1[0] }
+    }
+
     /// Profiles that look like the same person.
     public static func suggestions(_ paths: ServerPaths) -> [MergeSuggestion] {
         let p = PlayerPaths(paths)

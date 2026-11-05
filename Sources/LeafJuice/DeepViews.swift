@@ -253,6 +253,10 @@ struct PlayersPage: View {
 
     private var overview: some View {
         Page(title: "Players", subtitle: "Snapshots, inventory restores, name changes and who was on.") {
+            let collisions = PlayerMerge.caseCollisions(server.paths, players: server.knownPlayers)
+            if !collisions.isEmpty {
+                Callout(tone: .warning, title: "These names can overwrite each other's inventories", detail: "\(collisions.map { $0.joined(separator: " and ") }.joined(separator: "; ")). This server is in offline mode, so they're separate players, but Multiverse-Inventories names its files by player, and a Mac's disk treats these as the same file. Turning on online mode or merging them avoids it.")
+            }
             if !server.mergeSuggestions.isEmpty {
                 Card(title: "Possibly the same person", systemImage: "person.2.badge.gearshape") {
                     ForEach(server.mergeSuggestions) { suggestion in

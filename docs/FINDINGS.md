@@ -47,7 +47,7 @@ Tested in November 2026: Paper 1.21.11 and 26.3, Purpur, Folia, vanilla, Multive
 - **Armor** is under `equipment` on 1.21.11, and ender chests under `EnderItems`.
 - **Old to new is fine.** A 1.21.11 snapshot (DataVersion 4671) restored and loaded on 26.3 (5023). The reverse can't work, so Leaf Juice refuses it.
 - **Inventory-only restores are placed where the player is now.** A snapshot taken in `mining`, restored to someone now in `world`, puts `mining`'s items in `world`. Leaf Juice warns about this before restoring.
-- **Capitalization collides on a Mac.** In offline mode `Alice` and `alice` are different players with different UUIDs, but Multiverse-Inventories files are named by player, and APFS treats `Alice.json` and `alice.json` as one file. `alice`'s items overwrote `Alice`'s. Online-mode servers can't have two names differing only by case, so this only matters for offline servers. Leaf Juice doesn't guard against it yet.
+- **Capitalization collides on a Mac.** In offline mode `Alice` and `alice` are different players with different UUIDs, but Multiverse-Inventories files are named by player, and APFS treats `Alice.json` and `alice.json` as one file. `alice`'s items overwrote `Alice`'s. Online-mode servers can't have two names differing only by case, so this only matters for offline servers, and the Players page warns when it finds them.
 
 ## Renames
 
@@ -114,8 +114,54 @@ Tested with real Modrinth packs, including the official TARDIS packs, and a real
 - **An optional pack:** declining gets in, but saying nothing still never finishes joining.
 - **A malformed SHA-1:** it doesn't stop the server. It only logs `Invalid sha1 for resource-pack-sha1`.
 
+## How much of a pack a version uses
+
+Mojang's client jar lists every texture a version uses, so fit can be measured rather than guessed. Measured on 1.21.11 (format 75, 3,682 textures) and 26.3 (format 97, 4,182 textures):
+
+| Pack | 1.21.11 | 26.3 |
+|---|---|---|
+| ZigZag 1.19, alone | 57% (Blocks 76%, Interface 8%), 352 textures ignored | 48% |
+| Lithos 1.76, alone | 94% | |
+| ZigZag over Lithos | 96% (Blocks 99%) | |
+
+Some ignored files look like renames rather than removals, such as `chain.png` for today's `iron_chain.png`. Nothing converts those yet.
+
+## Server Management Protocol
+
+Tested on Paper and vanilla 1.21.11 and Paper 26.3. Set `management-server-enabled=true`, a port, and `management-server-tls-enabled=false` for local use.
+
+- It's a WebSocket with JSON-RPC, and `Authorization: Bearer <management-server-secret>`. A wrong secret is refused at connection.
+- 1.21.11 offers 85 methods and 26.3 offers 89: players, allowlist, bans, operators, game rules, server settings, save and more. `rpc.discover` lists them.
+- It pushes notifications such as `minecraft:notification/players/joined`.
+- Paper keeps it working. The secret is generated even while it's off, and it lives in `server.properties`.
+
+Leaf Juice doesn't use it yet. It would be sturdier than reading console text, but needs a setting changed on each server and another open port. Test copies turn it off, because the real server would already hold the port.
+
+## Player merges
+
+Merging two offline profiles left `playernames.json` and the old `players/<uuid>.json` in place. It did no harm: the new name kept its items in every world, and the old name returning started clean. A real online-mode name change, with one UUID and a new name, can't be tested with offline bots.
+
+## LuckPerms
+
+`lp export <name> --without-users` writes groups, weights, prefixes, inheritance and contexts to `plugins/LuckPerms/<name>.json.gz`, with no players in it. Its default H2 database can't be read directly, so the wiki asks while the server runs and keeps a copy.
+
+## An audit of what deletes things
+
+Reading every delete, move and shell call found these, all now fixed and tested:
+
+- **An empty jar name:** `root.appendingPathComponent("")` is the server folder, and rollback code deleted or moved that path by name.
+- **Restoring the oldest backup:** the safety copy's retention could delete the backup being restored.
+- **Retention counting:** pinned backups used up "keep the latest", and a same-second tie could delete a new backup. A flaky test revealed this.
+- **A linked folder:** `tar` stores the link, not its contents. Backups now say so.
+- **A reused process number:** "running elsewhere" trusted any Java process with the saved PID, and Stop would signal it. It now also checks the process's folder.
+- **`isPortBusy`:** binding to all addresses succeeds on a Mac even while a port is held on `127.0.0.1` alone.
+
+Scanning stack frames for rules was the slowest part of an error flood, and skipping them made it 12 times faster. `Caused by:` lines are still read.
+
+## Real servers need more room
+
+Real plugins can have 68 settings files, past an earlier limit of 40. `bStats` and `spark` folders belong to no plugin of that name, so they aren't leftovers. Plugin files that are only comments, such as Magic's templates, give no form fields, which is expected.
+
 ## Not known yet
 
-- Whether stale `lastKnownName` and `playernames.json` entries cause any harm after a player merge. They aren't handled yet.
-- The Server Management Protocol. `management-server-port=0` in 1.21.11's properties shows it exists, and nothing here uses it.
 - Anything about plugins beyond Multiverse and LuckPerms, in play.

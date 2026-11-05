@@ -312,7 +312,7 @@ do {
             equal(a.sorted.first?.ruleID, rule.id, "sample routes to \(rule.id): \(sample)")
         }
     }
-    let pages = Set(["resourcePacks", "launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
+    let pages = Set(["resourcePacks", "wiki", "launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
     for rule in rules { if let a = rule.action { check(pages.contains(a.page), "\(rule.id) action page") } }
     check(rules.allSatisfy { !$0.title.isEmpty && !$0.explanation.isEmpty }, "rules have text")
 }
@@ -1359,6 +1359,211 @@ do {
         check(c.lastSizeCheck != oldCheck, "and on starts it")
     }
     await resourcePackChecks()
+    do { // The wiki: reading plugin.yml in the shapes it really takes.
+        let yaml = """
+        name: Example
+        version: '1.2'
+        description: Does things
+        author: Someone
+        commands:
+          home:
+            description: Go home
+            usage: /<command> [name]
+            aliases: [h, gohome]
+            permission: example.home
+          warp:
+            description: >
+              Goes somewhere
+            aliases:
+            - w
+            permission: example.warp
+          secret:
+            description: Admin things
+            usage: "§cUse /<command>"
+            permission: example.admin
+          open:
+            description: No permission declared
+        permissions:
+          example.home:
+            description: Use home
+            default: true
+          example.warp:
+            description: Use warp
+            default: op
+          example.admin:
+            description: Staff
+            default: op
+          example.*:
+            description: Everything
+            children:
+              example.home: true
+              example.warp: true
+              example.admin: true
+          nope.only:
+            default: false
+        """
+        let manual = PluginManualReader.parse(yaml)
+        equal(manual?.name, "Example", "name read"); equal(manual?.authors, ["Someone"], "author read"); equal(manual?.commands.map(\.name), ["home", "warp", "secret", "open"], "commands read")
+        equal(manual?.commands[0].aliases, ["h", "gohome"], "inline aliases"); equal(manual?.commands[1].aliases, ["w"], "listed aliases"); equal(manual?.commands[1].description, "Goes somewhere", "folded text")
+        equal(manual?.permissions.first { $0.node == "example.*" }?.children.count, 3, "permission children"); equal(manual?.permissions.first { $0.node == "nope.only" }?.defaultValue, "false", "a default")
+        equal(Wiki.tidyUsage("§cUse /<command>", "secret"), "Use /secret", "usage tidied")
+        equal(PluginManualReader.parse("nothing useful"), nil, "not a plugin.yml")
+
+        // Ranks, from a real export's shape.
+        let export = #"{"groups":{"vip":{"nodes":[{"type":"permission","key":"example.warp","value":true},{"type":"prefix","key":"prefix.100.&6VIP","value":true},{"type":"weight","key":"weight.10","value":true}]},"default":{"nodes":[{"type":"permission","key":"example.home","value":false}]},"moderator":{"nodes":[{"type":"inheritance","key":"group.vip","value":true},{"type":"permission","key":"example.*","value":true,"context":{"server":"survival"}},{"type":"permission","key":"example.home","value":false}]}}}"#
+        let ranks = WikiRanks.parse(Data(export.utf8))
+        equal(ranks.map(\.name), ["default", "moderator", "vip"], "ranks read, by weight")
+        equal(ranks.first { $0.name == "vip" }?.prefix, "VIP", "prefix without color codes"); equal(ranks.first { $0.name == "vip" }?.weight, 10, "weight")
+        equal(ranks.first { $0.name == "moderator" }?.grants.first?.context, "server=survival", "context kept")
+        let perms = manual!.permissions
+        let vip = ranks.first { $0.name == "vip" }!, moderator = ranks.first { $0.name == "moderator" }!, base = ranks.first { $0.name == "default" }!
+        equal(WikiRanks.has(vip, node: "example.warp", ranks: ranks, permissions: perms), true, "direct")
+        equal(WikiRanks.has(vip, node: "example.admin", ranks: ranks, permissions: perms), nil, "silent")
+        equal(WikiRanks.has(moderator, node: "example.warp", ranks: ranks, permissions: perms), true, "wildcard")
+        equal(WikiRanks.has(moderator, node: "example.home", ranks: ranks, permissions: perms), false, "an exact no beats a wildcard")
+        equal(WikiRanks.has(base, node: "example.home", ranks: ranks, permissions: perms), false, "denied for everyone")
+        let commands = manual!.commands
+        func who(_ i: Int) -> WikiContent.Who { Wiki.who(commands[i], permissions: perms, ranks: ranks) }
+        check(!who(0).everyone, "a default rank's no overrides the plugin's default yes")
+        equal(who(1).ranks.sorted(), ["moderator", "vip"], "a rank-only command names its ranks"); check(!who(1).everyone, "and isn't for everyone")
+        equal(who(2).ranks, ["moderator"], "an admin command only goes to who has it")
+        check(who(3).unconfirmed, "no declared permission is told apart"); check(!who(3).isPublic, "and isn't called public")
+        check(Wiki.who(commands[0], permissions: perms, ranks: []).everyone, "with no ranks known, the plugin's default applies")
+        check(!Wiki.who(commands[2], permissions: perms, ranks: []).isPublic, "and an op-only command stays private")
+
+        // Nothing it shouldn't.
+        let props = "rcon.password=hunter2\nmanagement-server-secret=topsecret\nresource-pack=https\\://x.example/secretlink.zip\nresource-pack-sha1=abc123def\ndifficulty=hard\npvp=false\nserver-ip=10.0.0.5\nrequire-resource-pack=true\n"
+        var settings = WikiSettings()
+        settings.address = "play.example.com"; settings.rules = "Be <kind>.\n\nNo griefing."
+        var wiki = Wiki.assemble(serverName: "My <Server>", message: "Hello & welcome", software: "Paper 1.21.11", properties: props, manuals: [manual!], ranks: ranks, ranksKnown: true, worlds: [
+            .init(name: "world", environment: "Normal", gameMode: "Survival", difficulty: "Hard", hidden: false), .init(name: "staffbase", environment: "Normal", gameMode: "Creative", difficulty: "Easy", hidden: true),
+        ], settings: settings)
+        let playerPage = Wiki.html(wiki, admin: false), adminPage = Wiki.html(wiki, admin: true)
+        for secret in ["hunter2", "topsecret", "secretlink", "abc123def", "10.0.0.5"] {
+            check(!playerPage.contains(secret), "player wiki never has \(secret)"); check(!adminPage.contains(secret), "admin wiki never has \(secret)")
+            check(!Wiki.markdown(wiki, admin: true).contains(secret), "markdown never has \(secret)")
+        }
+        check(playerPage.contains("My &lt;Server&gt;") && !playerPage.contains("My <Server>"), "text is escaped"); check(playerPage.contains("Be &lt;kind&gt;."), "your words too")
+        check(playerPage.contains("Hard"), "allowed facts shown"); check(playerPage.contains("Required. Accept it"), "the pack is explained, not linked")
+        check(!playerPage.contains("example.warp"), "players don't see permission nodes"); check(adminPage.contains("example.warp"), "admins do")
+        check(!playerPage.contains("staffbase"), "a hidden world stays hidden"); check(adminPage.contains("staffbase"), "except from admins")
+        check(playerPage.contains("/warp") || playerPage.contains("warp"), "a rank's command is listed for players")
+        check(!playerPage.contains("No permission declared"), "unconfirmed commands stay out by default")
+        wiki.settings.showUnconfirmed = true
+        check(Wiki.html(wiki, admin: false).contains("No permission declared"), "unless you say otherwise")
+        wiki.settings.hiddenPlugins = ["Example"]
+        check(!Wiki.html(wiki, admin: false).contains("Goes somewhere"), "a plugin can be left out"); check(Wiki.html(wiki, admin: true).contains("Goes somewhere"), "of the player wiki only")
+        wiki.settings = settings
+        let exported = folder("wiki-export")
+        try Wiki.write(wiki, to: exported)
+        write("A note from me", Wiki.notesFile(wiki.serverName, plugin: "Example"))
+        try Wiki.write(wiki, to: exported)
+        check((try String(contentsOf: exported.appendingPathComponent("player/index.html"), encoding: .utf8)).contains("A note from me"), "notes appear")
+        check(FileOps.exists(Wiki.notesFile(wiki.serverName, plugin: "Example")), "and survive exporting again")
+        check(FileOps.exists(exported.appendingPathComponent("player/wiki.md")) && FileOps.exists(exported.appendingPathComponent("admin/index.html")), "both views, as pages and Markdown")
+
+        // Names that collide on a Mac.
+        let collide = folder("case-collide")
+        write("online-mode=false\n", collide.appendingPathComponent("server.properties"))
+        check(PlayerMerge.caseCollisions(ServerPaths(root: collide), players: []).isEmpty, "nothing to warn about with no players")
+    } catch { failures.append("wiki threw: \(error)") }
+    do { // The audit: paths that delete or move by name.
+        let r = folder("audit-names")
+        equal(FileOps.child("", of: r), nil, "an empty name isn't the folder itself"); equal(FileOps.child(".", of: r), nil, "nor is a dot")
+        equal(FileOps.child("..", of: r), nil, "nor its parent"); equal(FileOps.child("../x.jar", of: r), nil, "no climbing out"); equal(FileOps.child("a/b.jar", of: r), nil, "no subfolders")
+        equal(FileOps.child("paper.jar", of: r)?.lastPathComponent, "paper.jar", "a real name works")
+
+        // rollbackJar with no current jar must not move the server folder anywhere.
+        let server = folder("audit-rollback")
+        write("level", server.appendingPathComponent("world/level.dat"))
+        write("jar", ServerPaths(root: server).jarArchive.appendingPathComponent("paper-1.21.11-5.jar"))
+        var profile = ServerProfile(); profile.software.jarName = ""; profile.software.mcVersion = "1.21.11"
+        let c = ServerController(root: server, profile: profile)
+        defer { c.stopTicker() }
+        try await c.rollbackJar("paper-1.21.11-5.jar")
+        check(FileOps.exists(server.appendingPathComponent("world/level.dat")), "rolling back with no jar set leaves the server where it is")
+        equal(c.profile.software.jarName, "paper-1.21.11-5.jar", "and uses the jar")
+        var refusedName = false
+        do { try await c.rollbackJar("../evil.jar") } catch { refusedName = true }
+        check(refusedName, "a jar name can't climb out of the archive")
+
+        // Restoring the oldest kept backup: the safety copy's retention mustn't delete it first.
+        let keep = folder("audit-restore")
+        write("old world", keep.appendingPathComponent("world/level.dat"))
+        write("x", keep.appendingPathComponent("server.properties"))
+        var kept = ServerProfile()
+        kept.backup.destination = keep.appendingPathComponent(".leafjuice/backups").path
+        kept.backup.keepLast = 1; kept.backup.keepDays = 0
+        let k = ServerController(root: keep, profile: kept)
+        defer { k.stopTicker() }
+        let oldest = try await Backups.create(kept, root: keep, trigger: "manual", scope: .worlds)
+        write("new world", keep.appendingPathComponent("world/level.dat"))
+        k.refreshBackups()
+        try await k.restoreBackup(oldest)
+        equal(try? String(contentsOf: keep.appendingPathComponent("world/level.dat"), encoding: .utf8), "old world", "the oldest kept backup restores, with retention at its tightest")
+        check(k.backups.contains { $0.trigger == "before-restore" && $0.pinned }, "and the safety copy is kept")
+        check(k.backups.contains { $0.fileName == oldest.fileName && !$0.pinned }, "and it goes back to being unpinned")
+
+        // Retention: pinned backups don't use up the count, and what's just been made is safe.
+        func made(_ name: String, daysAgo: Double, pinned: Bool = false) -> BackupRecord {
+            var r = BackupRecord(fileName: name, date: Date(timeIntervalSinceNow: -daysAgo * 86_400), size: 1, scope: .worlds, trigger: "t", software: "", mcVersion: "", serverName: "", warning: nil, softwareState: nil, launch: nil)
+            r.pinned = pinned
+            return r
+        }
+        let withPins = [made("p1", daysAgo: 1, pinned: true), made("p2", daysAgo: 2, pinned: true), made("a", daysAgo: 30), made("b", daysAgo: 31), made("c", daysAgo: 32)]
+        equal(Backups.prunable(withPins, keepLast: 2, keepDays: 0).map(\.fileName), ["c"], "pinned backups don't use up keep-the-latest")
+        let sameInstant = Date(timeIntervalSinceNow: -100)
+        var first = made("2026_manual", daysAgo: 0), second = made("2026_manual-2", daysAgo: 0)
+        first.date = sameInstant; second.date = sameInstant
+        equal(Backups.prunable([first, second], keepLast: 1, keepDays: 0).map(\.fileName), ["2026_manual"], "a same-second tie goes to the newer name")
+        equal(Backups.prunable([first, second], keepLast: 1, keepDays: 0, protecting: "2026_manual").map(\.fileName), [], "and what's just been made is never removed")
+
+        // A linked world isn't in the backup, and the backup has to say so.
+        let linkRoot = folder("audit-links"), elsewhere = folder("audit-elsewhere")
+        write("real", elsewhere.appendingPathComponent("level.dat"))
+        write("x", linkRoot.appendingPathComponent("server.properties"))
+        try FileManager.default.createSymbolicLink(at: linkRoot.appendingPathComponent("linked"), withDestinationURL: elsewhere)
+        var linkProfile = ServerProfile(); linkProfile.backup.destination = linkRoot.appendingPathComponent(".leafjuice/backups").path
+        let linked = try await Backups.create(linkProfile, root: linkRoot, trigger: "manual", scope: .everything)
+        check(linked.warning?.contains("linked") == true, "a linked folder is mentioned: \(linked.warning ?? "no warning")")
+
+        // A process with this server's old number isn't this server unless it's in this folder.
+        let live = folder("audit-pid")
+        let liar = ServerController(root: live, profile: ServerProfile())
+        defer { liar.stopTicker() }
+        equal(SystemInfo.workingDirectory(pid: getpid())?.standardizedFileURL.resolvingSymlinksInPath().path, URL(fileURLWithPath: FileManager.default.currentDirectoryPath).standardizedFileURL.resolvingSymlinksInPath().path, "a process's folder can be read")
+
+        // Unreadable settings are said out loud.
+        let broken = folder("audit-corrupt")
+        write("{ this is not json", ServerPaths(root: broken).profile)
+        let reopened = ServerController.open(root: broken)
+        defer { reopened?.stopTicker() }
+        check(reopened?.notice?.contains("couldn't be read") == true, "corrupt settings get a notice: \(reopened?.notice ?? "none")")
+        check(FileOps.exists(ServerPaths(root: broken).profile.appendingPathExtension("corrupt")), "and the file is kept")
+
+        // Stack lines are attached to their issue, without being scanned as issues themselves.
+        let a = IssueAnalyzer(rules: RuleBook.builtIn)
+        a.ingest("[10:00:00 ERROR]: Something broke")
+        a.ingest("[10:00:00 ERROR]: \tat org.bukkit.craftbukkit.Could.not.load(Fake.java:1)")
+        equal(a.sorted.count, 1, "a stack line doesn't become its own issue")
+        let cause = IssueAnalyzer(rules: RuleBook.builtIn)
+        cause.ingest("[10:00:00 ERROR]: Could not do the thing")
+        cause.ingest("[10:00:00 ERROR]: Caused by: java.lang.UnsupportedClassVersionError: Foo has been compiled by a more recent version of the Java Runtime")
+        check(cause.sorted.contains { $0.isKnown && $0.category != "Uncategorized" }, "a Caused by line still gets diagnosed: \(cause.sorted.map(\.title))")
+    } catch { failures.append("audit threw: \(error)") }
+    do { // A port held only on 127.0.0.1, as the Lab does.
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(25977).bigEndian
+        address.sin_addr.s_addr = in_addr_t(INADDR_LOOPBACK).bigEndian
+        _ = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        listen(fd, 1)
+        check(SystemInfo.isPortBusy(25977), "a port held only on this Mac's loopback address counts as busy")
+        close(fd)
+        check(!SystemInfo.isPortBusy(25977), "and is free once released")
+    }
     do { // Themed groups.
         func plugin(_ name: String, depends: [String] = []) -> InstalledPlugin {
             var d = PluginDescriptor(name: name); d.depend = depends
@@ -1782,6 +1987,83 @@ if let flag = CommandLine.arguments.firstIndex(of: "--lab-model") {
     print("\(passed) passed, \(failures.count) failed")
     for failure in failures { print("  FAIL \(failure)") }
     exit(failures.isEmpty ? 0 : 1)
+}
+if CommandLine.arguments.contains("--plugin-report") {
+    // What the app makes of a big real plugin set, from copies already in the sandbox. Starts nothing.
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".lab-sandbox", isDirectory: true)
+    setenv("LEAFJUICE_HOME", base.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", base.appendingPathComponent("servers").path, 1)
+    let paths = ServerPaths(root: base.appendingPathComponent("servers/lab-model", isDirectory: true))
+    var at = Date()
+    func took(_ what: String) { print("  \(what): \(String(format: "%.2f", Date().timeIntervalSince(at)))s"); at = Date() }
+    let plugins = await PluginScanner.scan(paths)
+    took("scan \(plugins.count) plugins")
+    print("  no descriptor: \(plugins.filter { $0.descriptor == nil }.map(\.fileName))")
+    let problems = PluginScanner.staticProblems(plugins, mc: GameVersion("1.21.11"))
+    print("  static problems: \(problems)")
+    let configs = ConfigCatalog.scan(paths, plugins: plugins)
+    took("config catalog \(configs.count) files")
+    let grouped = Dictionary(grouping: configs, by: \.group).mapValues(\.count).sorted { $0.value > $1.value }
+    print("  biggest groups: \(grouped.prefix(8).map { "\($0.key)=\($0.value)" })")
+    print("  leftover: \(configs.filter { $0.group.lowercased().contains("leftover") }.map(\.path).prefix(8))")
+    var failedForms = 0, totalFields = 0
+    for file in configs where ConfigForm.supports(file.format) {
+        let text = (try? String(contentsOf: paths.root.appendingPathComponent(file.path), encoding: .utf8)) ?? ""
+        let fields = ConfigForm.fields(text, format: file.format)
+        totalFields += fields.count
+        if fields.isEmpty, !text.isEmpty { failedForms += 1 }
+    }
+    took("forms: \(totalFields) fields, \(failedForms) files with none")
+    var noFields: [String] = []
+    for file in configs where ConfigForm.supports(file.format) {
+        let text = (try? String(contentsOf: paths.root.appendingPathComponent(file.path), encoding: .utf8)) ?? ""
+        if ConfigForm.fields(text, format: file.format).isEmpty, !text.isEmpty { noFields.append("\(file.path) (\(text.count) chars: \(text.prefix(40).replacingOccurrences(of: "\n", with: " ")))") }
+    }
+    print("  no fields: \(noFields.prefix(22).joined(separator: " | "))")
+    for folder in FileOps.children(paths.plugins) where FileOps.isDirectory(folder) {
+        let all = ConfigCatalog.settingsFiles(in: folder, limit: 5000).count
+        if all > 40 { print("  \(folder.lastPathComponent): \(all) settings files") }
+    }
+    let start = Date()
+    let matches = await SourceFinder.modrinthMatches(sha1s: plugins.compactMap { $0.digests?.sha1 })
+    print("  sources identified by hash: \(matches.count) of \(plugins.count) in \(String(format: "%.1f", Date().timeIntervalSince(start)))s")
+    print("  depend issues: \(plugins.flatMap { p in (p.descriptor?.depend ?? []).filter { d in !plugins.contains { $0.key == d.lowercased() } }.map { "\(p.name)->\($0)" } })")
+    var manuals: [PluginManual] = []
+    for plugin in plugins where plugin.enabled { if let m = await PluginManualReader.read(jar: paths.plugins.appendingPathComponent(plugin.fileName)) { manuals.append(m) } }
+    let wiki = Wiki.assemble(serverName: "Test", message: "", software: "", properties: "", manuals: manuals, ranks: [], ranksKnown: false, worlds: [], settings: WikiSettings())
+    print("  wiki: read \(manuals.count) manuals, \(wiki.commandCount) commands, \(wiki.publicCommandCount) open to everyone by plugin defaults, \(wiki.plugins.flatMap(\.entries).filter(\.who.unconfirmed).count) not stated, \(wiki.plugins.flatMap(\.manual.permissions).count) permissions")
+    print("  per plugin: \(wiki.plugins.filter { !$0.entries.isEmpty }.map { "\($0.manual.name) \($0.entries.filter(\.who.isPublic).count)/\($0.entries.count)" }.joined(separator: ", "))")
+    print("  page sizes: player \(Wiki.html(wiki, admin: false).count), admin \(Wiki.html(wiki, admin: true).count)")
+    print("  groups: \(PluginThemes.batches(plugins.filter { !Trial.disabledInCopies.contains($0.key) }).map { "\($0.title):\($0.plugins.count)" })")
+    exit(0)
+}
+if CommandLine.arguments.contains("--perf") {
+    // How the issue scanner copes with a spamming server, on the thread the interface also uses.
+    let analyzer = IssueAnalyzer(rules: RuleBook.builtIn)
+    let spam = ["[01:19:35] [Server thread/WARN]: java.lang.ClassNotFoundException: org.bukkit.craftbukkit.craftbukkit.entity.CraftPlayer"] + (0..<18).map { "[01:19:35] [Server thread/WARN]: \tat ActionHealth-3.5.9-all.jar//com.zeshanaslam.actionhealth.utils.HealthUtil.line\($0)(HealthUtil.java:\($0))" }
+    let chat = ["[01:19:35] [Server thread/INFO]: <Alice> hello there", "[01:19:35] [Server thread/INFO]: Alice issued server command: /home", "[01:19:35] [Async Chat Thread/INFO]: [Multiverse-Core] Something routine happened"]
+    for (title, lines) in [("error spam", spam), ("ordinary chatter", chat)] {
+        let start = Date()
+        var count = 0
+        while count < 100_000 { for line in lines { analyzer.ingest(line); count += 1 } }
+        let took = Date().timeIntervalSince(start)
+        print("  \(title): \(Int(Double(count) / took)) lines a second")
+    }
+    exit(0)
+}
+if let flag = CommandLine.arguments.firstIndex(of: "--wiki-demo"), flag + 1 < CommandLine.arguments.count {
+    // Writes an example wiki from the sandbox's plugin copies with made-up ranks and words, for looking at the page.
+    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".lab-sandbox", isDirectory: true)
+    let paths = ServerPaths(root: base.appendingPathComponent("servers/lab-model", isDirectory: true))
+    var manuals: [PluginManual] = []
+    for plugin in await PluginScanner.scan(paths) where plugin.enabled { if let m = await PluginManualReader.read(jar: paths.plugins.appendingPathComponent(plugin.fileName)) { manuals.append(m) } }
+    let ranks = WikiRanks.parse(Data(#"{"groups":{"default":{"nodes":[{"type":"permission","key":"gsit.*","value":true},{"type":"permission","key":"chestsort.use","value":true}]},"member":{"nodes":[{"type":"weight","key":"weight.10","value":true},{"type":"prefix","key":"prefix.10.&aMember","value":true},{"type":"inheritance","key":"group.default","value":true},{"type":"permission","key":"tardis.use","value":true}]},"moderator":{"nodes":[{"type":"weight","key":"weight.50","value":true},{"type":"inheritance","key":"group.member","value":true},{"type":"permission","key":"citizens.*","value":true}]}}}"#.utf8))
+    var settings = WikiSettings()
+    settings.address = "play.example.com"; settings.welcome = "A friendly survival server.\n\nSay hello when you arrive."; settings.rules = "Be kind.\nNo griefing."
+    let wiki = Wiki.assemble(serverName: "Example Server", message: "Welcome in", software: "Paper 1.21.11", properties: "difficulty=normal\ngamemode=survival\nmax-players=20\npvp=false\nresource-pack=https\\://x/y.zip\nrequire-resource-pack=true\n", manuals: manuals, ranks: ranks, ranksKnown: true, worlds: [.init(name: "world", environment: "Normal", gameMode: "Survival", difficulty: "Normal", hidden: false), .init(name: "mining", environment: "Normal", gameMode: "Survival", difficulty: "Hard", hidden: false), .init(name: "deep", environment: "Nether", gameMode: "Survival", difficulty: "Hard", hidden: false)], settings: settings)
+    try! Wiki.write(wiki, to: URL(fileURLWithPath: CommandLine.arguments[flag + 1]))
+    print("  commands open to players: \(wiki.publicCommandCount) of \(wiki.commandCount)")
+    exit(0)
 }
 if CommandLine.arguments.contains("--lab-demo") {
     // Fills the status board with example results, for looking at the screen. Never touches a real server folder.
@@ -2466,6 +2748,13 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
             await c.findTrialCulprit()
             check(c.trialReport?.culprit?.contains("even with no plugins") == true, "not blamed on a plugin: \(c.trialReport?.culprit ?? "")")
             await c.collapseTrial()
+            var withManagement = PropertiesDocument(try String(contentsOf: c.paths.properties, encoding: .utf8))
+            withManagement.set("management-server-enabled", "true")
+            try FileOps.writeAtomic(withManagement.text, to: c.paths.properties)
+            await c.startTrial(.custom(title: "Management server off in copies", { child in
+                equal(PropertiesDocument(try String(contentsOf: child.paths.properties, encoding: .utf8)).value("management-server-enabled"), "false", "a test copy can't clash with the real server's management port")
+            }))
+            await c.collapseTrial()
             await c.startTrial(.custom(title: "Quits cleanly while starting", { child in write("x", child.paths.root.appendingPathComponent("quit-on-boot")) }))
             equal(c.trialReport?.booted, false, "a clean exit while starting isn't success")
             check(c.trialController?.issues.contains { $0.ruleID == "server-failed-start" } == true, "and is explained"); if case .crashed = c.trialController?.state { passed += 1 } else { failures.append("giving up should read as a failure: \(String(describing: c.trialController?.state))") }
@@ -2845,6 +3134,14 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
         var manyMessage = ""
         do { _ = try await ResourcePacks.add(many) } catch { manyMessage = error.localizedDescription }
         check(manyMessage.contains("2 separate packs") && manyMessage.contains("one"), "a project holding many packs is refused, and says why: \(manyMessage)")
+
+        // Measuring a pack against what a version uses.
+        let vanilla = VanillaAssets(mc: "9.9", format: 75, files: ["assets/minecraft/textures/block/stone.png", "assets/minecraft/textures/block/dirt.png", "assets/minecraft/textures/block/new_block.png", "assets/minecraft/textures/item/apple.png", "assets/minecraft/lang/en_us.json"])
+        let fit = ResourcePacks.coverage(of: ["assets/minecraft/textures/block/stone.png", "assets/minecraft/textures/block/dirt.png", "assets/minecraft/textures/block/removed_long_ago.png", "assets/custom/textures/block/mine.png", "assets/minecraft/lang/en_us.json"], against: vanilla)
+        equal(fit.rows.map(\.category), ["Blocks", "Items"], "only categories the version has")
+        equal(fit.rows.first?.covered, 2, "blocks covered"); equal(fit.rows.first?.total, 3, "out of what the version uses"); equal(fit.rows.first?.percent, 66, "as a percentage")
+        equal(fit.rows.first?.examplesMissing, ["new_block.png"], "what falls back to the game's art"); equal(fit.percent, 50, "overall")
+        equal(fit.unused, 1, "files the game never reads are counted"); equal(fit.unusedExamples, ["assets/minecraft/textures/block/removed_long_ago.png"], "and named")
 
         // Formats as real packs really write them.
         equal(ResourcePacks.formatNumber(75), 75, "a plain format"); equal(ResourcePacks.formatNumber([75, 0]), 75, "major and minor")

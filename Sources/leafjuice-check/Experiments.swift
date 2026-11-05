@@ -129,6 +129,9 @@ import Foundation
         ("packs", expPacks),
         ("actionhealth", expActionHealth),
         ("overlap", expOverlap),
+        ("protocol", expManagementProtocol),
+        ("merge", expMerge),
+        ("ranks", expRanks),
     ]
     for (name, experiment) in all where groups.contains(name) || groups.contains("all") {
         print("• EXPERIMENT: \(name)")
@@ -756,6 +759,167 @@ import Foundation
     }
 }
 
+// MARK: - What can the Server Management Protocol do?
+
+@MainActor func expManagementProtocol(_ lab: Lab) async throws {
+    final class Client: NSObject, @unchecked Sendable {
+        let task: URLSessionWebSocketTask
+        var nextID = 1
+        var received: [String] = []
+        init(port: Int, secret: String?) {
+            var request = URLRequest(url: URL(string: "ws://127.0.0.1:\(port)/")!)
+            if let secret { request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization") }
+            task = URLSession(configuration: .ephemeral).webSocketTask(with: request)
+            task.maximumMessageSize = 8 << 20
+            super.init()
+            task.resume()
+            listen()
+        }
+        func listen() {
+            task.receive { [weak self] result in
+                guard let self, case let .success(message) = result else { return }
+                if case let .string(text) = message { self.received.append(text) }
+                self.listen()
+            }
+        }
+        func call(_ method: String, _ params: Any? = nil) async -> String {
+            let id = nextID
+            nextID += 1
+            var body: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method]
+            if let params { body["params"] = params }
+            guard let data = try? JSONSerialization.data(withJSONObject: body) else { return "bad" }
+            do { try await task.send(.string(String(decoding: data, as: UTF8.self))) } catch { return "send failed: \(error.localizedDescription)" }
+            for _ in 0..<30 {
+                try? await Task.sleep(for: .milliseconds(200))
+                if let hit = received.first(where: { $0.contains("\"id\":\(id)") }) { return hit }
+            }
+            return "no answer"
+        }
+    }
+    let table = try await lab.table("1.21.11", java: "/usr/bin/java")
+    for (title, flavor, mc) in [("Paper 1.21.11", Flavor.paper, "1.21.11"), ("Vanilla 1.21.11", Flavor.vanilla, "1.21.11"), ("Paper 26.3", Flavor.paper, "26.3")] {
+        lab.heading(title)
+        do {
+            let c = try await lab.fresh("smp", flavor: flavor, mc: mc)
+            defer { lab.discard(c) }
+            c.runtimes = await JavaManager.discover()
+            if c.resolvedJava() == nil || c.resolvedJava()!.major < c.javaRequirement { try await c.installJava(major: c.javaRequirement) }
+            var first = await lab.boot(c)
+            lab.saw("Booted once: \(first.up)")
+            await lab.down(c)
+            let text = try String(contentsOf: c.paths.properties, encoding: .utf8)
+            lab.saw("Defaults: \(text.split(separator: "\n").filter { $0.contains("management") }.map(String.init))")
+            var doc = PropertiesDocument(text)
+            doc.set("management-server-enabled", "true")
+            doc.set("management-server-host", "127.0.0.1")
+            doc.set("management-server-port", "25599")
+            doc.set("management-server-tls-enabled", "false")
+            doc.set("white-list", "false")
+            try FileOps.writeAtomic(doc.text, to: c.paths.properties)
+            first = await lab.boot(c)
+            let after = PropertiesDocument(try String(contentsOf: c.paths.properties, encoding: .utf8))
+            let secret = after.value("management-server-secret")
+            lab.saw("Booted with it on: \(first.up). A secret was generated: \(secret?.isEmpty == false). Listening: \(SystemInfo.isPortBusy(25599)). Log: \(c.console.filter { $0.text.lowercased().contains("management") || $0.text.lowercased().contains("json-rpc") || $0.text.lowercased().contains("json rpc") }.prefix(3).map { String($0.text.prefix(150)) })")
+            let wrong = Client(port: 25599, secret: "wrong-secret-0000000000000000000000000000")
+            lab.saw("Wrong secret: \(String((await wrong.call("minecraft:server/status")).prefix(120)))")
+            wrong.task.cancel()
+            let client = Client(port: 25599, secret: secret)
+            let discover = await client.call("rpc.discover")
+            if let data = discover.data(using: .utf8), let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let result = json["result"] as? [String: Any], let methods = result["methods"] as? [[String: Any]] {
+                lab.saw("Methods: \(methods.count): \(methods.compactMap { $0["name"] as? String })")
+            } else {
+                lab.saw("Discover: \(discover.prefix(200))")
+            }
+            lab.saw("Status: \((await client.call("minecraft:server/status")).prefix(300))")
+            if flavor != .vanilla || mc == "1.21.11" {
+                let bot = try? Bot(name: "Alice", port: c.serverPort, table: mc == "1.21.11" ? table : try await lab.table(mc, java: c.resolvedJava()?.path ?? ""))
+                try? await Task.sleep(for: .seconds(4))
+                lab.saw("Players: \((await client.call("minecraft:players")).prefix(220))")
+                lab.saw("Events seen: \(client.received.filter { $0.contains("notification") }.prefix(4).map { String($0.prefix(170)) })")
+                lab.saw("Game rules: \((await client.call("minecraft:gamerules")).prefix(160))")
+                lab.saw("Settings read: \((await client.call("minecraft:serversettings/motd")).prefix(160))")
+                lab.saw("Save: \((await client.call("minecraft:server/save", [["flush": false]])).prefix(160))")
+                bot?.leave()
+                try? await Task.sleep(for: .seconds(2))
+            }
+            client.task.cancel()
+            await lab.down(c)
+        } catch { lab.saw("**Failed:** \(error)") }
+    }
+}
+
+// MARK: - What does a merge leave behind?
+
+@MainActor func expMerge(_ lab: Lab) async throws {
+    let table = try await lab.table("1.21.11", java: "/usr/bin/java")
+    let c = try await lab.cloneSeed("merge")
+    defer { lab.discard(c) }
+    let p = PlayerPaths(c.paths)
+    func records(_ title: String) {
+        let names = (try? String(contentsOf: p.inventories.appendingPathComponent("playernames.json"), encoding: .utf8)) ?? "none"
+        let players = FileOps.children(p.inventories.appendingPathComponent("players")).compactMap { try? String(contentsOf: $0, encoding: .utf8) }.map { String($0.prefix(130)) }
+        let holders = FileOps.children(p.inventories.appendingPathComponent("worlds/world")).map(\.lastPathComponent).sorted()
+        lab.saw("\(title). playernames: \(names.prefix(240)). players: \(players). worlds/world: \(holders)")
+    }
+    _ = await lab.boot(c)
+    let newcomer = try Bot(name: "Robert", port: 25580, table: table)
+    try? await Task.sleep(for: .seconds(3))
+    _ = await lab.run(c, "give Robert minecraft:dirt 3")
+    newcomer.leave()
+    try? await Task.sleep(for: .seconds(2))
+    await lab.down(c)
+    records("Before the merge")
+    let bob = PlayerFiles.offlineUUID(name: "Bob"), robert = PlayerFiles.offlineUUID(name: "Robert")
+    var plan = MergePlan(from: PlayerRef(uuid: bob, name: "Bob"), to: PlayerRef(uuid: robert, name: "Robert"))
+    plan.keepFromSource = true
+    try await c.mergePlayers(plan)
+    for _ in 0..<80 where c.state.isLive { try? await Task.sleep(for: .milliseconds(250)) }
+    records("Right after")
+    if c.state.canStart { _ = await lab.boot(c) }
+    let joined = try Bot(name: "Robert", port: 25580, table: table)
+    try? await Task.sleep(for: .seconds(4))
+    lab.saw("Robert holds: \(await lab.run(c, "data get entity Robert Inventory").suffix(1).map { String($0.prefix(170)) })")
+    _ = await lab.run(c, "mv tp Robert creative", wait: 4)
+    lab.saw("In creative: \(await lab.run(c, "data get entity Robert Inventory").suffix(1).map { String($0.prefix(170)) })")
+    _ = await lab.run(c, "mv tp Robert world", wait: 4)
+    joined.leave()
+    try? await Task.sleep(for: .seconds(2))
+    await lab.down(c)
+    records("After Robert played")
+    let oldName = try { () -> Bool in FileOps.exists(p.inventories.appendingPathComponent("worlds/world/Bob.json")) }()
+    lab.saw("Bob's old inventory file still there: \(oldName)")
+    _ = await lab.boot(c)
+    let ghost = try Bot(name: "Bob", port: 25580, table: table)
+    try? await Task.sleep(for: .seconds(4))
+    lab.saw("If the old name comes back: \(await lab.run(c, "data get entity Bob Inventory").suffix(1).map { String($0.prefix(170)) })")
+    ghost.leave()
+    try? await Task.sleep(for: .seconds(2))
+    await lab.down(c)
+    records("After the old name came back")
+}
+
+// MARK: - What can LuckPerms tell a wiki?
+
+@MainActor func expRanks(_ lab: Lab) async throws {
+    let c = try await lab.cloneSeed("ranks")
+    defer { lab.discard(c) }
+    _ = await lab.boot(c)
+    for command in ["lp creategroup vip", "lp creategroup moderator", "lp group vip permission set multiverse.teleport.self.w true", "lp group vip meta setprefix 100 &6VIP", "lp group vip setweight 10", "lp group moderator parent add vip", "lp group moderator permission set minecraft.command.kick true", "lp group moderator permission set essentials.ban true server=survival", "lp group default permission set some.denied.node false", "lp user Alice parent add vip"] {
+        lab.saw("`\(command)`: \(await lab.run(c, command, wait: 1).suffix(1).map { String($0.prefix(110)) })")
+    }
+    lab.saw("listgroups: \(await lab.run(c, "lp listgroups", wait: 2).map { String($0.prefix(110)) })")
+    lab.saw("export: \(await lab.run(c, "lp export leafjuice-wiki --without-users", wait: 6).map { String($0.prefix(140)) })")
+    let folder = c.paths.plugins.appendingPathComponent("LuckPerms")
+    lab.saw("Files: \(FileOps.children(folder).map(\.lastPathComponent))")
+    if let file = FileOps.children(folder).first(where: { $0.lastPathComponent.hasPrefix("leafjuice-wiki") }) {
+        let text = try await Tool.run("/usr/bin/gunzip", ["-c", file.path])
+        lab.saw("Export (\(text.out.count) chars): \(text.out.prefix(1500))")
+        let keep = lab.base.appendingPathComponent("findings/lp-export-sample.json")
+        try FileOps.writeAtomic(text.out, to: keep)
+    }
+    await lab.down(c)
+}
+
 // MARK: - Packs that really overlap
 
 /// Zips in `.lab-sandbox/given`, ranked against the TARDIS pack. Needs the zips put there first.
@@ -806,6 +970,27 @@ import Foundation
     lab.saw("Items from Lithos instead: \(mixed.files.filter { $0.reason == .category }.count) decided by category. Conflicts' winners: \(Dictionary(grouping: ResourcePacks.conflicts(mixed), by: \.winner).mapValues(\.count))")
     let swapped = ResourcePacks.changes(from: lock, to: mixed)
     lab.saw("Compared with plain ranking: \(swapped.summary). Such as \(swapped.changed.prefix(3).map { "\($0.path): \($0.detail)" })")
+    // How well each fits, from what the game really uses.
+    for mc in ["1.21.11", "26.3"] {
+        let vanilla = try await VanillaAssets.load(mc: mc)
+        lab.heading("Fit on \(mc): format \(vanilla.format.map(String.init) ?? "?"), \(vanilla.files.filter { $0.hasPrefix("assets/minecraft/textures/") }.count) textures")
+        func measure(_ title: String, _ recipe: PackRecipe) async throws {
+            let fit = ResourcePacks.coverage(of: try await ResourcePacks.resolve(recipe).files.map(\.path), against: vanilla)
+            lab.saw("\(title): \(fit.percent)% overall. \(fit.rows.map { "\($0.category) \($0.percent)%" }.joined(separator: ", ")). Ignored: \(fit.unused)")
+            if title == "Zig Zag alone" {
+                lab.saw("  Ignored, such as: \(fit.unusedExamples.map { ($0 as NSString).lastPathComponent })")
+                for row in fit.rows where row.percent < 100 { lab.saw("  \(row.category) falling back, such as: \(row.examplesMissing.prefix(5))") }
+            }
+        }
+        func only(_ ids: Set<String>) -> PackRecipe {
+            var r = recipe
+            for i in r.entries.indices { r.entries[i].enabled = ids.contains(r.entries[i].pack) }
+            return r
+        }
+        try await measure("Zig Zag alone", only(["sonoranpack"]))
+        try await measure("Lithos alone", only([lithos.id]))
+        try await measure("Zig Zag over Lithos", only(["sonoranpack", lithos.id]))
+    }
     let moved = ResourcePacks.changes(from: lock, to: models)
     lab.saw("Compared with plain ranking: \(moved.summary)")
 }

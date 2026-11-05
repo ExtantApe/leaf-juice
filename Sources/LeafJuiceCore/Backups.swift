@@ -149,11 +149,14 @@ public enum Backups {
         args += ["-C", root.path] + items
         let result = try await Tool.run("/usr/bin/tar", args)
         var warning: String?
+        // tar stores a link as a link, so what it points at isn't in the backup. Better said than found out later.
+        let linked = items.filter { (try? FileManager.default.destinationOfSymbolicLink(atPath: root.appendingPathComponent($0).path)) != nil }
+        if !linked.isEmpty { warning = "\(linked.joined(separator: ", ")) \(linked.count == 1 ? "is a link" : "are links") to somewhere else, so the contents aren't in this backup. Back up that location separately." }
         if !result.ok {
             // Files changing mid-read make tar complain. If the archive reads back whole, it's usable.
             let verify = try await Tool.run("/usr/bin/tar", ["-tzf", partial.path])
             guard verify.ok else { throw LeafError("The backup failed: \(result.err.prefix(300))") }
-            warning = "Some files changed while being copied."
+            warning = [warning, "Some files changed while being copied."].compactMap { $0 }.joined(separator: " ")
         }
         try FileOps.move(partial, to: archive)
         let record = BackupRecord(
@@ -189,20 +192,25 @@ public enum Backups {
         try? FileManager.default.removeItem(at: sidecar(for: archive))
     }
 
-    /// Which backups the retention policy would remove. Pinned ones never are.
-    public static func prunable(_ records: [BackupRecord], keepLast: Int, keepDays: Int, now: Date = Date()) -> [BackupRecord] {
-        let sorted = records.sorted { $0.date > $1.date }
+    /// Which backups the retention policy would remove. Pinned ones never are, and don't use up the "keep the latest" count.
+    public static func prunable(_ records: [BackupRecord], keepLast: Int, keepDays: Int, now: Date = Date(), protecting: String? = nil) -> [BackupRecord] {
+        // Dates are stored to the second, so the name settles a tie: same-second backups get a higher suffix.
+        let sorted = records.sorted { $0.date == $1.date ? $0.fileName > $1.fileName : $0.date > $1.date }
         let cutoff = now.addingTimeInterval(-Double(keepDays) * 86_400)
-        return sorted.enumerated().compactMap { index, record in
-            if record.pinned || index < keepLast { return nil }
+        var kept = 0
+        return sorted.compactMap { record in
+            if record.pinned || record.fileName == protecting { return nil }
+            kept += 1
+            if kept <= keepLast { return nil }
             if keepDays > 0, record.date >= cutoff { return nil }
             return record
         }
     }
 
+    /// `protecting` is a backup that's just been made, which must never be what gets removed.
     @discardableResult
-    public static func prune(_ profile: ServerProfile) -> [BackupRecord] {
-        let doomed = prunable(list(profile), keepLast: max(1, profile.backup.keepLast), keepDays: profile.backup.keepDays)
+    public static func prune(_ profile: ServerProfile, protecting: String? = nil) -> [BackupRecord] {
+        let doomed = prunable(list(profile), keepLast: max(1, profile.backup.keepLast), keepDays: profile.backup.keepDays, protecting: protecting)
         for record in doomed { try? delete(record, profile: profile) }
         return doomed
     }

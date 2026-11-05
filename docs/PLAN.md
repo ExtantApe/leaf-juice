@@ -235,6 +235,8 @@ What's been learned from real runs is in [FINDINGS.md](FINDINGS.md).
 
 Built-in features with an on/off switch, not a plugin system. An unsigned app loading third-party code would be a real risk, and Swift has no stable way to do it. `modules.json` stores only what's off, so anything added later starts on. A module going off hides its pages and buttons and stops its background work, and keeps its data. Lifecycle, console, plugins, software, configs, backups, issues and the Change Queue are the base and can't be turned off.
 
+The Wiki is one: `Wiki.swift` assembles a page from `plugin.yml` files, a LuckPerms export and an allowlist of settings, and shows it in the app. Files are only written on export.
+
 Ideas for later modules: scheduled announcements, a player whitelist manager, a Discord webhook for crashes and restarts (off by default, since it reaches outside), offsite backup targets, chunk pre-generation, a world map preview.
 
 ## Resource packs

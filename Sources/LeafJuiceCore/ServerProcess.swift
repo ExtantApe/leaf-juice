@@ -104,22 +104,38 @@ public enum SystemInfo {
     public static var memoryMB: Int { Int(ProcessInfo.processInfo.physicalMemory / (1024 * 1024)) }
 
     /// Is something already listening on this port?
-    public static func isPortBusy(_ port: Int) -> Bool {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
-        defer { close(fd) }
-        var yes: Int32 = 1
-        // Ignores connections still in TIME_WAIT, but a live listener still conflicts.
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
-        var address = sockaddr_in()
-        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        address.sin_family = sa_family_t(AF_INET)
-        address.sin_port = in_port_t(port).bigEndian
-        address.sin_addr.s_addr = INADDR_ANY.bigEndian
-        let result = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    /// The folder a process is running in, which tells a server apart from whatever else has its number.
+    public static func workingDirectory(pid: Int32) -> URL? {
+        var info = proc_vnodepathinfo()
+        let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return nil }
+        let path = withUnsafePointer(to: &info.pvi_cdir.vip_path) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
         }
-        return result != 0
+        return path.isEmpty ? nil : URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    public static func isPortBusy(_ port: Int) -> Bool {
+        // Observed: on a Mac, binding to every address succeeds even while something holds the port on 127.0.0.1 alone,
+        // as the Lab does. So both are tried.
+        for host in [INADDR_ANY, INADDR_LOOPBACK] {
+            let fd = socket(AF_INET, SOCK_STREAM, 0)
+            guard fd >= 0 else { continue }
+            defer { close(fd) }
+            var yes: Int32 = 1
+            // Ignores connections still in TIME_WAIT, but a live listener still blocks the bind.
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+            var address = sockaddr_in()
+            address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+            address.sin_family = sa_family_t(AF_INET)
+            address.sin_port = in_port_t(port).bigEndian
+            address.sin_addr.s_addr = host.bigEndian
+            let result = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+            }
+            if result != 0 { return true }
+        }
+        return false
     }
 
     public static func isAlive(pid: Int32) -> Bool { pid > 0 && kill(pid, 0) == 0 }

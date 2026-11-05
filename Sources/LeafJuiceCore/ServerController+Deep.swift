@@ -173,6 +173,8 @@ extension ServerController {
         doc.set("server-port", String(port))
         doc.set("enable-rcon", "false")
         doc.set("enable-query", "false")
+        // Observed on: the real server would be using this port already.
+        doc.set("management-server-enabled", "false")
         doc.set("motd", "Test copy of \(profile.name)")
         try FileOps.writeAtomic(doc.text, to: copyPaths.properties)
         for plugin in await PluginScanner.scan(copyPaths) where plugin.enabled && Trial.disabledInCopies.contains(plugin.key) {

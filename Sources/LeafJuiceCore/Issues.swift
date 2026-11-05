@@ -198,6 +198,9 @@ public final class IssueAnalyzer {
     public func ingest(_ raw: String, at date: Date = Date()) {
         let line = ParsedLogLine(raw)
         if line.isStackFrame || !line.hasPrefix { attach(line, raw: raw) } else { lastRecordID = nil }
+        // Frames say which code ran, not what went wrong, and rules on them cost the most during an error flood.
+        // `Caused by:` lines count as stack too, but those do say what went wrong, so they still get read.
+        if line.isStackFrame, !line.message.contains("Caused by:") { return }
         let lower = line.message.lowercased()
 
         for compiled in rules {

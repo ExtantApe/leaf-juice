@@ -4,7 +4,7 @@ import Observation
 import SwiftUI
 
 enum PageID: String, CaseIterable, Identifiable, Hashable {
-    case overview, console, history, players, worlds, plugins, software, configs, resourcePacks, launch, backups, changes, cleanup
+    case overview, console, history, players, worlds, plugins, software, configs, resourcePacks, wiki, launch, backups, changes, cleanup
     var id: String { rawValue }
     /// The module a page belongs to. Nil for the essentials, which are always there.
     var module: LeafModule? {
@@ -14,6 +14,7 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         case .history: .history
         case .cleanup: .cleanup
         case .resourcePacks: .resourcePacks
+        case .wiki: .wiki
         default: nil
         }
     }
@@ -28,6 +29,7 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         case .cleanup: "Cleanup"
         case .plugins: "Plugins"
         case .resourcePacks: "Resource Packs"
+        case .wiki: "Wiki"
         case .software: "Software"
         case .configs: "Configs"
         case .launch: "Launch"
@@ -45,6 +47,7 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         case .cleanup: "sparkles"
         case .plugins: "puzzlepiece.extension"
         case .resourcePacks: "photo.stack"
+        case .wiki: "book"
         case .software: "shippingbox"
         case .configs: "slider.horizontal.3"
         case .launch: "bolt"
@@ -192,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.showFolderSetup = false
             try? FileOps.ensureDir(URL(fileURLWithPath: folder))
             var windows: [NSWindow] = []   // Kept until the end: closing them while SwiftUI settles isn't safe.
-            for server in model.servers {
+            for server in model.servers where ProcessInfo.processInfo.environment["LEAFJUICE_SNAPSHOT_DIALOGS_ONLY"] == nil {
                 for page in PageID.allCases {
                     model.selectedID = server.id
                     model.page = page
@@ -208,6 +211,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         host.cacheDisplay(in: host.bounds, to: rep)
                         let name = "\(server.profile.name.replacingOccurrences(of: " ", with: "-"))-\(page.rawValue).png"
                         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: folder).appendingPathComponent(name))
+                    }
+                    window.orderOut(nil)
+                    windows.append(window)
+                }
+            }
+            // The dialogs too, which otherwise only appear after a click.
+            if let server = model.servers.first(where: { !$0.isLab }) {
+                let build = PackVersion(file: "new.zip", version: "2.0", sha1: "abc", added: Date(), size: 1000, format: 75, description: "", fileCount: 3, imageCount: 1)
+                let pack = LibraryPack(id: "zig-zag", title: "Zig Zag", license: PackLicense(id: "LicenseRef-All-Rights-Reserved"), authors: ["Jamizzle"], versions: [build])
+                var changes = PackChanges()
+                changes.changed = [.init(path: "assets/minecraft/textures/block/stone.png", detail: "zig-zag updated it")]
+                changes.added = [.init(path: "assets/minecraft/textures/block/pale_oak_planks.png", detail: "From zig-zag")]
+                changes.hidden = [.init(path: "assets/minecraft/items/bricks.json", detail: "zig-zag changed, but tardis-resource-pack still wins")]
+                changes.lostPicks = ["assets/minecraft/textures/block/old.png"]
+                let recipe = ResourcePacks.loadRecipe(ResourcePacks.recipeNames().first ?? "combined")
+                let dialogs: [(String, AnyView)] = [
+                    ("settings", AnyView(SettingsView(model: model))),
+                    ("lab-setup", AnyView(LabSetupSheet(model: model, then: {}))),
+                    ("share", AnyView(ShareSheet(recipe: recipe, history: []))),
+                    ("update-review", AnyView(UpdateReviewSheet(pending: .init(pack: pack, version: build, changes: changes), onAccept: {}, onCancel: {}))),
+                    ("servers-folder", AnyView(ServersFolderSheet())),
+                    ("add-server", AnyView(AddServerSheet(model: model))),
+                    ("rename", AnyView(RenameSheet(model: model, server: server))),
+                    ("server-rename", AnyView(ServerRenameSheet(model: model, server: server, onDone: {}))),
+                    ("add-plugin", AnyView(AddPluginSheet(server: server))),
+                    ("welcome", AnyView(WelcomeView(model: model).frame(width: 1000, height: 700))),
+                ]
+                for (name, view) in dialogs {
+                    let host = NSHostingView(rootView: view.tint(Juice.pulp).background(Juice.background))
+                    if ProcessInfo.processInfo.environment["LEAFJUICE_SNAPSHOT_LIGHT"] != nil { host.appearance = NSAppearance(named: .aqua) }
+                    let size = host.fittingSize
+                    host.frame = NSRect(origin: .zero, size: NSSize(width: max(size.width, 320), height: max(min(size.height, 1100), 200)))
+                    let window = NSWindow(contentRect: NSRect(x: -6000, y: -6000, width: host.frame.width, height: host.frame.height), styleMask: [.borderless], backing: .buffered, defer: false)
+                    window.isReleasedWhenClosed = false
+                    window.contentView = host
+                    window.orderBack(nil)
+                    try? await Task.sleep(for: .seconds(2))
+                    if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                        host.cacheDisplay(in: host.bounds, to: rep)
+                        try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: folder).appendingPathComponent("dialog-\(name).png"))
                     }
                     window.orderOut(nil)
                     windows.append(window)

@@ -24,6 +24,7 @@ struct ResourcePacksPage: View {
     @State private var confirmRemove: LibraryPack?
     @State private var newRecipe = false
     @State private var newName = ""
+    @State private var fit: PackCoverage?
 
     struct PendingUpdate: Identifiable {
         var id: String { pack.id }
@@ -166,6 +167,7 @@ struct ResourcePacksPage: View {
                 Spacer()
                 Button("Build") { build() }.buttonStyle(.juicePrimary).disabled(working != nil || enabled.isEmpty)
             }
+            fitSection
             categorySection
             leaveOutSection
             conflictSection
@@ -175,6 +177,27 @@ struct ResourcePacksPage: View {
                 Button("Share…") { sharing = true }.buttonStyle(.juice).disabled(enabled.isEmpty)
                 Button("Import Recipe…") { importRecipe() }.buttonStyle(.juice).disabled(working != nil)
             }
+        }
+    }
+
+    @ViewBuilder private var fitSection: some View {
+        if let fit {
+            DisclosureGroup("Covers \(fit.percent)% of Minecraft \(fit.mc)'s textures") {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(fit.rows) { row in
+                        HStack(spacing: 10) {
+                            Text(row.category).foregroundStyle(Juice.ink).frame(width: 130, alignment: .leading)
+                            ProgressView(value: Double(row.covered), total: Double(max(row.total, 1))).frame(maxWidth: 200).accessibilityLabel("\(row.category): \(row.percent) percent")
+                            Text("\(row.covered) of \(row.total)").font(.callout).foregroundStyle(Juice.muted)
+                        }
+                    }
+                    Hint("Anything not covered uses the game's own art. A pack listed lower down fills in gaps from the ones above it.")
+                    if fit.unused > 0 { Hint("\(fit.unused) textures here are for things this version doesn't have, so the game ignores them.") }
+                    if let format = fit.serverFormat { Hint("This Minecraft version uses pack format \(format).") }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .foregroundStyle(Juice.ink)
         }
     }
 
@@ -331,6 +354,8 @@ struct ResourcePacksPage: View {
 
     private func refreshLock() async {
         lock = try? await ResourcePacks.resolve(recipe)
+        // Measuring needs one download of Mojang's file list per version, and works without it otherwise.
+        if let mc, !enabled.isEmpty { fit = try? await ResourcePacks.coverage(recipe, mc: mc) } else { fit = nil }
         if let now = lock, let newest = history.first, let then = ResourcePacks.loadLock(sha1: newest.sha1, recipe: recipe.name) {
             lastChanges = ResourcePacks.changes(from: then, to: now, recipe: recipe)
         } else {
@@ -493,7 +518,7 @@ struct UpdateReviewSheet: View {
             Text("Update \(pending.pack.title) to \(pending.version.version)?").font(.title2.weight(.semibold)).foregroundStyle(Juice.ink)
             Text("In this recipe: \(pending.changes.summary).").foregroundStyle(Juice.ink)
             if !pending.changes.lostPicks.isEmpty {
-                Callout(tone: .warning, title: "\(pending.changes.lostPicks.count) file\(pending.changes.lostPicks.count == 1 ? "" : "s") you picked a winner for are gone", detail: pending.changes.lostPicks.prefix(6).joined(separator: "\n"))
+                Callout(tone: .warning, title: pending.changes.lostPicks.count == 1 ? "1 file you picked a winner for is gone" : "\(pending.changes.lostPicks.count) files you picked winners for are gone", detail: pending.changes.lostPicks.prefix(6).joined(separator: "\n"))
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {

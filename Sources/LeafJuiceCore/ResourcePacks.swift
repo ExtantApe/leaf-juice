@@ -79,6 +79,11 @@ public struct PackVersion: Codable, Identifiable, Equatable, Sendable {
     public var imageCount: Int
     /// Something worth knowing, such as not being made for your Minecraft version.
     public var note: String?
+
+    public init(file: String, version: String, sha1: String, added: Date, size: Int64, format: Int?, description: String, fileCount: Int, imageCount: Int, note: String? = nil) {
+        self.file = file; self.version = version; self.sha1 = sha1; self.added = added; self.size = size
+        self.format = format; self.description = description; self.fileCount = fileCount; self.imageCount = imageCount; self.note = note
+    }
 }
 
 public struct LibraryPack: Codable, Identifiable, Equatable, Sendable {
@@ -89,6 +94,9 @@ public struct LibraryPack: Codable, Identifiable, Equatable, Sendable {
     public var authors: [String] = []
     /// Oldest first. Versions are kept, so going back is always possible.
     public var versions: [PackVersion] = []
+    public init(id: String, title: String, source: PackSource = .none, license: PackLicense? = nil, authors: [String] = [], versions: [PackVersion] = []) {
+        self.id = id; self.title = title; self.source = source; self.license = license; self.authors = authors; self.versions = versions
+    }
     public var latest: PackVersion? { versions.last }
     public func version(_ sha1: String?) -> PackVersion? { versions.first { $0.sha1 == sha1 } ?? latest }
 }
@@ -151,7 +159,9 @@ public struct PackChanges: Equatable, Sendable {
         public var id: String { path }
         public var path: String
         public var detail: String
+        public init(path: String, detail: String) { self.path = path; self.detail = detail }
     }
+    public init() {}
     public var added: [Change] = []
     public var removed: [Change] = []
     /// What players would see differently.
@@ -657,21 +667,24 @@ public enum ResourcePacks {
     /// What differs between two states, in terms of what players would see.
     public static func changes(from old: PackLock, to new: PackLock, recipe: PackRecipe? = nil) -> PackChanges {
         var out = PackChanges()
+        var titles = Dictionary(uniqueKeysWithValues: list().map { ($0.id, $0.title) })
+        titles[mineID] = "My changes"
+        func name(_ id: String) -> String { titles[id] ?? id }
         let before = Dictionary(uniqueKeysWithValues: old.files.map { ($0.path, $0) })
         let after = Dictionary(uniqueKeysWithValues: new.files.map { ($0.path, $0) })
         for file in new.files {
             guard let was = before[file.path] else {
-                out.added.append(.init(path: file.path, detail: "From \(file.winner)"))
+                out.added.append(.init(path: file.path, detail: "From \(name(file.winner))"))
                 continue
             }
             if was.sha1 != file.sha1 {
-                out.changed.append(.init(path: file.path, detail: was.winner == file.winner ? "\(file.winner) updated it" : "Now from \(file.winner), was \(was.winner)"))
+                out.changed.append(.init(path: file.path, detail: was.winner == file.winner ? "\(name(file.winner)) updated it" : "Now from \(name(file.winner)), was \(name(was.winner))"))
             } else if was.copies != file.copies {
-                let differing = file.copies.filter { c in !was.copies.contains(c) }.map(\.pack)
-                out.hidden.append(.init(path: file.path, detail: "\(differing.joined(separator: ", ")) changed, but \(file.winner) still wins"))
+                let differing = file.copies.filter { c in !was.copies.contains(c) }.map { name($0.pack) }
+                out.hidden.append(.init(path: file.path, detail: "\(differing.joined(separator: ", ")) changed, but \(name(file.winner)) still wins"))
             }
         }
-        for file in old.files where after[file.path] == nil { out.removed.append(.init(path: file.path, detail: "Was from \(file.winner)")) }
+        for file in old.files where after[file.path] == nil { out.removed.append(.init(path: file.path, detail: "Was from \(name(file.winner))")) }
         if let recipe { out.lostPicks = recipe.winners.keys.filter { after[$0] == nil }.sorted() }
         return out
     }
@@ -897,5 +910,91 @@ public enum ResourcePacks {
         doc.set("resource-pack-id", UUID().uuidString.lowercased())
         doc.set("require-resource-pack", required ? "true" : "false")
         return doc.text
+    }
+}
+
+// MARK: - Measuring a pack against a Minecraft version
+
+/// What a version of the game actually uses, from Mojang's own client jar. Only the list of names is kept.
+public struct VanillaAssets: Codable, Equatable, Sendable {
+    public var mc: String
+    public var format: Int?
+    public var files: [String]
+    public init(mc: String, format: Int?, files: [String]) { self.mc = mc; self.format = format; self.files = files }
+
+    static var cache: URL { AppPaths.home.appendingPathComponent("vanilla-assets", isDirectory: true) }
+
+    private struct Manifest: Decodable { struct Version: Decodable { let id: String; let url: String }; let versions: [Version] }
+    private struct Details: Decodable { struct Downloads: Decodable { struct File: Decodable { let url: String; let sha1: String }; let client: File }; let downloads: Downloads }
+
+    public static func load(mc: String) async throws -> VanillaAssets {
+        let file = cache.appendingPathComponent("\(mc).json")
+        if let data = try? Data(contentsOf: file), let saved = try? JSONStore.decoder.decode(VanillaAssets.self, from: data) { return saved }
+        let manifest = try await HTTP.decode(Manifest.self, HTTP.url("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"))
+        guard let version = manifest.versions.first(where: { $0.id == mc }) else { throw LeafError("Mojang doesn't list Minecraft \(mc).") }
+        let details = try await HTTP.decode(Details.self, HTTP.url(version.url))
+        let work = cache.appendingPathComponent(".download-\(UUID().uuidString)", isDirectory: true)
+        try FileOps.ensureDir(work)
+        defer { try? FileManager.default.removeItem(at: work) }
+        let jar = work.appendingPathComponent("client.jar")
+        try await HTTP.download(HTTP.url(details.downloads.client.url), to: jar, expect: ExpectedHashes(sha1: details.downloads.client.sha1))
+        let names = try await Tool.run("/usr/bin/unzip", ["-Z1", jar.path])
+        guard names.ok else { throw LeafError("Couldn't read Minecraft \(mc)'s file list.") }
+        let info = try await Tool.run("/usr/bin/unzip", ["-p", jar.path, "version.json"])
+        let parsed = (try? JSONSerialization.jsonObject(with: Data(info.out.utf8))) as? [String: Any]
+        let packVersion = parsed?["pack_version"] as? [String: Any]
+        let format = ResourcePacks.formatNumber(packVersion?["resource_major"]) ?? ResourcePacks.formatNumber(packVersion?["resource"]) ?? ResourcePacks.formatNumber(parsed?["pack_version"])
+        let assets = VanillaAssets(mc: mc, format: format, files: names.out.split(separator: "\n").map(String.init).filter { $0.hasPrefix("assets/") && !$0.hasSuffix("/") && !$0.hasPrefix("assets/.") })
+        try JSONStore.save(assets, to: file)
+        return assets
+    }
+}
+
+/// How well a set of files fits a version: what it covers, what falls back to the game's own art, and what's ignored.
+public struct PackCoverage: Equatable, Sendable {
+    public struct Row: Identifiable, Equatable, Sendable {
+        public var id: String { category }
+        public var category: String
+        public var covered: Int
+        public var total: Int
+        public var examplesMissing: [String]
+        public var percent: Int { total == 0 ? 0 : covered * 100 / total }
+    }
+    public var mc: String
+    public var serverFormat: Int?
+    public var rows: [Row]
+    /// Textures for things this version doesn't have, which the game never reads.
+    public var unused: Int
+    public var unusedExamples: [String]
+    public var covered: Int { rows.reduce(0) { $0 + $1.covered } }
+    public var total: Int { rows.reduce(0) { $0 + $1.total } }
+    public var percent: Int { total == 0 ? 0 : covered * 100 / total }
+}
+
+extension ResourcePacks {
+    static let measured = ["Blocks", "Items", "Entities", "Interface", "Paintings", "Sky and weather", "Particles", "Other textures"]
+
+    /// Compares paths with what a version uses. Only textures are measured, since they're what a player sees.
+    public static func coverage(of paths: [String], against vanilla: VanillaAssets) -> PackCoverage {
+        func isTexture(_ path: String) -> Bool { path.hasPrefix("assets/minecraft/textures/") && path.hasSuffix(".png") }
+        let wanted = vanilla.files.filter(isTexture)
+        let wantedSet = Set(wanted)
+        let have = Set(paths.filter(isTexture))
+        var rows: [PackCoverage.Row] = []
+        for name in measured {
+            let inCategory = wanted.filter { category(of: $0) == name }
+            guard !inCategory.isEmpty else { continue }
+            let missing = inCategory.filter { !have.contains($0) }
+            rows.append(.init(category: name, covered: inCategory.count - missing.count, total: inCategory.count, examplesMissing: Array(missing.prefix(6)).map { ($0 as NSString).lastPathComponent }))
+        }
+        let unused = have.subtracting(wantedSet).sorted()
+        return PackCoverage(mc: vanilla.mc, serverFormat: vanilla.format, rows: rows, unused: unused.count, unusedExamples: Array(unused.prefix(6)))
+    }
+
+    /// The whole recipe as it would build.
+    public static func coverage(_ recipe: PackRecipe, mc: String) async throws -> PackCoverage {
+        async let vanilla = VanillaAssets.load(mc: mc)
+        let lock = try await resolve(recipe)
+        return coverage(of: lock.files.map(\.path), against: try await vanilla)
     }
 }

@@ -93,6 +93,13 @@ public enum FileOps {
     }
 
     /// Moves a file, replacing any existing destination.
+    /// A file directly inside a folder, or nil if the name could mean anything else. An empty name would be the folder
+    /// itself, so nothing that deletes or moves a named file should go without this.
+    public static func child(_ name: String, of folder: URL) -> URL? {
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\") else { return nil }
+        return folder.appendingPathComponent(name)
+    }
+
     public static func move(_ from: URL, to: URL) throws {
         try ensureDir(to.deletingLastPathComponent())
         if exists(to) { try FileManager.default.removeItem(at: to) }

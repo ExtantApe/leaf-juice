@@ -95,7 +95,7 @@ running. A pass means these checks passed, and the board lists what they don't c
 
 ## Features you can turn off
 
-Worlds and Multiverse, Players, History, Cleanup, Test copies, Backup drills, the Lab and Resource packs are all switches in **Settings**, and all
+Worlds and Multiverse, Players, History, Cleanup, Test copies, Backup drills, the Lab, Resource packs and the Wiki are all switches in **Settings**, and all
 on by default. Off hides the feature and stops its background work. Nothing it saved is deleted, and turning it back on picks up where it left off.
 These are built in: Leaf Juice doesn't load third-party code.
 
@@ -105,11 +105,17 @@ Add packs by file, or from a Modrinth or GitHub page. Every version is kept, unc
 
 A **recipe** ranks packs into one, with the top winning as in Minecraft's own list. You can put a pack first for one kind of file, such as blocks, pick a winner for a single file, or leave out parts of a pack. Languages, sounds, fonts, atlases and item model overrides merge rather than replace. A **My changes** folder always wins, and updates never touch it.
 
+The recipe shows how much of your Minecraft version's textures it covers, measured against Mojang's own file list, so you can see what falls back to the game's art and what's ignored.
+
 Each build keeps a lock file of every copy of every file, so an update can show exactly what would change before you accept it, and older builds stay available. The same recipe builds the same file, byte for byte, so nothing needs uploading again unless something changed.
 
 **Sharing:** a recipe exports as a small JSON file that holds no pack contents, and others download the packs from their authors. A combined pack exports with credits and each pack's license, after a review that flags any license worth checking. That review is a guide, not legal advice.
 
 Players' games download a pack from the web, so upload the build somewhere, for example mc-packs.net, and Leaf Juice sets the address on your server through the usual Change Queue.
+
+## Wiki
+
+A wiki for each server, built from its plugins, ranks and worlds, and viewable right in the app. The player view only lists commands a rank can be shown to use, and has no plugin settings, player names, operators or secrets. The admin view adds permissions. Your own welcome text, rules and plugin notes are kept when it updates, and you can export both views as web pages and Markdown to host anywhere.
 
 ## Install
 

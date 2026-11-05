@@ -4,7 +4,7 @@ import Observation
 /// Major features that can be switched off. All compiled in and all on by default: there's no third-party code here.
 /// Off hides a feature and stops its background work. Its data stays where it is.
 public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
-    case worlds, players, history, cleanup, testCopies, backupDrill, lab, resourcePacks
+    case worlds, players, history, cleanup, testCopies, backupDrill, lab, resourcePacks, wiki
 
     public var id: String { rawValue }
     public var title: String {
@@ -17,6 +17,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .backupDrill: "Backup drills"
         case .lab: "Lab"
         case .resourcePacks: "Resource packs"
+        case .wiki: "Wiki"
         }
     }
     public var summary: String {
@@ -29,6 +30,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .backupDrill: "Prove a backup restores by booting it somewhere safe."
         case .lab: "A practice server with bot players, the status board and upgrade rehearsals."
         case .resourcePacks: "Look through resource packs, and combine them into one."
+        case .wiki: "Pages for your players, generated from your plugins, ranks and worlds."
         }
     }
     public var icon: String {
@@ -41,6 +43,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .backupDrill: "checkmark.shield"
         case .lab: "flask"
         case .resourcePacks: "photo.stack"
+        case .wiki: "book"
         }
     }
 }
