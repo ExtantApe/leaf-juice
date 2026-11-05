@@ -2221,6 +2221,7 @@ if CommandLine.arguments.contains("--sandbox") {
     exit(failures.isEmpty ? 0 : 1)
 }
 
+try runAdvisorChecks()
 await runLifecycleWithStandIn()
 if CommandLine.arguments.contains("--live") { await runLiveAPIs() }
 if CommandLine.arguments.contains("--real-paper") {
