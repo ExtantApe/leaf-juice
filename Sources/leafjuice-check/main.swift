@@ -2846,6 +2846,14 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
         do { _ = try await ResourcePacks.add(many) } catch { manyMessage = error.localizedDescription }
         check(manyMessage.contains("2 separate packs") && manyMessage.contains("one"), "a project holding many packs is refused, and says why: \(manyMessage)")
 
+        // Formats as real packs really write them.
+        equal(ResourcePacks.formatNumber(75), 75, "a plain format"); equal(ResourcePacks.formatNumber([75, 0]), 75, "major and minor")
+        equal(ResourcePacks.formatNumber([97.1]), 97, "a decimal in a list"); equal(ResourcePacks.formatNumber(88.0), 88, "a decimal")
+        let decimal = await makePack("Decimal", ["pack.mcmeta": #"{"pack":{"min_format":[97.1],"max_format":[97.1],"description":"new"}}"#, "assets/x/textures/block/d.png": "d"])
+        let decimalPack = try await ResourcePacks.add(decimal)
+        equal(decimalPack.latest?.format, 97, "read from a real pack's form")
+        try await ResourcePacks.remove(decimalPack)
+
         // Observed on the real TARDIS pack: min_format with no pack_format.
         let modern = await makePack("Modern", ["pack.mcmeta": #"{"pack":{"min_format":84,"max_format":84,"description":"new"}}"#, "assets/x/textures/block/n.png": "n"])
         let modernPack = try await ResourcePacks.add(modern)

@@ -771,6 +771,8 @@ import Foundation
     }
     let tardis = try await ResourcePacks.download(.modrinth(project: "tardis-resource-pack"), mc: "1.21.11")
     packs.append(tardis)
+    let lithos = try await ResourcePacks.download(.modrinth(project: "lithos"), mc: "1.21.11")
+    packs.append(lithos)
     var recipe = ResourcePacks.reconcile(PackRecipe(), with: packs)
     recipe.name = "Overlap"
     recipe.entries.sort { a, b in packs.firstIndex { $0.id == a.pack }! < packs.firstIndex { $0.id == b.pack }! }
@@ -798,6 +800,12 @@ import Foundation
     flipped.categoryWinners["Models"] = tardis.id
     let models = try await ResourcePacks.resolve(flipped)
     lab.saw("TARDIS first for Models: \(models.files.filter { $0.reason == .category }.count) files decided that way, and \(ResourcePacks.conflicts(models).filter { $0.winner == tardis.id }.count) of the differing files now go to TARDIS")
+    var blocksOnly = recipe
+    blocksOnly.categoryWinners["Items"] = lithos.id
+    let mixed = try await ResourcePacks.resolve(blocksOnly)
+    lab.saw("Items from Lithos instead: \(mixed.files.filter { $0.reason == .category }.count) decided by category. Conflicts' winners: \(Dictionary(grouping: ResourcePacks.conflicts(mixed), by: \.winner).mapValues(\.count))")
+    let swapped = ResourcePacks.changes(from: lock, to: mixed)
+    lab.saw("Compared with plain ranking: \(swapped.summary). Such as \(swapped.changed.prefix(3).map { "\($0.path): \($0.detail)" })")
     let moved = ResourcePacks.changes(from: lock, to: models)
     lab.saw("Compared with plain ranking: \(moved.summary)")
 }

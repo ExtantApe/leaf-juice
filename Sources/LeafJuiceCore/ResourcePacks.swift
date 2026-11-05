@@ -344,6 +344,13 @@ public enum ResourcePacks {
         return ""
     }
 
+    /// Observed in real packs: `75`, `[75, 0]`, `[97.1]` and `88.0` all mean a format. The whole number is what counts.
+    static func formatNumber(_ value: Any?) -> Int? {
+        if let n = value as? NSNumber { return n.intValue }
+        if let list = value as? [Any] { return formatNumber(list.first) }
+        return nil
+    }
+
     /// The pack's real root, and what it says about itself.
     static func read(_ zip: URL, version: String) async throws -> (info: PackVersion, root: URL) {
         let top = try await unpack(zip)
@@ -360,7 +367,7 @@ public enum ResourcePacks {
         let packRoot = prefix.isEmpty ? top : top.appendingPathComponent(prefix, isDirectory: true)
         let meta = (try? JSONSerialization.jsonObject(with: Data(contentsOf: packRoot.appendingPathComponent("pack.mcmeta")))) as? [String: Any]
         guard let pack = meta?["pack"] as? [String: Any] else { throw LeafError("\(zip.lastPathComponent) has a pack.mcmeta that can't be read.") }
-        let format = (pack["pack_format"] as? Int) ?? (pack["min_format"] as? Int) ?? ((pack["min_format"] as? [Int])?.first)
+        let format = formatNumber(pack["pack_format"]) ?? formatNumber(pack["min_format"])
         let own = listing(packRoot)
         return (PackVersion(file: zip.lastPathComponent, version: version, sha1: try Hashing.digests(of: zip).sha1, added: Date(), size: FileOps.size(zip), format: format, description: describe(pack["description"]), fileCount: own.count, imageCount: own.filter { $0.lowercased().hasSuffix(".png") && $0.hasPrefix("assets/") }.count), packRoot)
     }
@@ -731,9 +738,9 @@ public enum ResourcePacks {
         // pack.mcmeta: wide enough for everything included.
         let metas = sources.compactMap(\.meta)
         let bodies = metas.compactMap { $0["pack"] as? [String: Any] }
-        func number(_ value: Any?) -> Int? { (value as? Int) ?? (value as? [Int])?.first }
-        let formats = bodies.compactMap { $0["pack_format"] as? Int }
-        let distinct = Set(bodies.compactMap { ($0["pack_format"] as? Int) ?? number($0["min_format"]) })
+        func number(_ value: Any?) -> Int? { formatNumber(value) }
+        let formats = bodies.compactMap { formatNumber($0["pack_format"]) }
+        let distinct = Set(bodies.compactMap { number($0["pack_format"]) ?? number($0["min_format"]) })
         if distinct.count > 1 {
             warnings.append("These packs were made for different Minecraft versions (formats \(distinct.sorted().map(String.init).joined(separator: ", "))). Some files may not work on your version.")
         }
@@ -743,7 +750,7 @@ public enum ResourcePacks {
         if let top { body["pack_format"] = top }
         var low: [Int] = [], high: [Int] = []
         for b in bodies {
-            if let n = b["pack_format"] as? Int { low.append(n); high.append(n) }
+            if let n = number(b["pack_format"]) { low.append(n); high.append(n) }
             if let s = b["supported_formats"] as? [Int], s.count == 2 { low.append(s[0]); high.append(s[1]) }
             if let s = b["supported_formats"] as? [String: Int], let a = s["min_inclusive"], let z = s["max_inclusive"] { low.append(a); high.append(z) }
             if let a = number(b["min_format"]) { low.append(a) }
