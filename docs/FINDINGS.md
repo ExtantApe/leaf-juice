@@ -158,6 +158,17 @@ Reading every delete, move and shell call found these, all now fixed and tested:
 
 Scanning stack frames for rules was the slowest part of an error flood, and skipping them made it 12 times faster. `Caused by:` lines are still read.
 
+## Passing has to mean something
+
+A test that stops triggering a bug looks the same as a fix. After the Lab went peaceful, a real plugin bug that only fires on damage stopped showing up, and every check passed. The Lab's checks now include combat, and it's caught again.
+
+Also found while verifying:
+- **Links in test copies:** `cp -R` keeps a linked world as a link, so a test copy would have opened and changed the real world. Copies now follow links.
+- **Switched-off databases:** a plugin's config can name a database in a section marked `enabled: false`, which isn't using one.
+- **Name matches for plugin sources:** searching by name finds the wrong project often. On 17 real plugins, 7 had a likely wrong match, and a "newest release older than yours" check caught them.
+- **Reused backup names:** a name can come round again within a second after pruning, so a copy can't be judged by name and size.
+- **Pack versions:** the TARDIS pack is tagged for 1.21.10 and declares format 84, higher than 1.21.11's 75, so a format number alone doesn't settle whether a pack suits a version.
+
 ## Real servers need more room
 
 Real plugins can have 68 settings files, past an earlier limit of 40. `bStats` and `spark` folders belong to no plugin of that name, so they aren't leftovers. Plugin files that are only comments, such as Magic's templates, give no form fields, which is expected.

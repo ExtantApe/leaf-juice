@@ -575,6 +575,15 @@ public final class LabController {
                 } else {
                     out.append(LabCheck("Per-world inventory came through", .skipped, "Multiverse-Inventories isn't installed."))
                 }
+                // Observed: a plugin can load fine and only fail once someone gets hurt, so a quiet player proves too little.
+                say("Trying some combat…")
+                _ = await ask(c, "execute at Alice run summon minecraft:pig ~2 ~ ~ {NoAI:1b,Tags:[\"leafjuice_test\"]}", expecting: "Summoned", seconds: 3)
+                for _ in 0..<4 {
+                    _ = await ask(c, "damage @e[tag=leafjuice_test,limit=1] 1 minecraft:player_attack by Alice", expecting: "damage", seconds: 2)
+                    _ = await ask(c, "damage Alice 0.1 minecraft:mob_attack by @e[tag=leafjuice_test,limit=1]", expecting: "damage", seconds: 2)
+                }
+                _ = await ask(c, "kill @e[tag=leafjuice_test]", expecting: "ill", seconds: 2)
+                try? await Task.sleep(for: .seconds(2))
                 let block = await ask(c, "execute if block 0 100 0 minecraft:gold_block", expecting: "Test passed", seconds: 5)
                 out.append(LabCheck("A block placed earlier is still there", block != nil ? .passed : .failed))
                 // Cleared first: placing what's already there reports no change, and the Lab reruns this.

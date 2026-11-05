@@ -896,6 +896,7 @@ import Foundation
     try? await Task.sleep(for: .seconds(2))
     await lab.down(c)
     records("After the old name came back")
+    lab.saw("Old record gone from playernames: \((try? String(contentsOf: p.inventories.appendingPathComponent("playernames.json"), encoding: .utf8))?.contains(bob) == false)")
 }
 
 // MARK: - What can LuckPerms tell a wiki?

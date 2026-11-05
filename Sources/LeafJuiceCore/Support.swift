@@ -100,6 +100,18 @@ public enum FileOps {
         return folder.appendingPathComponent(name)
     }
 
+    /// Whether two places are on the same drive, which matters for whether one protects against losing the other.
+    public static func sameVolume(_ a: URL, _ b: URL) -> Bool {
+        var x = stat(), y = stat()
+        func nearest(_ url: URL) -> String {
+            var at = url
+            while !exists(at), at.pathComponents.count > 1 { at = at.deletingLastPathComponent() }
+            return at.path
+        }
+        guard stat(nearest(a), &x) == 0, stat(nearest(b), &y) == 0 else { return false }
+        return x.st_dev == y.st_dev
+    }
+
     public static func move(_ from: URL, to: URL) throws {
         try ensureDir(to.deletingLastPathComponent())
         if exists(to) { try FileManager.default.removeItem(at: to) }

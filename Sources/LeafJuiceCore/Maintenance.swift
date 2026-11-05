@@ -317,11 +317,34 @@ public enum Trial {
     ]
     private static let sharedDatabase = regex(#"^\s*(storage-method|type|driver|database-type|storage|use-mysql|mysql)\s*:\s*['"]?(mysql|mariadb|postgres\w*|postgresql|mongodb|true)['"]?\s*(#.*)?$"#, [.caseInsensitive, .anchorsMatchLines])
 
+    /// Observed: AuraSkills has `sql:`, `enabled: false` and `type: mysql`, which names a database it doesn't use.
+    /// So a match doesn't count if its own section says `enabled: false`.
+    static func usesOutsideDatabase(_ text: String) -> Bool {
+        let lines = text.replacingOccurrences(of: "\r", with: "").components(separatedBy: "\n")
+        func indent(_ line: String) -> Int { line.prefix { $0 == " " }.count }
+        for (index, line) in lines.enumerated() where sharedDatabase.firstMatch(in: line) != nil {
+            let own = indent(line)
+            var switchedOff = false
+            // Neighbors at the same depth belong to the same section, going either way until the section ends.
+            for range in [Array(lines[..<index].reversed()), Array(lines[(index + 1)...])] {
+                for other in range {
+                    let trimmed = other.trimmingCharacters(in: .whitespaces)
+                    if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+                    if indent(other) < own { break }
+                    if indent(other) == own, trimmed.lowercased().replacingOccurrences(of: " ", with: "").hasPrefix("enabled:false") { switchedOff = true }
+                }
+            }
+            if own > 0, switchedOff { continue }
+            return true
+        }
+        return false
+    }
+
     /// Plugins whose main config points at an external database, which a copy would write to as well.
     public static func databasePlugins(_ paths: ServerPaths) -> [String] {
         FileOps.children(paths.plugins).filter(FileOps.isDirectory).compactMap { folder in
             for name in ["config.yml", "config.yaml", "settings.yml"] {
-                if let text = try? String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8), sharedDatabase.firstMatch(in: text) != nil {
+                if let text = try? String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8), usesOutsideDatabase(text) {
                     return folder.lastPathComponent
                 }
             }
@@ -339,10 +362,11 @@ public enum Trial {
     /// APFS clones take almost no space and no time; other drives get a normal copy.
     static func clone(_ source: URL, to target: URL) async throws {
         try FileOps.ensureDir(target.deletingLastPathComponent())
-        var result = try await Tool.run("/bin/cp", ["-cR", source.path, target.path])
+        // -L: a linked world has to become a real copy, or the copy would open and change the real one.
+        var result = try await Tool.run("/bin/cp", ["-cRL", source.path, target.path])
         if !result.ok {
             try? FileManager.default.removeItem(at: target)
-            result = try await Tool.run("/bin/cp", ["-R", source.path, target.path])
+            result = try await Tool.run("/bin/cp", ["-RL", source.path, target.path])
         }
         guard result.ok else { throw LeafError("Couldn't copy the server: \(result.err.prefix(200))") }
     }

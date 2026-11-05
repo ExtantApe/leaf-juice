@@ -83,6 +83,10 @@ public final class ServerController: Identifiable {
     public var nextScheduledRestart: Date?
 
     public var blockers: [Blocker] = []
+    /// Set by the app, to tell you about something you'd otherwise only see with Leaf Juice open in front of you.
+    public var onAlert: (@MainActor (_ title: String, _ detail: String) -> Void)?
+    /// The most recent ones, so tests and the app can both see what's been raised.
+    public private(set) var recentAlerts: [String] = []
     public private(set) var activity: String?
     public private(set) var activityProgress: Double?
     public var notice: String?
@@ -244,6 +248,13 @@ public final class ServerController: Identifiable {
             return runtimes.first { $0.path == path } ?? JavaRuntime(path: path, version: "?", major: 0, vendor: nil, managed: false)
         }
         return JavaManager.best(for: javaRequirement, in: runtimes)
+    }
+
+    /// Says something once, not on every tick, for as long as it stays the same.
+    public func raiseAlert(_ title: String, _ detail: String) {
+        guard !isTrialCopy else { return }
+        recentAlerts = Array((recentAlerts + [title]).suffix(20))
+        onAlert?(title, detail)
     }
 
     public var serverPort: Int {
@@ -409,11 +420,13 @@ public final class ServerController: Identifiable {
         state = .crashed(code: code)
         appendWrapper(failedToStart ? "The server gave up before it finished starting. The Issues panel has what it reported." : "The server exited unexpectedly (code \(code)).", level: .error)
         recordEvent(.crash, "Crashed", detail: "Exit code \(code)")
+        raiseAlert("\(profile.name) \(failedToStart ? "couldn't start" : "crashed")", failedToStart ? "It gave up while starting. The Issues panel has what it reported." : "Exit code \(code).\(profile.launch.restartOnCrash ? " Restarting in 10 seconds." : "")")
         reportCrash(code: code)
         crashTimes = crashTimes.filter { Date().timeIntervalSince($0) < 600 } + [Date()]
         // Starting again won't help something that can't start.
         guard profile.launch.restartOnCrash, !failedToStart else { return }
         if crashTimes.count >= 3 {
+            raiseAlert("\(profile.name) keeps crashing", "Automatic restarts are paused after \(crashTimes.count) crashes in 10 minutes.")
             appendWrapper("Crashed \(crashTimes.count) times in 10 minutes, so automatic restarts are paused. Check the Issues panel.", level: .error)
             return
         }
@@ -871,7 +884,10 @@ public final class ServerController: Identifiable {
                 profile.backup.lastRun = now
             } else {
                 do { try await backupNow(trigger: "scheduled") }
-                catch { appendWrapper("Scheduled backup failed: \(error.localizedDescription)", level: .error) }
+                catch {
+                    appendWrapper("Scheduled backup failed: \(error.localizedDescription)", level: .error)
+                    raiseAlert("\(profile.name)'s backup failed", error.localizedDescription)
+                }
             }
         }
         // Daily background checks, spread out by only running while nothing else is happening.
@@ -1384,10 +1400,33 @@ public final class ServerController: Identifiable {
         let record = try await Backups.create(profile, root: paths.root, trigger: trigger, scope: scope)
         profile.backup.lastRun = record.date
         Backups.prune(profile, protecting: record.fileName)
+        await copyToMirror(record)
         refreshBackups()
         appendWrapper("Backup finished: \(Format.bytes(record.size)).", level: .info)
         recordEvent(.backup, "Backed up", detail: "\(Format.bytes(record.size)), \(trigger)")
         return record
+    }
+
+    /// A problem here is reported loudly, but never fails the backup itself, which already exists.
+    private func copyToMirror(_ record: BackupRecord) async {
+        guard let path = profile.backup.mirror, !path.isEmpty, !isTrialCopy else { return }
+        let folder = URL(fileURLWithPath: path, isDirectory: true)
+        do {
+            setActivity("Copying the backup to your second location…")
+            try await Backups.mirror(record, profile: profile, to: folder)
+            Backups.pruneMirror(profile, folder: folder, protecting: record.fileName)
+            profile.backup.lastMirrored = Date()
+            appendWrapper("Backup copied to \(path).", level: .info)
+        } catch {
+            appendWrapper("Couldn't copy the backup to your second location: \(error.localizedDescription)", level: .warn)
+            let now = Date()
+            reportIssue(IssueRecord(
+                id: "wrapper:mirror-failed", ruleID: "wrapper-mirror", title: "A backup wasn't copied to your second location", severity: .warning, category: "Backups",
+                explanation: "The backup itself is fine, but it's only in one place. \(error.localizedDescription)",
+                steps: ["If it's on another drive, check it's connected.", "It's tried again with the next backup."],
+                action: IssueAction(page: "backups", label: "Open Backups"), sample: error.localizedDescription, firstSeen: now, lastSeen: now))
+            raiseAlert("A backup wasn't copied", error.localizedDescription)
+        }
     }
 
     public func restoreBackup(_ record: BackupRecord) async throws {
@@ -1399,6 +1438,7 @@ public final class ServerController: Identifiable {
         // A safety copy of the present first, in case this was a mistake. It's pinned so pruning can't take it.
         let safety = try await backupNow(trigger: "before-restore", scope: record.scope)
         try? Backups.setPinned(safety, pinned: true, profile: profile)
+        Backups.trimSafetyCopies(profile)
         setActivity("Restoring backup…")
         defer { setActivity(nil) }
         try await Backups.restore(record, profile: profile, root: paths.root)

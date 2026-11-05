@@ -7,6 +7,7 @@ struct PluginsPage: View {
     let server: ServerController
     @State private var selection: InstalledPlugin.ID?
     @State private var adding = false
+    @State private var findingSources = false
     @State private var editing: InstalledPlugin?
 
     var body: some View {
@@ -28,6 +29,7 @@ struct PluginsPage: View {
             }
         }
         .sheet(isPresented: $adding) { AddPluginSheet(server: server) }
+        .sheet(isPresented: $findingSources) { FindSourcesSheet(server: server) }
         .sheet(item: $editing) { SourceEditor(server: server, plugin: $0) }
     }
 
@@ -43,6 +45,10 @@ struct PluginsPage: View {
                 Button("Add Plugin…") { adding = true }.buttonStyle(.juicePrimary)
                 Button("Check for Updates") { Task { await server.checkPluginUpdates() } }
                     .buttonStyle(.juice).disabled(server.checkingPlugins)
+                if !server.pluginsWithoutSource.isEmpty {
+                    Button("Find Sources (\(server.pluginsWithoutSource.count))…") { findingSources = true }.buttonStyle(.juice)
+                        .help("Looks up where the plugins with no source come from, so they can get update checks.")
+                }
                 if !updatable.isEmpty {
                     Button("Update All (\(updatable.count))") {
                         server.attempt { for plugin in updatable { try await server.installUpdate(for: plugin) } }
@@ -395,6 +401,81 @@ struct SourceEditor: View {
                 tested = .success(try await PluginSources.check(source, mc: server.profile.software.gameVersion, flavor: server.profile.software.flavor))
             } catch { tested = .failure(error) }
         }
+    }
+}
+
+/// Suggestions for every plugin with no source. Nothing is set until you choose, since a name can match the wrong project.
+struct FindSourcesSheet: View {
+    let server: ServerController
+    @Environment(\.dismiss) private var dismiss
+    @State private var proposals: [SourceProposal]?
+    @State private var chosen: [String: Int] = [:]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Find plugin sources").font(.title2.weight(.semibold)).foregroundStyle(Juice.ink)
+            Hint("A source is where a plugin's updates come from. These matches are by name, so check any that look wrong before using them.")
+            if let proposals {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(proposals) { proposal in row(proposal) }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 420)
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small).accessibilityHidden(true)
+                    Text("Looking up \(server.pluginsWithoutSource.count) plugins…").foregroundStyle(Juice.ink)
+                }
+            }
+            HStack {
+                Button("Cancel") { dismiss() }.buttonStyle(.juice).keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Use \(chosen.count) Source\(chosen.count == 1 ? "" : "s")") { apply() }.buttonStyle(.juicePrimary).disabled(chosen.isEmpty).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 620)
+        .task { proposals = await server.proposeSources() }
+    }
+
+    @ViewBuilder private func row(_ proposal: SourceProposal) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(proposal.plugin.name).font(.body.weight(.semibold)).foregroundStyle(Juice.ink)
+                Hint("You have \(proposal.plugin.version)")
+            }
+            if proposal.options.isEmpty {
+                Hint("Nothing found by name. Paste its page into Edit Source on the plugin.")
+            } else {
+                Picker("Source for \(proposal.plugin.name)", selection: Binding(get: { chosen[proposal.id] ?? -1 }, set: { chosen[proposal.id] = $0 < 0 ? nil : $0 })) {
+                    Text("Don't set").tag(-1)
+                    ForEach(Array(proposal.options.enumerated()), id: \.offset) { index, option in
+                        Text("\(option.suggestion.source.summary)\(option.newest.map { ", newest \($0)" } ?? "")").tag(index)
+                    }
+                }
+                .labelsHidden().frame(maxWidth: 420)
+            }
+            if let index = chosen[proposal.id], proposal.options.indices.contains(index) {
+                let option = proposal.options[index]
+                if option.looksWrong {
+                    Callout(tone: .warning, title: "This looks like a different project", detail: "Its newest release is older than yours, so an update from here could replace your plugin with something else.")
+                } else {
+                    Hint(option.suggestion.reason)
+                }
+            }
+        }
+    }
+
+    private func apply() {
+        for proposal in proposals ?? [] {
+            if let index = chosen[proposal.id], proposal.options.indices.contains(index) {
+                server.useSource(proposal.options[index].suggestion.source, for: proposal.plugin)
+            }
+        }
+        Task { await server.checkPluginUpdates() }
+        dismiss()
     }
 }
 

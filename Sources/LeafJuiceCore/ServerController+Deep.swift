@@ -257,6 +257,7 @@ extension ServerController {
         profile.lastDrill = DrillResult(date: Date(), backupDate: record.date, fileName: record.fileName, passed: passed, detail: detail)
         recordEvent(.drill, passed ? "Backup proven restorable" : "Backup drill failed", detail: detail)
         if !passed {
+            raiseAlert("A backup of \(profile.name) didn't restore in a test", detail)
             let now = Date()
             reportIssue(IssueRecord(
                 id: "wrapper:drill-failed", ruleID: "wrapper-drill", title: "A backup didn't restore in a test", severity: .critical, category: "Backups",
@@ -674,7 +675,9 @@ extension ServerController {
             guard let free = FileOps.freeSpace(at: url), let warning = DiskCheck.warning(free: free, name: name) else { continue }
             if worst == nil || (warning.critical && !(worst?.critical ?? false)) { worst = warning }
         }
+        let wasWarning = diskWarning
         diskWarning = worst?.message
+        if let worst, worst.critical, wasWarning != worst.message { raiseAlert("\(profile.name) is nearly out of disk space", worst.message) }
         if let worst, worst.critical, state.isLive {
             let now = Date()
             reportIssue(IssueRecord(
@@ -682,5 +685,55 @@ extension ServerController {
                 explanation: worst.message, steps: ["Free up space on the drive.", "Keep fewer backups, or move them to another drive."],
                 action: IssueAction(page: "backups", label: "Open Backups"), sample: worst.message, firstSeen: now, lastSeen: now))
         }
+    }
+}
+
+// MARK: - Finding plugin sources in one go
+
+public struct SourceProposal: Identifiable, Equatable, Sendable {
+    public struct Option: Equatable, Sendable {
+        public var suggestion: SourceSuggestion
+        public var newest: String?
+        /// Its newest release is older than what's installed, so it's probably a different project with a similar name.
+        public var looksWrong: Bool
+    }
+    public var id: String { plugin.key }
+    public var plugin: InstalledPlugin
+    public var options: [Option]
+}
+
+extension SourceProposal.Option {
+    /// Observed: name matches for real plugins included a "LumberJack" at 1.0 for one at 5.4.0, and a "Vault" at 1.1 for 1.7.3.
+    public static func looksWrong(installed: String, newest: String?) -> Bool {
+        guard let newest, let have = LooseVersion(installed), let there = LooseVersion(newest) else { return false }
+        return there < have
+    }
+}
+
+extension ServerController {
+    public var pluginsWithoutSource: [InstalledPlugin] { plugins.filter { $0.enabled && $0.descriptor != nil && !record(for: $0).source.isSet } }
+
+    /// Looks for where each unidentified plugin comes from. Changes nothing: names can match the wrong project, so you choose.
+    public func proposeSources() async -> [SourceProposal] {
+        var out: [SourceProposal] = []
+        let mc = profile.software.gameVersion, flavor = profile.software.flavor
+        for plugin in pluginsWithoutSource {
+            var seen = Set<String>()
+            var options: [SourceProposal.Option] = []
+            for suggestion in await SourceFinder.suggestions(for: plugin) where seen.insert(suggestion.source.summary).inserted {
+                let newest = (try? await PluginSources.check(suggestion.source, mc: mc, flavor: flavor))?.candidate?.version
+                options.append(.init(suggestion: suggestion, newest: newest, looksWrong: SourceProposal.Option.looksWrong(installed: plugin.version, newest: newest)))
+            }
+            // Likely ones first, and among those, any that could actually report a version.
+            options.sort { ($0.looksWrong ? 1 : 0, $0.newest == nil ? 1 : 0) < ($1.looksWrong ? 1 : 0, $1.newest == nil ? 1 : 0) }
+            out.append(SourceProposal(plugin: plugin, options: options))
+        }
+        return out
+    }
+
+    public func useSource(_ source: PluginSource, for plugin: InstalledPlugin) {
+        var updated = record(for: plugin)
+        updated.source = source
+        setRecord(updated, for: plugin)
     }
 }

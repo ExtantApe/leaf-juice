@@ -113,6 +113,10 @@ Each build keeps a lock file of every copy of every file, so an update can show 
 
 Players' games download a pack from the web, so upload the build somewhere, for example mc-packs.net, and Leaf Juice sets the address on your server through the usual Change Queue.
 
+## Staying safe when you're not looking
+
+Every backup can also be copied to a **second location**, ideally another drive, with each copy checked against the original. If the main backups are lost, they can be copied back. Leaf Juice also sends a **Mac notification** for crashes, failed backups and low disk space, and you can turn that off in Settings.
+
 ## Wiki
 
 A wiki for each server, built from its plugins, ranks and worlds, and viewable right in the app. The player view only lists commands a rank can be shown to use, and has no plugin settings, player names, operators or secrets. The admin view adds permissions. Your own welcome text, rules and plugin notes are kept when it updates, and you can export both views as web pages and Markdown to host anywhere.

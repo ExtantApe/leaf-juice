@@ -101,6 +101,8 @@ public struct LibraryPack: Codable, Identifiable, Equatable, Sendable {
     public func version(_ sha1: String?) -> PackVersion? { versions.first { $0.sha1 == sha1 } ?? latest }
 }
 
+protocol VersionTagged { var taggedVersions: [String] { get } }
+
 public struct PackUpdate: Equatable, Sendable {
     public var version: String
     public var url: String
@@ -454,9 +456,23 @@ public enum ResourcePacks {
         let title: String; let slug: String; let license: License?
     }
     private struct ModrinthMember: Decodable { struct User: Decodable { let username: String }; let user: User }
-    private struct ModrinthVersion: Decodable {
+    private struct ModrinthVersion: Decodable, VersionTagged {
         struct File: Decodable { struct Hashes: Decodable { let sha1: String? }; let url: String; let filename: String; let primary: Bool; let hashes: Hashes }
         let version_number: String; let files: [File]; let project_id: String
+        let game_versions: [String]?
+        var taggedVersions: [String] { game_versions ?? [] }
+    }
+
+    /// Observed: the TARDIS pack has no 1.21.11 release, and its newest is for a later Minecraft. The closest release
+    /// that isn't newer than the server is the better bet, and the newest is only for when there's nothing older.
+    static func bestForVersion<T: VersionTagged>(_ releases: [T], mc: String) -> [T] {
+        guard let target = GameVersion(mc) else { return releases }
+        let older = releases.filter { release in release.taggedVersions.contains { GameVersion($0).map { $0 <= target } ?? false } }
+        return older.sorted { a, b in
+            func top(_ r: T) -> GameVersion? { r.taggedVersions.compactMap(GameVersion.init).filter { $0 <= target }.max() }
+            guard let x = top(a), let y = top(b) else { return false }
+            return x > y
+        } + releases.filter { release in !older.contains { $0.taggedVersions == release.taggedVersions } }
     }
     private struct GitHubRelease: Decodable {
         struct Asset: Decodable { let name: String; let browser_download_url: String }
@@ -474,14 +490,18 @@ public enum ResourcePacks {
             var address = "https://api.modrinth.com/v2/project/\(project)/version"
             if let mc, let encoded = "[\"\(mc)\"]".addingPercentEncoding(withAllowedCharacters: .alphanumerics) { address += "?game_versions=\(encoded)" }
             var versions = try await HTTP.decode([ModrinthVersion].self, HTTP.url(address))
+            var nearest = false
             // Observed: packs often aren't tagged for every version, and the newest usually still works.
             // Its format is compared at build time, so a mismatch gets mentioned.
             var untagged: String?
             if versions.isEmpty, mc != nil {
-                versions = try await HTTP.decode([ModrinthVersion].self, HTTP.url("https://api.modrinth.com/v2/project/\(project)/version"))
+                let all = try await HTTP.decode([ModrinthVersion].self, HTTP.url("https://api.modrinth.com/v2/project/\(project)/version"))
+                versions = bestForVersion(all, mc: mc ?? "")
+                nearest = true
                 untagged = mc
             }
             guard let version = versions.first, let file = version.files.first(where: \.primary) ?? version.files.first else { return nil }
+            _ = nearest
             return PackUpdate(version: version.version_number, url: file.url, sha1: file.hashes.sha1, fileName: file.filename, untaggedFor: untagged)
         case let .github(repo):
             let release = try await HTTP.decode(GitHubRelease.self, HTTP.url("https://api.github.com/repos/\(repo)/releases/latest"))
@@ -530,7 +550,7 @@ public enum ResourcePacks {
         let target = work.appendingPathComponent(safeName.lowercased().hasSuffix(".zip") ? safeName : "\(safeName).zip")
         try await HTTP.download(HTTP.url(found.url), to: target, expect: ExpectedHashes(sha1: found.sha1))
         let about = await details(source)
-        let note = found.untaggedFor.map { "Not marked as made for Minecraft \($0), so this is its newest release. It may not suit that version." }
+        let note = found.untaggedFor.map { "Not marked as made for Minecraft \($0), so this is the closest release. It may not suit that version." }
         return try await add(target, title: about.title, id: about.id, from: source, version: found.version, license: about.license, authors: about.authors, note: note)
     }
 
@@ -587,7 +607,44 @@ public enum ResourcePacks {
         return try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
     }
 
-    struct Source { var id: String; var title: String; var root: URL; var files: [String]; var meta: [String: Any]?; var icon: URL? }
+    struct Source {
+        var id: String; var title: String; var root: URL; var files: [String]; var meta: [String: Any]?; var icon: URL?
+        /// A file under today's name, read from where an older pack keeps it.
+        var renamed: [String: String] = [:]
+        func url(_ path: String) -> URL { root.appendingPathComponent(renamed[path] ?? path) }
+    }
+
+    /// Textures Minecraft moved without changing their layout, so older art still fits under the new name.
+    /// Only one-to-one moves: sheets that were split up can't be rescued by renaming.
+    static let renames: [String: String] = {
+        var out = [
+            "block/chain": "block/iron_chain", "item/chain": "item/iron_chain", "block/grass": "block/short_grass", "item/scute": "item/turtle_scute",
+            "item/broken_elytra": "item/broken_elytra", "entity/elytra": "entity/equipment/wings/elytra",
+            "entity/pig/pig_saddle": "entity/equipment/pig_saddle/saddle", "entity/strider/strider_saddle": "entity/equipment/strider_saddle/saddle",
+            "entity/horse/armor/horse_armor_diamond": "entity/equipment/horse_body/diamond", "entity/horse/armor/horse_armor_gold": "entity/equipment/horse_body/gold",
+            "entity/horse/armor/horse_armor_iron": "entity/equipment/horse_body/iron", "entity/horse/armor/horse_armor_leather": "entity/equipment/horse_body/leather",
+            "entity/llama/decor/trader_llama": "entity/equipment/llama_body/trader_llama",
+            "item/empty_armor_slot_helmet": "gui/sprites/container/slot/helmet", "item/empty_armor_slot_chestplate": "gui/sprites/container/slot/chestplate",
+            "item/empty_armor_slot_leggings": "gui/sprites/container/slot/leggings", "item/empty_armor_slot_boots": "gui/sprites/container/slot/boots",
+            "item/empty_armor_slot_shield": "gui/sprites/container/slot/shield",
+        ]
+        for color in ["black", "blue", "brown", "cyan", "gray", "green", "light_blue", "light_gray", "lime", "magenta", "orange", "pink", "purple", "red", "white", "yellow"] {
+            out["entity/llama/decor/\(color)"] = "entity/equipment/llama_body/\(color)"
+        }
+        out["item/broken_elytra"] = nil
+        return out
+    }()
+
+    /// Today's paths this pack can supply from older names, without overriding anything it already has under the new name.
+    static func rescued(_ files: [String]) -> [String: String] {
+        let have = Set(files)
+        var out: [String: String] = [:]
+        for (old, new) in renames {
+            let from = "assets/minecraft/textures/\(old).png", to = "assets/minecraft/textures/\(new).png"
+            if have.contains(from), !have.contains(to) { out[to] = from }
+        }
+        return out
+    }
 
     /// Each pack in rank order, with "My changes" always first.
     static func sources(_ recipe: PackRecipe) async throws -> [Source] {
@@ -602,7 +659,8 @@ public enum ResourcePacks {
             let files = listing(root).filter { $0.contains("/") && !entry.excluded.contains(category(of: $0)) }
             let meta = (try? JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("pack.mcmeta")))) as? [String: Any]
             let icon = root.appendingPathComponent("pack.png")
-            out.append(Source(id: pack.id, title: pack.title, root: root, files: files, meta: meta, icon: FileOps.exists(icon) ? icon : nil))
+            let renamed = rescued(files).filter { !entry.excluded.contains(category(of: $0.key)) }
+            out.append(Source(id: pack.id, title: pack.title, root: root, files: files + renamed.keys, meta: meta, icon: FileOps.exists(icon) ? icon : nil, renamed: renamed))
         }
         return out
     }
@@ -628,7 +686,7 @@ public enum ResourcePacks {
         for source in sources {
             for file in source.files {
                 providers[file, default: []].append(source.id)
-                locations[file, default: [:]][source.id] = source.root.appendingPathComponent(file)
+                locations[file, default: [:]][source.id] = source.url(file)
             }
         }
         let mapped = providers
@@ -737,7 +795,7 @@ public enum ResourcePacks {
             guard let source = byID[file.winner] else { continue }
             if file.reason == .merged, let kind = mergeKind(file.path) {
                 let others = file.copies.map(\.pack).filter { $0 != file.winner }
-                let documents = ([file.winner] + others).compactMap { byID[$0]?.root.appendingPathComponent(file.path) }.compactMap { try? Data(contentsOf: $0) }
+                let documents = ([file.winner] + others).compactMap { byID[$0]?.url(file.path) }.compactMap { try? Data(contentsOf: $0) }
                 if let data = merge(kind, documents) {
                     try data.write(to: target)
                     merged.append(file.path)
@@ -745,7 +803,7 @@ public enum ResourcePacks {
                 }
                 warnings.append("\(file.path) couldn't be read, so the top pack's copy was used.")
             }
-            try FileManager.default.copyItem(at: source.root.appendingPathComponent(file.path), to: target)
+            try FileManager.default.copyItem(at: source.url(file.path), to: target)
         }
 
         // pack.mcmeta: wide enough for everything included.

@@ -88,6 +88,7 @@ struct BackupsPage: View {
             Hint("Older backups are deleted automatically. Pinned ones never are, including restore points for upgrades you haven't decided on.")
             Toggle("Back up before plugin and server updates", isOn: $server.profile.backup.beforeUpdates)
             Divider()
+            mirrorSection
             LabeledContent("Saved to") {
                 HStack {
                     Text(Backups.destination(server.profile).path).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.middle)
@@ -116,6 +117,50 @@ struct BackupsPage: View {
             server.profile.backup.destination = url.path
             server.refreshBackups()
         }
+    }
+
+    @ViewBuilder private var mirrorSection: some View {
+        LabeledContent("Also copy to") {
+            HStack {
+                Text(server.profile.backup.mirror ?? "Nowhere yet").foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.middle)
+                Button("Choose…") { chooseMirror() }.buttonStyle(.juice)
+                if server.profile.backup.mirror != nil { Button("Stop") { server.profile.backup.mirror = nil }.buttonStyle(.juice) }
+            }
+        }
+        if server.profile.backup.mirror == nil {
+            Hint("If the drive holding your server fails, the backups beside it go too. A second location, on another drive, protects against that. Each copy is checked against the original.")
+        } else if let last = server.profile.backup.lastMirrored {
+            Hint("Last copied \(last.formatted(.relative(presentation: .named))). It keeps the same number of backups as the main folder.")
+        }
+        if let path = server.profile.backup.mirror {
+            let folder = URL(fileURLWithPath: path, isDirectory: true)
+            let missing = Backups.onlyInMirror(server.profile, folder: folder)
+            if !missing.isEmpty {
+                Callout(tone: .info, title: "\(missing.count) backup\(missing.count == 1 ? " is" : "s are") only at your second location") {
+                    Button("Copy Back") {
+                        server.attempt {
+                            for record in missing { try await Backups.copyBack(record, profile: server.profile, from: folder) }
+                            server.refreshBackups()
+                        }
+                    }
+                    .buttonStyle(.juice)
+                }
+            }
+        }
+    }
+
+    private func chooseMirror() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Copy Backups Here"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let main = Backups.destination(server.profile).standardizedFileURL.path
+        if url.standardizedFileURL.path == main { server.notice = "That's the main backup folder, so it wouldn't add any protection."; return }
+        server.profile.backup.mirror = url.appendingPathComponent(server.paths.root.lastPathComponent, isDirectory: true).path
+        if !FileOps.sameVolume(url, Backups.destination(server.profile)) { return }
+        server.notice = "That's on the same drive as your main backups, so it won't help if the drive fails. Another drive is better."
     }
 
     private var listCard: some View {

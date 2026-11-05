@@ -1518,7 +1518,38 @@ do {
         equal(Backups.prunable([first, second], keepLast: 1, keepDays: 0).map(\.fileName), ["2026_manual"], "a same-second tie goes to the newer name")
         equal(Backups.prunable([first, second], keepLast: 1, keepDays: 0, protecting: "2026_manual").map(\.fileName), [], "and what's just been made is never removed")
 
-        // A linked world isn't in the backup, and the backup has to say so.
+        // Safety copies don't pile up forever.
+        let piles = folder("audit-safety"); var pileProfile = ServerProfile(); pileProfile.backup.destination = piles.appendingPathComponent("b").path
+        write("x", piles.appendingPathComponent("world/level.dat"))
+        var made5: [BackupRecord] = []
+        for _ in 0..<5 { let r = try await Backups.create(pileProfile, root: piles, trigger: "before-restore", scope: .worlds); try Backups.setPinned(r, pinned: true, profile: pileProfile); made5.append(r) }
+        Backups.trimSafetyCopies(pileProfile)
+        equal(Backups.list(pileProfile).filter(\.pinned).count, 3, "only the latest safety copies stay pinned"); equal(Backups.list(pileProfile).count, 5, "the rest go back to retention, not straight to deletion")
+
+        // Databases that are named, but switched off.
+        check(!Trial.usesOutsideDatabase("sql:\n  enabled: false\n  type: mysql\n  host: x\n"), "a database section that's off doesn't count")
+        check(Trial.usesOutsideDatabase("sql:\n  enabled: true\n  type: mysql\n"), "one that's on does")
+        check(Trial.usesOutsideDatabase("storage-method: mysql\n"), "a plain setting does")
+        check(Trial.usesOutsideDatabase("storage:\n  type: mysql\nother:\n  enabled: false\n"), "another section's off switch doesn't count")
+        check(!Trial.usesOutsideDatabase("storage-method: h2\n"), "local storage doesn't")
+
+        // Test copies mustn't open the real world through a link.
+        let linkedServer = folder("audit-linked-server"), realWorld = folder("audit-real-world")
+        write("real", realWorld.appendingPathComponent("level.dat"))
+        try FileManager.default.createSymbolicLink(at: linkedServer.appendingPathComponent("world"), withDestinationURL: realWorld)
+        let cloned = linkedServer.deletingLastPathComponent().appendingPathComponent("audit-linked-copy-\(UUID().uuidString)")
+        try await Trial.clone(linkedServer, to: cloned)
+        check((try? FileManager.default.destinationOfSymbolicLink(atPath: cloned.appendingPathComponent("world").path)) == nil, "a linked world becomes a real folder in a copy")
+        write("changed", cloned.appendingPathComponent("world/level.dat"))
+        equal(try? String(contentsOf: realWorld.appendingPathComponent("level.dat"), encoding: .utf8), "real", "so changing the copy leaves the real world alone")
+
+        // Older art under today's names.
+        let rescued = ResourcePacks.rescued(["assets/minecraft/textures/block/chain.png", "assets/minecraft/textures/block/grass.png", "assets/minecraft/textures/block/short_grass.png", "assets/minecraft/textures/entity/elytra.png"])
+        equal(rescued["assets/minecraft/textures/block/iron_chain.png"], "assets/minecraft/textures/block/chain.png", "a moved texture is found")
+        equal(rescued["assets/minecraft/textures/block/short_grass.png"], nil, "and a pack's own copy under the new name wins")
+        equal(rescued["assets/minecraft/textures/entity/equipment/wings/elytra.png"], "assets/minecraft/textures/entity/elytra.png", "entity moves too")
+
+        // A linked world goes into the backup as its contents, and a restore leaves the original alone.
         let linkRoot = folder("audit-links"), elsewhere = folder("audit-elsewhere")
         write("real", elsewhere.appendingPathComponent("level.dat"))
         write("x", linkRoot.appendingPathComponent("server.properties"))
@@ -1526,6 +1557,11 @@ do {
         var linkProfile = ServerProfile(); linkProfile.backup.destination = linkRoot.appendingPathComponent(".leafjuice/backups").path
         let linked = try await Backups.create(linkProfile, root: linkRoot, trigger: "manual", scope: .everything)
         check(linked.warning?.contains("linked") == true, "a linked folder is mentioned: \(linked.warning ?? "no warning")")
+        let listedLink = try await Tool.run("/usr/bin/tar", ["-tzf", Backups.destination(linkProfile).appendingPathComponent(linked.fileName).path])
+        check(listedLink.out.contains("linked/level.dat"), "and its contents are in the archive: \(listedLink.out.prefix(200))")
+        try await Backups.restore(linked, profile: linkProfile, root: linkRoot)
+        equal(try? String(contentsOf: linkRoot.appendingPathComponent("linked/level.dat"), encoding: .utf8), "real", "a restore brings them back")
+        check(FileOps.exists(elsewhere.appendingPathComponent("level.dat")), "and leaves the original where it was")
 
         // A process with this server's old number isn't this server unless it's in this folder.
         let live = folder("audit-pid")
@@ -1551,6 +1587,77 @@ do {
         cause.ingest("[10:00:00 ERROR]: Caused by: java.lang.UnsupportedClassVersionError: Foo has been compiled by a more recent version of the Java Runtime")
         check(cause.sorted.contains { $0.isKnown && $0.category != "Uncategorized" }, "a Caused by line still gets diagnosed: \(cause.sorted.map(\.title))")
     } catch { failures.append("audit threw: \(error)") }
+    do { // A second backup location.
+        let r = folder("mirror-server"), second = folder("mirror-second").appendingPathComponent("copies", isDirectory: true)
+        write("the world", r.appendingPathComponent("world/level.dat"))
+        var p = ServerProfile(); p.backup.destination = r.appendingPathComponent(".leafjuice/backups").path; p.backup.mirror = second.path; p.backup.keepLast = 2; p.backup.keepDays = 0
+        let c = ServerController(root: r, profile: p)
+        defer { c.stopTicker() }
+        var alerts: [String] = []
+        c.onAlert = { title, _ in alerts.append(title) }
+        let first = try await c.backupNow(trigger: "manual", scope: .worlds)
+        check(FileOps.exists(second.appendingPathComponent(first.fileName)), "a backup is copied to the second location")
+        equal(try Hashing.digests(of: second.appendingPathComponent(first.fileName)).sha1, try Hashing.digests(of: Backups.destination(c.profile).appendingPathComponent(first.fileName)).sha1, "and it's the same file")
+        equal(Backups.list(c.profile, in: second).map(\.fileName), [first.fileName], "and it lists there")
+        check(c.profile.backup.lastMirrored != nil, "and when is remembered"); check(!FileOps.children(second).contains { $0.lastPathComponent.hasSuffix(".part") }, "with no working files left")
+        try await Backups.mirror(first, profile: c.profile, to: second)
+        equal(Backups.list(c.profile, in: second).count, 1, "copying again changes nothing")
+        for _ in 0..<3 {
+            try await Task.sleep(for: .seconds(1.1))
+            _ = try await c.backupNow(trigger: "manual", scope: .worlds)
+        }
+        equal(Backups.list(c.profile, in: second).map(\.fileName).count, 2, "the second location keeps the same number: \(Backups.list(c.profile, in: second).map { "\($0.fileName) \($0.pinned)" }) main \(Backups.list(c.profile).map(\.fileName))")
+
+        // The main drive dying: the copies bring everything back.
+        try FileManager.default.removeItem(at: Backups.destination(c.profile))
+        let stranded = Backups.onlyInMirror(c.profile, folder: second)
+        equal(stranded.count, 2, "copies found when the main ones are gone")
+        for record in stranded { try await Backups.copyBack(record, profile: c.profile, from: second) }
+        c.refreshBackups()
+        equal(c.backups.count, 2, "and copied back"); write("broken", r.appendingPathComponent("world/level.dat"))
+        try await Backups.restore(c.backups[0], profile: c.profile, root: r)
+        equal(try? String(contentsOf: r.appendingPathComponent("world/level.dat"), encoding: .utf8), "the world", "and they restore")
+
+        // A second location that's gone must not cost the backup.
+        c.profile.backup.mirror = "/nonexistent-volume-\(UUID().uuidString)/copies"
+        let survived = try await c.backupNow(trigger: "manual", scope: .worlds)
+        check(FileOps.exists(Backups.destination(c.profile).appendingPathComponent(survived.fileName)), "a missing second location doesn't fail the backup")
+        check(c.issues.contains { $0.ruleID == "wrapper-mirror" }, "it's reported"); equal(alerts, ["A backup wasn't copied"], "and raises an alert")
+        check(FileOps.sameVolume(r, second), "same drive is noticed"); check(!FileOps.sameVolume(r, URL(fileURLWithPath: "/dev")), "another isn't")
+        var corrupt = survived; corrupt.fileName = "missing.tar.gz"
+        var refused = false
+        do { try await Backups.mirror(corrupt, profile: c.profile, to: second) } catch { refused = true }
+        check(refused, "a missing original is refused")
+
+        // The same name and size must not pass for the same backup.
+        let same1 = folder("mirror-same"), sameSecond = folder("mirror-same-second")
+        write("aaaa", same1.appendingPathComponent("world/level.dat"))
+        var sameProfile = ServerProfile(); sameProfile.backup.destination = same1.appendingPathComponent(".leafjuice/backups").path
+        let reused = try await Backups.create(sameProfile, root: same1, trigger: "manual", scope: .worlds)
+        write("stale", sameSecond.appendingPathComponent(reused.fileName + ".pad"))
+        let pretend = Data(repeating: 7, count: Int(reused.size))
+        try pretend.write(to: sameSecond.appendingPathComponent(reused.fileName))
+        try await Backups.mirror(reused, profile: sameProfile, to: sameSecond)
+        equal(try Hashing.digests(of: sameSecond.appendingPathComponent(reused.fileName)).sha1, try Hashing.digests(of: Backups.destination(sameProfile).appendingPathComponent(reused.fileName)).sha1, "a different file with the same name and size gets replaced")
+        func tied(_ name: String) -> BackupRecord { BackupRecord(fileName: name, date: Date(timeIntervalSince1970: 1000), size: 1, scope: .worlds, trigger: "t", software: "", mcVersion: "", serverName: "") }
+        equal(Backups.prunable([tied("x_manual.tar.gz"), tied("x_manual-2.tar.gz"), tied("x_manual-3.tar.gz")], keepLast: 1, keepDays: 0).map(\.fileName), ["x_manual-2.tar.gz", "x_manual.tar.gz"], "same-second ties keep the latest attempt")
+
+        // Names that match the wrong project.
+        check(SourceProposal.Option.looksWrong(installed: "5.4.0", newest: "1.0"), "a much older release looks wrong")
+        check(SourceProposal.Option.looksWrong(installed: "1.7.3-b131", newest: "1.1"), "with a build suffix too")
+        check(!SourceProposal.Option.looksWrong(installed: "3.5.9", newest: "3.9.0"), "a newer one doesn't")
+        check(!SourceProposal.Option.looksWrong(installed: "1.1.3", newest: "1.1.3"), "nor the same one")
+        check(!SourceProposal.Option.looksWrong(installed: "5.4.0", newest: nil), "no answer isn't a verdict")
+
+        // Alerts stay quiet where they'd only be noise.
+        let copy = ServerController(root: folder("alert-copy"), profile: ServerProfile())
+        defer { copy.stopTicker() }
+        copy.isTrialCopy = true
+        var noisy = false
+        copy.onAlert = { _, _ in noisy = true }
+        copy.raiseAlert("x", "y")
+        check(!noisy, "test copies and the Lab don't send alerts")
+    } catch { failures.append("mirror threw: \(error)") }
     do { // A port held only on 127.0.0.1, as the Lab does.
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         var address = sockaddr_in()
@@ -2028,6 +2135,15 @@ if CommandLine.arguments.contains("--plugin-report") {
     let matches = await SourceFinder.modrinthMatches(sha1s: plugins.compactMap { $0.digests?.sha1 })
     print("  sources identified by hash: \(matches.count) of \(plugins.count) in \(String(format: "%.1f", Date().timeIntervalSince(start)))s")
     print("  depend issues: \(plugins.flatMap { p in (p.descriptor?.depend ?? []).filter { d in !plugins.contains { $0.key == d.lowercased() } }.map { "\(p.name)->\($0)" } })")
+    do {
+        let c = try await ServerController.adopt(root: paths.root, name: "Model")
+        await c.refreshPlugins()
+        try? await Task.sleep(for: .seconds(2))
+        let proposals = await c.proposeSources()
+        print("  find sources: \(proposals.count) plugins, \(proposals.filter { !$0.options.isEmpty }.count) with suggestions, \(proposals.filter { $0.options.first.map { !$0.looksWrong && $0.newest != nil } ?? false }.count) with a plausible top match")
+        for p in proposals { print("    \(p.plugin.name) \(p.plugin.version): \(p.options.map { "\($0.suggestion.source.summary) \($0.newest ?? "?")\($0.looksWrong ? " WRONG" : "")" })") }
+        c.stopTicker()
+    } catch { print("  find sources failed: \(error)") }
     var manuals: [PluginManual] = []
     for plugin in plugins where plugin.enabled { if let m = await PluginManualReader.read(jar: paths.plugins.appendingPathComponent(plugin.fileName)) { manuals.append(m) } }
     let wiki = Wiki.assemble(serverName: "Test", message: "", software: "", properties: "", manuals: manuals, ranks: [], ranksKnown: false, worlds: [], settings: WikiSettings())

@@ -498,6 +498,27 @@ public enum PlayerMerge {
                 }
             }
         }
+
+        // The plugin's own name records. Observed to do no harm when left, but a merged profile shouldn't linger.
+        let oldID = plan.from.uuid.lowercased(), newID = plan.to.uuid.lowercased()
+        let namesFile = p.inventories.appendingPathComponent("playernames.json")
+        if let data = try? Data(contentsOf: namesFile), var names = (try? JSONSerialization.jsonObject(with: data)) as? [String: String] {
+            if !oldID.isEmpty, oldID != newID { names[oldID] = nil }
+            if !newID.isEmpty, let newName = plan.to.name { names[newID] = newName }
+            if let out = try? JSONSerialization.data(withJSONObject: names, options: [.sortedKeys]) { try out.write(to: namesFile, options: .atomic) }
+        }
+        let records = p.inventories.appendingPathComponent("players")
+        if !oldID.isEmpty, oldID != newID {
+            let old = records.appendingPathComponent("\(oldID).json")
+            if FileOps.exists(old) { try FileOps.move(old, to: archive.appendingPathComponent("inventories-player-\(oldID).json")) }
+        }
+        if !newID.isEmpty, let newName = plan.to.name {
+            let record = records.appendingPathComponent("\(newID).json")
+            if let text = try? String(contentsOf: record, encoding: .utf8) {
+                let fixed = text.replacingOccurrences(of: #""lastKnownName"\s*:\s*"[^"]*""#, with: "\"lastKnownName\":\"\(newName)\"", options: String.CompareOptions.regularExpression)
+                try FileOps.writeAtomic(fixed, to: record)
+            }
+        }
     }
 }
 

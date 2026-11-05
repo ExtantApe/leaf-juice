@@ -2,6 +2,7 @@ import AppKit
 import LeafJuiceCore
 import Observation
 import SwiftUI
+import UserNotifications
 
 enum PageID: String, CaseIterable, Identifiable, Hashable {
     case overview, console, history, players, worlds, plugins, software, configs, resourcePacks, wiki, launch, backups, changes, cleanup
@@ -101,6 +102,8 @@ final class AppModel {
         for server in servers where server.profile.launch.startWithApp {
             Task { await server.start() }
         }
+        servers.forEach(Alerts.connect)
+        Alerts.ask()
         if checkAppUpdates { Task { await lookForAppUpdate() } }
         // A wipe or restore makes a new controller for the Lab's folder.
         lab.onServerChanged = { [weak self] old, new in
@@ -142,6 +145,7 @@ final class AppModel {
     }
 
     func add(_ controller: ServerController) {
+        Alerts.connect(controller)
         if !servers.contains(where: { $0.id == controller.id }) { servers.append(controller) }
         selectedID = controller.id
         page = .overview
@@ -176,6 +180,32 @@ final class AppModel {
               let latest = LooseVersion(release.tag_name), let current = LooseVersion(LeafJuice.version),
               latest > current, let page = URL(string: release.html_url) else { return }
         appUpdate = (release.tag_name, page)
+    }
+}
+
+/// Tells you when something goes wrong and Leaf Juice isn't in front of you.
+@MainActor enum Alerts {
+    static var enabled: Bool {
+        get { UserDefaults.standard.object(forKey: "macAlerts") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "macAlerts") }
+    }
+
+    static func connect(_ server: ServerController) {
+        server.onAlert = { title, detail in show(title, detail) }
+    }
+
+    static func ask() {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    private static func show(_ title: String, _ detail: String) {
+        guard enabled, Bundle.main.bundleIdentifier != nil else { return }
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = detail
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 }
 
@@ -388,6 +418,7 @@ struct SettingsView: View {
                 Text("Dark").tag("dark")
             }
             Toggle("Tell me when a new Leaf Juice is on GitHub", isOn: $model.checkAppUpdates)
+            Toggle("Notify me about crashes, failed backups and low disk space", isOn: Binding(get: { Alerts.enabled }, set: { Alerts.enabled = $0 }))
             LabeledContent("Version", value: LeafJuice.version)
             LabeledContent("Servers folder") {
                 HStack {

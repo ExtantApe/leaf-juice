@@ -128,7 +128,7 @@ public enum Backups {
             throw LeafError("Can't write to the backup folder \(dest.path). If it's on an external drive, check it's connected.")
         }
         // A compressed backup can't exceed the source by much; require the full size to be safe.
-        let needed = items.reduce(Int64(0)) { $0 + FileOps.directorySize(root.appendingPathComponent($1)) }
+        let needed = items.reduce(Int64(0)) { $0 + FileOps.directorySize(root.appendingPathComponent($1).resolvingSymlinksInPath()) }
         if let free = FileOps.freeSpace(at: dest), free < needed {
             throw LeafError("Not enough free space for a backup. It may need up to \(Format.bytes(needed)), and \(Format.bytes(free)) is free.")
         }
@@ -145,13 +145,14 @@ public enum Backups {
         let partial = dest.appendingPathComponent(base + ".partial")
         defer { try? FileManager.default.removeItem(at: partial) }
 
-        var args = ["-czf", partial.path, "--exclude", "session.lock", "--exclude", ".DS_Store"]
+        // -H: a linked world folder goes in as its contents, not as a link to somewhere that might be gone later.
+        var args = ["-czHf", partial.path, "--exclude", "session.lock", "--exclude", ".DS_Store"]
         args += ["-C", root.path] + items
         let result = try await Tool.run("/usr/bin/tar", args)
         var warning: String?
         // tar stores a link as a link, so what it points at isn't in the backup. Better said than found out later.
         let linked = items.filter { (try? FileManager.default.destinationOfSymbolicLink(atPath: root.appendingPathComponent($0).path)) != nil }
-        if !linked.isEmpty { warning = "\(linked.joined(separator: ", ")) \(linked.count == 1 ? "is a link" : "are links") to somewhere else, so the contents aren't in this backup. Back up that location separately." }
+        if !linked.isEmpty { warning = "\(linked.joined(separator: ", ")) \(linked.count == 1 ? "is a link" : "are links") to a folder elsewhere. The contents are in this backup, and restoring puts them inside the server folder, leaving the original location alone." }
         if !result.ok {
             // Files changing mid-read make tar complain. If the archive reads back whole, it's usable.
             let verify = try await Tool.run("/usr/bin/tar", ["-tzf", partial.path])
@@ -192,15 +193,85 @@ public enum Backups {
         try? FileManager.default.removeItem(at: sidecar(for: archive))
     }
 
+    // MARK: A second location
+
+    /// Copies a finished backup to a second place, then checks the copy reads as the same file.
+    /// Anything that goes wrong here leaves the original alone: it's an extra copy, never the only one.
+    public static func mirror(_ record: BackupRecord, profile: ServerProfile, to folder: URL) async throws {
+        let source = destination(profile).appendingPathComponent(record.fileName)
+        guard FileOps.exists(source) else { throw LeafError("That backup isn't where it should be.") }
+        let target = folder.appendingPathComponent(record.fileName)
+        // Names can come round again within a second, so the same name and size don't prove it's the same backup.
+        if FileOps.exists(target), FileOps.size(target) == record.size {
+            let same = try await Task.detached(priority: .utility) { try Hashing.digests(of: source).sha1 == Hashing.digests(of: target).sha1 }.value
+            if same { return }
+        }
+        do { try FileOps.ensureDir(folder) } catch {
+            throw LeafError("Can't write to \(folder.path). If it's on another drive, check it's connected.")
+        }
+        if let free = FileOps.freeSpace(at: folder), free < record.size {
+            throw LeafError("Not enough room at \(folder.path) for another \(Format.bytes(record.size)).")
+        }
+        let part = folder.appendingPathComponent(record.fileName + ".part")
+        try? FileManager.default.removeItem(at: part)
+        defer { try? FileManager.default.removeItem(at: part) }
+        // Off the main thread, because a big backup over a slow drive takes a while.
+        try await Task.detached(priority: .utility) { try FileManager.default.copyItem(at: source, to: part) }.value
+        let (original, copy) = try await Task.detached(priority: .utility) { (try Hashing.digests(of: source).sha1, try Hashing.digests(of: part).sha1) }.value
+        guard original == copy else { throw LeafError("The copy at \(folder.path) didn't match, so it was discarded.") }
+        try FileOps.move(part, to: target)
+        try JSONStore.save(record, to: sidecar(for: target))
+    }
+
+    /// The same retention as the main folder, so a second location doesn't grow forever.
+    @discardableResult
+    public static func pruneMirror(_ profile: ServerProfile, folder: URL, protecting: String? = nil) -> [BackupRecord] {
+        let doomed = prunable(list(profile, in: folder), keepLast: max(1, profile.backup.keepLast), keepDays: profile.backup.keepDays, protecting: protecting)
+        for record in doomed { try? delete(record, profile: profile, in: folder) }
+        return doomed
+    }
+
+    /// Backups only the second location still has, such as after the main drive failed.
+    public static func onlyInMirror(_ profile: ServerProfile, folder: URL) -> [BackupRecord] {
+        let here = Set(list(profile).map(\.fileName))
+        return list(profile, in: folder).filter { !here.contains($0.fileName) }
+    }
+
+    public static func copyBack(_ record: BackupRecord, profile: ServerProfile, from folder: URL) async throws {
+        let dest = destination(profile)
+        try FileOps.ensureDir(dest)
+        let source = folder.appendingPathComponent(record.fileName)
+        let part = dest.appendingPathComponent(record.fileName + ".part")
+        try? FileManager.default.removeItem(at: part)
+        defer { try? FileManager.default.removeItem(at: part) }
+        try await Task.detached(priority: .utility) { try FileManager.default.copyItem(at: source, to: part) }.value
+        let listing = try await Tool.run("/usr/bin/tar", ["-tzf", part.path])
+        guard listing.ok else { throw LeafError("That copy can't be read, so it wasn't brought back.") }
+        try FileOps.move(part, to: dest.appendingPathComponent(record.fileName))
+        try JSONStore.save(record, to: sidecar(for: dest.appendingPathComponent(record.fileName)))
+    }
+
+    /// Safety copies from before a restore are pinned so they outlast retention, but they're whole backups,
+    /// so repeated restores could fill a disk. Only the most recent few stay pinned, and the rest go back to normal retention.
+    public static func trimSafetyCopies(_ profile: ServerProfile, keep: Int = 3) {
+        let safety = list(profile).filter { $0.trigger == "before-restore" && $0.pinned }.sorted { $0.date > $1.date }
+        for old in safety.dropFirst(keep) { try? setPinned(old, pinned: false, profile: profile) }
+    }
+
     /// Which backups the retention policy would remove. Pinned ones never are, and don't use up the "keep the latest" count.
     public static func prunable(_ records: [BackupRecord], keepLast: Int, keepDays: Int, now: Date = Date(), protecting: String? = nil) -> [BackupRecord] {
         // Dates are stored to the second, so the name settles a tie: same-second backups get a higher suffix.
-        let sorted = records.sorted { $0.date == $1.date ? $0.fileName > $1.fileName : $0.date > $1.date }
+        func attempt(_ name: String) -> Int {
+            let base = name.replacingOccurrences(of: ".tar.gz", with: "")
+            return base.split(separator: "-").last.flatMap { Int($0) } ?? 1
+        }
+        let sorted = records.sorted { $0.date == $1.date ? attempt($0.fileName) > attempt($1.fileName) : $0.date > $1.date }
         let cutoff = now.addingTimeInterval(-Double(keepDays) * 86_400)
         var kept = 0
         return sorted.compactMap { record in
-            if record.pinned || record.fileName == protecting { return nil }
+            if record.pinned { return nil }
             kept += 1
+            if record.fileName == protecting { return nil }
             if kept <= keepLast { return nil }
             if keepDays > 0, record.date >= cutoff { return nil }
             return record
