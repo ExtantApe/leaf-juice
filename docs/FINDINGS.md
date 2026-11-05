@@ -104,6 +104,8 @@ Tested with real Modrinth packs, including the official TARDIS packs, and a real
 - **Version tags:** the TARDIS packs aren't tagged for 1.21.11 on Modrinth. Leaf Juice takes the newest release and says so.
 - **Loose files:** packs commonly ship `LICENSE` and `README.md` at the top. They aren't ranked, and each is kept in `credits/<pack>/`.
 - **Real overlap:** in these packs, `assets/minecraft/sounds.json` merged between the TARDIS packs. Otherwise they barely overlapped, so most ranking has only been proven on made-up packs.
+- **Source projects:** a zip can hold many packs side by side, as a plugin's pack project does. Leaf Juice refuses these and says why, rather than picking one.
+- **Different layouts:** a 1.19 pack and the TARDIS pack shared no paths at all. TARDIS keeps its content in `assets/tardis/` and `assets/minecraft/items/`, which older packs don't use. Sharing no paths means nothing is overwritten, not that an older pack's files all still apply.
 - **Repeatable:** building twice gives the same SHA-1, and so does rebuilding from an exported recipe in an empty library.
 - **Not always clean:** one pack shipped an empty `assets/sodium/lang/test.json`.
 - **A required pack:** accepting gets in, declining is kicked with Minecraft's own message, and saying nothing never finishes joining.

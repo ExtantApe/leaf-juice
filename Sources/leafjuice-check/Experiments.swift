@@ -128,6 +128,7 @@ import Foundation
         ("players", expPlayers), ("renames", expRenames), ("restore", expRestore),
         ("packs", expPacks),
         ("actionhealth", expActionHealth),
+        ("overlap", expOverlap),
     ]
     for (name, experiment) in all where groups.contains(name) || groups.contains("all") {
         print("• EXPERIMENT: \(name)")
@@ -753,6 +754,52 @@ import Foundation
             lab.saw("Stopped cleanly: \(c.state == .stopped)")
         } catch { lab.saw("**Failed:** \(error)") }
     }
+}
+
+// MARK: - Packs that really overlap
+
+/// Zips in `.lab-sandbox/given`, ranked against the TARDIS pack. Needs the zips put there first.
+@MainActor func expOverlap(_ lab: Lab) async throws {
+    let given = FileOps.children(lab.base.appendingPathComponent("given")).filter { $0.pathExtension == "zip" }.sorted { $0.lastPathComponent > $1.lastPathComponent }
+    var packs: [LibraryPack] = []
+    for file in given {
+        do {
+            let pack = try await ResourcePacks.add(file)
+            packs.append(pack)
+            lab.saw("\(pack.title): \(Format.bytes(pack.latest?.size ?? 0)), format \(pack.latest?.format.map(String.init) ?? "?"), \(pack.latest?.fileCount ?? 0) files, \(pack.latest?.imageCount ?? 0) images")
+        } catch { lab.saw("\(file.lastPathComponent) refused: \(error.localizedDescription)") }
+    }
+    let tardis = try await ResourcePacks.download(.modrinth(project: "tardis-resource-pack"), mc: "1.21.11")
+    packs.append(tardis)
+    var recipe = ResourcePacks.reconcile(PackRecipe(), with: packs)
+    recipe.name = "Overlap"
+    recipe.entries.sort { a, b in packs.firstIndex { $0.id == a.pack }! < packs.firstIndex { $0.id == b.pack }! }
+    let start = Date()
+    let lock = try await ResourcePacks.resolve(recipe)
+    let conflicts = ResourcePacks.conflicts(lock)
+    lab.saw("Rank: \(recipe.entries.map(\.pack)). \(lock.files.count) files in \(String(format: "%.1f", Date().timeIntervalSince(start)))s. In more than one pack: \(lock.files.filter { $0.copies.count > 1 }.count). Differ: \(conflicts.count). Merged: \(lock.files.filter { $0.reason == .merged }.count)")
+    lab.saw("Differ by category: \(Dictionary(grouping: conflicts) { ResourcePacks.category(of: $0.path) }.mapValues(\.count))")
+    for (pair, items) in Dictionary(grouping: conflicts, by: { $0.copies.map(\.pack).joined(separator: " + ") }) { lab.saw("Between \(pair): \(items.count), such as \(items.prefix(3).map(\.path))") }
+    for item in lock.files.filter({ $0.reason == .merged }).prefix(10) { lab.saw("Merged: \(item.path), from \(item.copies.map(\.pack))") }
+    let items = conflicts.filter { $0.path.contains("/items/") && $0.path.hasSuffix(".json") }
+    lab.saw("New-style item files that can't merge, so one wins: \(items.count), such as \(items.prefix(5).map(\.path))")
+
+    // TARDIS's own items must keep working however the others rank.
+    let build = try await ResourcePacks.combine(recipe)
+    let out = try await ResourcePacks.read(ResourcePacks.buildFile(build, recipe: recipe.name), version: "check")
+    lab.saw("Built: \(Format.bytes(build.size)), \(build.fileCount) files, format \(build.format.map(String.init) ?? "?"), warnings \(build.warnings)")
+    var bad: [String] = []
+    for rel in ResourcePacks.listing(out.root) where rel.hasSuffix(".json") || rel.hasSuffix(".mcmeta") {
+        if (try? JSONSerialization.jsonObject(with: Data(contentsOf: out.root.appendingPathComponent(rel)))) == nil { bad.append(rel) }
+    }
+    lab.saw("JSON that doesn't parse in the build: \(bad.count), such as \(bad.prefix(5))")
+    lab.saw("Same again gives the same SHA-1: \(try await ResourcePacks.combine(recipe).sha1 == build.sha1)")
+    var flipped = recipe
+    flipped.categoryWinners["Models"] = tardis.id
+    let models = try await ResourcePacks.resolve(flipped)
+    lab.saw("TARDIS first for Models: \(models.files.filter { $0.reason == .category }.count) files decided that way, and \(ResourcePacks.conflicts(models).filter { $0.winner == tardis.id }.count) of the differing files now go to TARDIS")
+    let moved = ResourcePacks.changes(from: lock, to: models)
+    lab.saw("Compared with plain ranking: \(moved.summary)")
 }
 
 // MARK: - What really happens with resource packs?

@@ -2840,6 +2840,12 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
         do { _ = try await ResourcePacks.importRecipe(Data("{}".utf8), mc: nil) } catch { refusedImport = true }
         check(refusedImport, "other JSON isn't a recipe")
 
+        // Observed on a real project: many packs side by side in one zip.
+        let many = await makePack("ManyPacks", ["project/src/one/pack.mcmeta": #"{"pack":{"pack_format":6,"description":"a"}}"#, "project/src/two/pack.mcmeta": #"{"pack":{"pack_format":6,"description":"b"}}"#, "project/src/one/assets/x/a.png": "a"])
+        var manyMessage = ""
+        do { _ = try await ResourcePacks.add(many) } catch { manyMessage = error.localizedDescription }
+        check(manyMessage.contains("2 separate packs") && manyMessage.contains("one"), "a project holding many packs is refused, and says why: \(manyMessage)")
+
         // Observed on the real TARDIS pack: min_format with no pack_format.
         let modern = await makePack("Modern", ["pack.mcmeta": #"{"pack":{"min_format":84,"max_format":84,"description":"new"}}"#, "assets/x/textures/block/n.png": "n"])
         let modernPack = try await ResourcePacks.add(modern)

@@ -349,6 +349,14 @@ public enum ResourcePacks {
         let top = try await unpack(zip)
         let files = listing(top)
         guard let prefix = root(of: files) else { throw LeafError("\(zip.lastPathComponent) has no pack.mcmeta, so it isn't a resource pack.") }
+        // Observed: a source project can hold many packs side by side, and picking one would quietly drop the rest.
+        let roots = files.filter { ($0 == "pack.mcmeta" || $0.hasSuffix("/pack.mcmeta")) && !$0.hasPrefix("__MACOSX") }.map { String($0.dropLast("pack.mcmeta".count)) }
+        let shallowest = roots.map { $0.components(separatedBy: "/").count }.min() ?? 0
+        let level = roots.filter { $0.components(separatedBy: "/").count == shallowest }
+        if level.count > 1 {
+            let names = level.prefix(4).compactMap { $0.split(separator: "/").last.map(String.init) }.joined(separator: ", ")
+            throw LeafError("\(zip.lastPathComponent) holds \(level.count) separate packs (\(names)…), so it looks like a project's source rather than one pack. Use its built pack, or zip just the one you want.")
+        }
         let packRoot = prefix.isEmpty ? top : top.appendingPathComponent(prefix, isDirectory: true)
         let meta = (try? JSONSerialization.jsonObject(with: Data(contentsOf: packRoot.appendingPathComponent("pack.mcmeta")))) as? [String: Any]
         guard let pack = meta?["pack"] as? [String: Any] else { throw LeafError("\(zip.lastPathComponent) has a pack.mcmeta that can't be read.") }
