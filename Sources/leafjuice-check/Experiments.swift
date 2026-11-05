@@ -678,57 +678,55 @@ import Foundation
 // MARK: - What really happens with resource packs?
 
 @MainActor func expPacks(_ lab: Lab) async throws {
-    struct Search: Decodable { struct Hit: Decodable { let project_id: String; let title: String }; let hits: [Hit] }
-    struct Version: Decodable { struct File: Decodable { let url: String; let filename: String; let primary: Bool }; let files: [File]; let game_versions: [String] }
-    let downloads = lab.base.appendingPathComponent("packs-downloaded", isDirectory: true)
-    try FileOps.ensureDir(downloads)
-    lab.heading("Real packs from Modrinth")
+    struct Search: Decodable { struct Hit: Decodable { let slug: String; let title: String }; let hits: [Hit] }
+    lab.heading("Real packs from Modrinth, through the same route as the app")
     let query = #"[["project_type:resourcepack"],["versions:1.21.11"]]"#.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
-    let search: Search = try await HTTP.decode(Search.self, HTTP.url("https://api.modrinth.com/v2/search?facets=\(query)&index=downloads&limit=6"))
-    var added: [ResourcePack] = []
-    for hit in search.hits where added.count < 3 {
-        guard let versions = try? await HTTP.decode([Version].self, HTTP.url("https://api.modrinth.com/v2/project/\(hit.project_id)/version?game_versions=%5B%221.21.11%22%5D")),
-              let file = versions.first?.files.first(where: \.primary) ?? versions.first?.files.first, file.filename.hasSuffix(".zip") else { continue }
-        let target = downloads.appendingPathComponent(hit.project_id, isDirectory: true).appendingPathComponent(file.filename)
-        try FileOps.ensureDir(target.deletingLastPathComponent())
-        if !FileOps.exists(target) { try await HTTP.download(HTTP.url(file.url), to: target, expect: ExpectedHashes()) }
-        guard FileOps.size(target) < 120_000_000 else { lab.saw("\(hit.title): skipped, \(Format.bytes(FileOps.size(target)))"); continue }
+    let search = try await HTTP.decode(Search.self, HTTP.url("https://api.modrinth.com/v2/search?facets=\(query)&index=downloads&limit=6"))
+    var added: [LibraryPack] = []
+    let wanted = ["tardis-resource-pack", "tardis-sounds"].map { (slug: $0, title: $0) } + search.hits.map { (slug: $0.slug, title: $0.title) }
+    for hit in wanted where added.count < 6 {
         do {
-            let pack = try await ResourcePacks.add(target)
+            let pack = try await ResourcePacks.download(.modrinth(project: hit.slug), mc: "1.21.11")
             added.append(pack)
-            let images = try await ResourcePacks.images(in: pack)
-            lab.saw("\(hit.title): \(Format.bytes(pack.size)), format \(pack.format.map(String.init) ?? "?"), \(pack.fileCount) files, \(images.count) images. \"\(pack.description.prefix(60))\"")
+            lab.saw("\(pack.title): \(Format.bytes(pack.latest?.size ?? 0)), format \(pack.latest?.format.map(String.init) ?? "?"), \(pack.latest?.fileCount ?? 0) files, \(pack.latest?.imageCount ?? 0) images, license \(pack.license?.id ?? "none"), by \(pack.authors.prefix(2))")
         } catch { lab.saw("\(hit.title): refused: \(error.localizedDescription)") }
     }
-    if let extra = ProcessInfo.processInfo.environment["LEAFJUICE_EXP_PACK"], let url = URL(string: extra) {
-        let target = downloads.appendingPathComponent("given", isDirectory: true).appendingPathComponent(url.lastPathComponent)
-        try FileOps.ensureDir(target.deletingLastPathComponent())
-        do {
-            if !FileOps.exists(target) { try await HTTP.download(url, to: target, expect: ExpectedHashes()) }
-            let pack = try await ResourcePacks.add(target)
-            added.append(pack)
-            let images = try await ResourcePacks.images(in: pack)
-            lab.saw("Given pack: \(Format.bytes(pack.size)), format \(pack.format.map(String.init) ?? "?"), \(pack.fileCount) files, \(images.count) images. Hash matches its name: \(url.lastPathComponent.hasPrefix(pack.sha1))")
-        } catch { lab.saw("Given pack couldn't be used: \(error.localizedDescription)") }
-    }
 
-    lab.heading("Combining them")
-    var recipe = PackRecipe()
-    recipe.entries = added.map { PackRecipe.Entry(fileName: $0.fileName) }
-    let conflicts = try await ResourcePacks.conflicts(recipe)
-    lab.saw("Conflicts: \(conflicts.count). By category: \(Dictionary(grouping: conflicts, by: \.category).mapValues(\.count))")
+    lab.heading("Ranking them")
+    var recipe = ResourcePacks.reconcile(PackRecipe(), with: added)
+    recipe.name = "Experiment"
     let started = Date()
+    let lock = try await ResourcePacks.resolve(recipe)
+    lab.saw("Resolved \(lock.files.count) files in \(String(format: "%.1f", Date().timeIntervalSince(started)))s. Differing copies: \(ResourcePacks.conflicts(lock).count). By category: \(Dictionary(grouping: ResourcePacks.conflicts(lock), by: { ResourcePacks.category(of: $0.path) }).mapValues(\.count)). Merged: \(lock.files.filter { $0.reason == .merged }.count). Lock file size: \(Format.bytes(Int64((try? JSONStore.compactEncoder.encode(lock).count) ?? 0)))")
     let result = try await ResourcePacks.combine(recipe)
-    lab.saw("Combined in \(Int(Date().timeIntervalSince(started)))s: \(Format.bytes(result.size)), \(result.fileCount) files, format \(result.format.map(String.init) ?? "?"), merged \(result.merged.prefix(12)), warnings \(result.warnings)")
-    let rebuilt = try await ResourcePacks.add(result.file)
-    lab.saw("It reads back as a pack: format \(rebuilt.format.map(String.init) ?? "?"), \(rebuilt.fileCount) files. mcmeta: \((try? String(contentsOf: try await ResourcePacks.inspect(ResourcePacks.library.appendingPathComponent(rebuilt.fileName)).root.appendingPathComponent("pack.mcmeta"), encoding: .utf8))?.prefix(300) ?? "")")
-    try? ResourcePacks.remove(rebuilt)
-    var badJSON = 0
-    let top = try await ResourcePacks.unpack(result.file)
-    for rel in ResourcePacks.listing(top) where rel.hasSuffix(".json") || rel.hasSuffix(".mcmeta") {
-        if (try? JSONSerialization.jsonObject(with: Data(contentsOf: top.appendingPathComponent(rel)))) == nil { badJSON += 1 }
+    lab.saw("Built: \(Format.bytes(result.size)), \(result.fileCount) files, format \(result.format.map(String.init) ?? "?"), warnings \(result.warnings)")
+    let second = try await ResourcePacks.combine(recipe)
+    lab.saw("Built again, same SHA-1: \(second.sha1 == result.sha1)")
+    let file = ResourcePacks.buildFile(result, recipe: recipe.name)
+    let rebuilt = try await ResourcePacks.read(file, version: "check")
+    lab.saw("It reads back as a pack: format \(rebuilt.info.format.map(String.init) ?? "?"), \(rebuilt.info.fileCount) files")
+    var badJSON: [String] = []
+    for rel in ResourcePacks.listing(rebuilt.root) where rel.hasSuffix(".json") || rel.hasSuffix(".mcmeta") {
+        if (try? JSONSerialization.jsonObject(with: Data(contentsOf: rebuilt.root.appendingPathComponent(rel)))) == nil { badJSON.append(rel) }
     }
-    lab.saw("JSON files that don't parse in the combined pack: \(badJSON)")
+    for item in ResourcePacks.conflicts(lock).prefix(12) { lab.saw("Differs: \(item.path), between \(item.copies.map(\.pack)), \(item.winner) wins") }
+    for item in lock.files.filter({ $0.reason == .merged }).prefix(8) { lab.saw("Merged: \(item.path), from \(item.copies.map(\.pack))") }
+    if let tardis = added.first(where: { $0.title.lowercased().contains("tardis resource") }) {
+        var ranked = recipe
+        ranked.categoryWinners["Models"] = tardis.id
+        let check = try await ResourcePacks.resolve(ranked)
+        lab.saw("With TARDIS first for Models: \(check.files.filter { $0.reason == .category }.count) files decided by category")
+    }
+    lab.saw("JSON that doesn't parse in the build: \(badJSON.prefix(5))")
+    lab.saw("License review: \(ResourcePacks.licenseReview(recipe).map { "\($0.pack.title): \($0.sharing)" })")
+    let exported = try ResourcePacks.exportRecipe(recipe)
+    lab.saw("Recipe export: \(Format.bytes(Int64(exported.count)))")
+    let keptPacks = ResourcePacks.list()
+    for pack in keptPacks { try await ResourcePacks.remove(pack) }
+    let imported = try await ResourcePacks.importRecipe(exported, mc: "1.21.11")
+    lab.saw("Imported into an empty library: fetched \(imported.fetched), missing \(imported.missing.map(\.title))")
+    let rebuiltFromRecipe = try await ResourcePacks.combine(imported.recipe)
+    lab.saw("Rebuilt from the recipe alone, same SHA-1 as the original: \(rebuiltFromRecipe.sha1 == result.sha1)")
 
     lab.heading("What a server does with the settings")
     let table = try await lab.table("1.21.11", java: "/usr/bin/java")

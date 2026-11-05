@@ -239,7 +239,11 @@ Ideas for later modules: scheduled announcements, a player whitelist manager, a 
 
 ## Resource packs
 
-`LeafJuice/resource-packs/`: `library/` for originals, `combined/` for results. Zip work uses the system's `unzip` and `zip`, so there are still no dependencies. Unpacking is limited in size and stays inside its folder. Hosting is left to the user: a pack needs a public address, and running a web server from a Mac means opening a port.
+`LeafJuice/resource-packs/`: `library/<pack>/<version>.zip` with a `pack.json`, `recipes/`, `my-changes/` and `combined/<recipe>/<sha1>.zip` with its lock file. Packs have stable ids, and recipes pin a version by hash, so an update is always a choice and never loses your ranking.
+
+Most specific wins: My changes, then a pick for one file, then a pack for a category, then rank. Builds fix file times, order and permissions so identical inputs give an identical SHA-1. A git submodule was considered and left out: many packs aren't in git, binaries don't diff, and every user would need git. Lock files give the history that was wanted, and a GitHub source covers packs that are in git.
+
+Zip work uses the system's `unzip` and `zip`, so there are still no dependencies. Hosting is left to the user: a pack needs a public address, and running a web server from a Mac means opening a port.
 
 ## Later
 

@@ -2661,62 +2661,98 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
 @MainActor func resourcePackChecks() async {
     print("• Resource packs")
     func json(_ url: URL) -> [String: Any] { ((try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: Any]) ?? [:] }
+    let stoneA = "assets/minecraft/textures/block/stone.png"
     let top = await makePack("Top", [
         "pack.mcmeta": #"{"pack":{"pack_format":46,"description":"§aTop pack"}}"#,
-        "assets/minecraft/textures/block/stone.png": "top-stone",
+        stoneA: "top-stone",
         "assets/minecraft/textures/item/apple.png": "top-apple",
         "assets/minecraft/lang/en_us.json": #"{"a":"top","b":"top"}"#,
         "assets/minecraft/sounds.json": #"{"x":{"sounds":["top"]},"y":{"replace":true,"sounds":["top-y"]}}"#,
         "assets/minecraft/atlases/blocks.json": #"{"sources":[{"type":"top"}]}"#,
         "assets/minecraft/models/item/stick.json": #"{"parent":"top","overrides":[{"model":"top"}]}"#,
-        "assets/minecraft/sounds/ding.ogg": "top-ding",
+        "assets/minecraft/models/block/same.json": #"{"same":true}"#,
+        "LICENSE": "top license",
     ])
     let lower = await makePack("Lower", [
         "pack.mcmeta": #"{"pack":{"pack_format":34,"supported_formats":[20,34],"description":[{"text":"Lower "},{"text":"pack"}]}}"#,
         "pack.png": "lower-icon",
-        "assets/minecraft/textures/block/stone.png": "lower-stone",
+        stoneA: "lower-stone",
+        "assets/minecraft/textures/item/apple.png": "lower-apple",
         "assets/minecraft/textures/block/dirt.png": "lower-dirt",
         "assets/minecraft/lang/en_us.json": #"{"b":"lower","c":"lower"}"#,
         "assets/minecraft/sounds.json": #"{"x":{"sounds":["lower"]},"y":{"sounds":["lower-y"]},"z":{"sounds":["lower-z"]}}"#,
         "assets/minecraft/atlases/blocks.json": #"{"sources":[{"type":"lower"}]}"#,
         "assets/minecraft/models/item/stick.json": #"{"parent":"lower","overrides":[{"model":"lower"}]}"#,
+        "assets/minecraft/models/block/same.json": #"{"same":true}"#,
         "assets/custom/textures/entity/thing.png": "lower-thing",
+        "LICENSE": "lower license",
+    ], inside: "Some Folder")
+    let lowerTwo = await makePack("Lower-2.0", [
+        "pack.mcmeta": #"{"pack":{"pack_format":34,"description":"Lower pack"}}"#,
+        stoneA: "lower-stone-v2",
+        "assets/minecraft/textures/block/dirt.png": "lower-dirt-v2",
+        "assets/custom/textures/entity/new.png": "lower-new",
     ], inside: "Some Folder")
     let hollow = await makePack("Hollow", ["assets/minecraft/textures/block/stone.png": "x"])
     let notZip = folder("packs-made").appendingPathComponent("NotZip.zip")
     write("this isn't a zip", notZip)
     do {
-        let a = try await ResourcePacks.add(top), b = try await ResourcePacks.add(lower)
-        equal(a.description, "Top pack", "color codes removed"); equal(a.format, 46, "format read")
-        equal(b.description, "Lower pack", "rich text flattened")
-        check(b.fileCount > 5, "a pack inside a top folder is found: \(b.fileCount)")
+        var a = try await ResourcePacks.add(top)
+        let b = try await ResourcePacks.add(lower, title: "Lower Pack", from: .github(repo: "someone/lower"), license: PackLicense(id: "MIT"), authors: ["Someone"])
+        equal(a.latest?.description, "Top pack", "color codes removed"); equal(a.latest?.format, 46, "format read")
+        equal(b.latest?.description, "Lower pack", "rich text flattened")
+        check((b.latest?.fileCount ?? 0) > 5, "a pack inside a top folder is found")
         var refused = 0
         do { _ = try await ResourcePacks.add(hollow) } catch { refused += 1 }
         do { _ = try await ResourcePacks.add(notZip) } catch { refused += 1 }
         equal(refused, 2, "a zip with no pack.mcmeta, and a non-zip, are refused")
-        equal(await ResourcePacks.list().count, 2, "only real packs are in the library")
-        equal(ResourcePacks.category(of: "assets/minecraft/textures/block/stone.png"), "Blocks", "category"); equal(ResourcePacks.category(of: "assets/x/sounds/a.ogg"), "Sounds", "sounds")
-        equal(try await ResourcePacks.images(in: a).count, 2, "images listed")
+        equal(ResourcePacks.list().count, 2, "only real packs are in the library")
+        equal(try await ResourcePacks.add(top).versions.count, 1, "adding the same file again changes nothing")
+        equal(ResourcePacks.category(of: stoneA), "Blocks", "category"); equal(ResourcePacks.category(of: "assets/x/sounds/a.ogg"), "Sounds", "sounds")
+        equal(try await ResourcePacks.images(in: a, a.latest!).count, 2, "images listed")
 
-        var recipe = PackRecipe()
+        equal(PackSource.parse("https://modrinth.com/resourcepack/fresh-animations/versions"), .modrinth(project: "fresh-animations"), "Modrinth page understood")
+        equal(PackSource.parse("https://github.com/someone/pack.git"), .github(repo: "someone/pack"), "GitHub page understood")
+        equal(PackSource.parse("https://example.com/p.zip"), .url("https://example.com/p.zip"), "a plain link")
+        equal(PackSource.parse("not a link"), nil, "not a link")
+
+        // Ranking.
+        var recipe = ResourcePacks.reconcile(PackRecipe(), with: [a, b])
         recipe.name = "My Pack!"
-        recipe.entries = [PackRecipe.Entry(fileName: a.fileName), PackRecipe.Entry(fileName: b.fileName)]
-        let conflicts = try await ResourcePacks.conflicts(recipe)
-        equal(conflicts.map(\.path), ["assets/minecraft/textures/block/stone.png"], "what merges isn't a conflict, and the rest is")
-        equal(conflicts.first?.winner, a.fileName, "top wins by default")
+        equal(recipe.entries.map(\.pack), [a.id, b.id], "new packs join in order")
+        let lock = try await ResourcePacks.resolve(recipe)
+        func file(_ l: PackLock, _ path: String) -> LockedFile? { l.files.first { $0.path == path } }
+        equal(file(lock, stoneA)?.winner, a.id, "top ranked wins"); equal(file(lock, stoneA)?.reason, .rank, "because of rank")
+        equal(file(lock, stoneA)?.copies.map(\.pack), [a.id, b.id], "and every copy is on record")
+        equal(file(lock, "assets/minecraft/textures/block/dirt.png")?.reason, .only, "only one has it")
+        equal(file(lock, "assets/minecraft/lang/en_us.json")?.reason, .merged, "languages merge")
+        let conflicts = ResourcePacks.conflicts(lock).map(\.path)
+        check(conflicts.contains(stoneA), "differing copies are conflicts")
+        check(!conflicts.contains("assets/minecraft/lang/en_us.json"), "merged files aren't"); check(!conflicts.contains("assets/minecraft/models/block/same.json"), "identical copies aren't")
 
-        func built(_ result: CombineResult) async throws -> URL { try await ResourcePacks.unpack(result.file) }
-        let result = try await ResourcePacks.combine(recipe)
-        equal(result.file.lastPathComponent, "my-pack-.zip", "name made safe")
-        let out = try await built(result)
-        func text(_ path: String) -> String { (try? String(contentsOf: out.appendingPathComponent(path), encoding: .utf8)) ?? "" }
-        equal(text("assets/minecraft/textures/block/stone.png"), "top-stone", "top wins")
-        equal(text("assets/minecraft/textures/block/dirt.png"), "lower-dirt", "only the lower one has it")
-        equal(text("assets/custom/textures/entity/thing.png"), "lower-thing", "from inside the top folder, at the root")
-        equal(text("pack.png"), "lower-icon", "an icon is kept")
+        // Who wins, most specific first.
+        var byCategory = recipe
+        byCategory.categoryWinners["Blocks"] = b.id
+        let categorized = try await ResourcePacks.resolve(byCategory)
+        equal(file(categorized, stoneA)?.winner, b.id, "a pack can be first for one kind of file"); equal(file(categorized, stoneA)?.reason, .category, "because of category")
+        equal(file(categorized, "assets/minecraft/textures/item/apple.png")?.winner, a.id, "others still follow rank")
+        byCategory.winners[stoneA] = a.id
+        equal(file(try await ResourcePacks.resolve(byCategory), stoneA)?.reason, .picked, "picking one file beats its category")
+
+        // Building.
+        let build = try await ResourcePacks.combine(recipe)
+        let out = try await ResourcePacks.unpack(ResourcePacks.buildFile(build, recipe: recipe.name))
+        func text(_ root: URL, _ path: String) -> String { (try? String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)) ?? "" }
+        equal(text(out, stoneA), "top-stone", "the winner is what's built")
+        equal(text(out, "assets/minecraft/textures/block/dirt.png"), "lower-dirt", "only the lower one has it")
+        equal(text(out, "assets/custom/textures/entity/thing.png"), "lower-thing", "from inside the top folder, at the root")
+        equal(text(out, "pack.png"), "lower-icon", "an icon is kept")
+        check(text(out, "CREDITS.txt").contains("By: Someone") && text(out, "CREDITS.txt").contains("not for sale"), "credits included")
         check(!FileOps.exists(out.appendingPathComponent("Some Folder")), "the folder doesn't come along")
-        let lang = json(out.appendingPathComponent("assets/minecraft/lang/en_us.json")) as? [String: String]
-        equal(lang, ["a": "top", "b": "top", "c": "lower"], "languages merge, top wins each key")
+        equal(text(out, "credits/\(a.id)/LICENSE"), "top license", "each pack's license is kept")
+        equal(text(out, "credits/\(b.id)/LICENSE"), "lower license", "side by side, not overwritten")
+        check(!lock.files.contains { $0.path == "LICENSE" }, "licenses aren't ranked")
+        equal(json(out.appendingPathComponent("assets/minecraft/lang/en_us.json")) as? [String: String], ["a": "top", "b": "top", "c": "lower"], "languages merge, top wins each key")
         let sounds = json(out.appendingPathComponent("assets/minecraft/sounds.json"))
         equal((sounds["x"] as? [String: Any])?["sounds"] as? [String], ["top", "lower"], "sounds add up")
         equal((sounds["y"] as? [String: Any])?["sounds"] as? [String], ["top-y"], "unless the higher one replaces")
@@ -2726,25 +2762,116 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
         equal(stick["parent"] as? String, "top", "item model from the top pack"); equal((stick["overrides"] as? [[String: String]])?.count, 2, "with both packs' overrides")
         let meta = json(out.appendingPathComponent("pack.mcmeta"))["pack"] as? [String: Any]
         equal(meta?["pack_format"] as? Int, 46, "newest format"); equal(meta?["supported_formats"] as? [Int], [20, 46], "wide enough for all")
-        check(result.warnings.contains { $0.contains("different Minecraft versions") }, "mismatched versions are mentioned")
-        check(result.sha1.count == 40, "a SHA-1 to give the server")
+        check(build.warnings.contains { $0.contains("different Minecraft versions") }, "mismatched versions are mentioned")
+        equal(try await ResourcePacks.combine(recipe).sha1, build.sha1, "the same recipe builds the same file, byte for byte")
+        equal(ResourcePacks.history(recipe.name).count, 1, "and isn't a new build")
+        check(ResourcePacks.loadLock(sha1: build.sha1, recipe: recipe.name) != nil, "the lock file is saved with it")
 
-        recipe.winners["assets/minecraft/textures/block/stone.png"] = b.fileName
-        let picked = try await built(try await ResourcePacks.combine(recipe))
-        equal(try? String(contentsOf: picked.appendingPathComponent("assets/minecraft/textures/block/stone.png"), encoding: .utf8), "lower-stone", "picking another pack's copy")
-        recipe.winners = [:]
-        recipe.entries[1].excluded = ["Blocks"]
-        let less = try await built(try await ResourcePacks.combine(recipe))
-        check(!FileOps.exists(less.appendingPathComponent("assets/minecraft/textures/block/dirt.png")), "leaving out a category")
-        recipe.entries[1].excluded = []
-        recipe.entries[0].enabled = false
-        let solo = try await built(try await ResourcePacks.combine(recipe))
-        equal(try? String(contentsOf: solo.appendingPathComponent("assets/minecraft/textures/block/stone.png"), encoding: .utf8), "lower-stone", "turning a pack off")
-        recipe.entries[1].enabled = false
+        // My changes always win, and updates can't touch them.
+        write("mine-apple", ResourcePacks.mine.appendingPathComponent("assets/minecraft/textures/item/apple.png"))
+        let withMine = try await ResourcePacks.resolve(recipe)
+        equal(file(withMine, "assets/minecraft/textures/item/apple.png")?.reason, .mine, "my changes win")
+        equal(file(withMine, "assets/minecraft/textures/item/apple.png")?.copies.count, 3, "with the others still on record")
+        let mineBuild = try await ResourcePacks.combine(recipe)
+        equal(text(try await ResourcePacks.unpack(ResourcePacks.buildFile(mineBuild, recipe: recipe.name)), "assets/minecraft/textures/item/apple.png"), "mine-apple", "and get built")
+        check(mineBuild.sha1 != build.sha1, "a change makes a new build"); equal(ResourcePacks.history(recipe.name).count, 2, "and the old one is kept")
+        try FileManager.default.removeItem(at: ResourcePacks.mine)
+
+        // An update: same pack, new version, and the recipe's choices survive.
+        recipe.winners["assets/minecraft/textures/item/apple.png"] = b.id
+        let beforeUpdate = try await ResourcePacks.resolve(recipe)
+        let updated = try await ResourcePacks.add(lowerTwo, from: b.source, version: "2.0")
+        equal(updated.id, b.id, "an update isn't a new pack"); equal(updated.versions.map(\.version), [b.latest!.version, "2.0"], "and the old version stays")
+        equal(ResourcePacks.reconcile(recipe, with: ResourcePacks.list()).entries.first { $0.pack == b.id }?.version, b.latest?.sha1, "the recipe stays pinned until you accept")
+        var trial = recipe
+        trial.entries[1].version = updated.latest!.sha1
+        let afterUpdate = try await ResourcePacks.resolve(trial)
+        let changes = ResourcePacks.changes(from: beforeUpdate, to: afterUpdate, recipe: trial)
+        check(changes.added.contains { $0.path.hasSuffix("new.png") }, "new files are listed")
+        check(changes.removed.contains { $0.path.hasSuffix("thing.png") }, "removed files are listed")
+        check(changes.changed.contains { $0.path.hasSuffix("dirt.png") }, "changes players would see are listed")
+        check(changes.hidden.contains { $0.path == stoneA }, "a change a higher pack hides is told apart")
+        equal(changes.lostPicks, [], "the picked file only lost a pack, and still exists")
+        check(changes.changed.contains { $0.path.hasSuffix("apple.png") }, "losing the picked pack's copy changes that file")
+        trial.winners["assets/gone.png"] = b.id
+        equal(ResourcePacks.changes(from: beforeUpdate, to: afterUpdate, recipe: trial).lostPicks, ["assets/gone.png"], "a pick whose file vanished is flagged")
+        recipe.entries[1].version = b.latest!.sha1
+        equal(file(try await ResourcePacks.resolve(recipe), "assets/minecraft/textures/block/dirt.png")?.sha1, file(beforeUpdate, "assets/minecraft/textures/block/dirt.png")?.sha1, "going back to the old version works")
+
+        // Turning things off, and several recipes.
+        var less = recipe
+        less.winners = [:]
+        less.entries[1].excluded = ["Blocks"]
+        let lessLock = try await ResourcePacks.resolve(less)
+        check(file(lessLock, "assets/minecraft/textures/block/dirt.png") == nil, "leaving out a category")
+        less.entries[1].excluded = []
+        less.entries[0].enabled = false
+        equal(file(try await ResourcePacks.resolve(less), stoneA)?.winner, b.id, "turning a pack off")
+        less.entries[1].enabled = false
         var empty = false
-        do { _ = try await ResourcePacks.combine(recipe) } catch { empty = true }
+        do { _ = try await ResourcePacks.combine(less) } catch { empty = true }
         check(empty, "nothing chosen is refused")
-        equal(try? String(contentsOf: ResourcePacks.library.appendingPathComponent(a.fileName), encoding: .utf8).isEmpty, nil, "originals stay binary zips")
+        ResourcePacks.saveRecipe(recipe)
+        var other = PackRecipe(); other.name = "Second One"
+        ResourcePacks.saveRecipe(other)
+        equal(Set(ResourcePacks.recipeNames()), [ResourcePacks.slug(recipe.name), "second-one"], "several recipes")
+        equal(ResourcePacks.loadRecipe(recipe.name).winners, recipe.winners, "each keeps its own choices")
+
+        // Sharing.
+        equal(PackLicense(id: "MIT").sharing, .allowed, "permissive license")
+        equal(PackLicense(id: "LicenseRef-All-Rights-Reserved").title, "All Rights Reserved", "license names read well"); equal(PackLicense(id: "CC-BY-4.0").title, "CC-BY-4.0", "and standard ones stay as they are")
+        check({ if case .conditions = PackLicense(id: "CC-BY-NC-4.0").sharing { return true }; return false }(), "non-commercial has conditions")
+        check({ if case .ask = PackLicense(id: "CC-BY-ND-4.0").sharing { return true }; return false }(), "no-derivatives needs asking")
+        check({ if case .ask = PackLicense(id: "LicenseRef-All-Rights-Reserved").sharing { return true }; return false }(), "all rights reserved needs asking")
+        check({ if case .ask = PackLicense(id: "LicenseRef-Custom").sharing { return true }; return false }(), "unknown needs asking")
+        let reviewed = ResourcePacks.licenseReview(recipe)
+        check({ if case .ask = reviewed.first { $0.pack.id == a.id }?.sharing { return true }; return false }(), "no license on record needs asking")
+        let exported = try ResourcePacks.exportRecipe(recipe)
+        let exportText = String(decoding: exported, as: UTF8.self)
+        check(exportText.contains("leaf-juice-pack-recipe"), "the export says what it is"); check(!exportText.contains("top-stone"), "no pack contents")
+        let imported = try await ResourcePacks.importRecipe(exported, mc: nil)
+        equal(imported.recipe.entries.map(\.pack), recipe.entries.map(\.pack), "importing with the packs here restores the ranking")
+        equal(imported.recipe.winners, recipe.winners, "and the picks"); equal(imported.missing, [], "nothing to fetch")
+        try await ResourcePacks.remove(a)
+        let withoutA = try await ResourcePacks.importRecipe(exported, mc: nil)
+        equal(withoutA.missing.map(\.id), [a.id], "a pack added by hand can't be fetched, and is named")
+        a = try await ResourcePacks.add(top)
+        var refusedImport = false
+        do { _ = try await ResourcePacks.importRecipe(Data("{}".utf8), mc: nil) } catch { refusedImport = true }
+        check(refusedImport, "other JSON isn't a recipe")
+
+        // Observed on the real TARDIS pack: min_format with no pack_format.
+        let modern = await makePack("Modern", ["pack.mcmeta": #"{"pack":{"min_format":84,"max_format":84,"description":"new"}}"#, "assets/x/textures/block/n.png": "n"])
+        let modernPack = try await ResourcePacks.add(modern)
+        var mixed = PackRecipe(); mixed.name = "Mixed Formats"
+        mixed.entries = [PackRecipe.Entry(pack: modernPack.id, version: modernPack.latest!.sha1), PackRecipe.Entry(pack: b.id, version: b.latest!.sha1)]
+        let mixedBuild = try await ResourcePacks.combine(mixed)
+        equal(mixedBuild.format, 84, "a pack's min_format counts as its format")
+        let mixedMeta = json(try await ResourcePacks.unpack(ResourcePacks.buildFile(mixedBuild, recipe: mixed.name)).appendingPathComponent("pack.mcmeta"))["pack"] as? [String: Any]
+        equal(mixedMeta?["min_format"] as? Int, 20, "the low end covers everything"); equal(mixedMeta?["max_format"] as? Int, 84, "and the high end")
+        try await ResourcePacks.remove(modernPack)
+
+        // Observed on a real pack: read-only folders in the zip left a cached copy that couldn't be cleared.
+        let locked = folder("pack-locked")
+        write(#"{"pack":{"pack_format":46,"description":"x"}}"#, locked.appendingPathComponent("pack.mcmeta"))
+        write("x", locked.appendingPathComponent("assets/minecraft/textures/block/a.png"))
+        write("y", locked.appendingPathComponent("Info.txt"))
+        let lockedZip = folder("packs-made").appendingPathComponent("Locked.zip")
+        _ = try await Tool.run("/bin/chmod", ["-R", "a-w", locked.appendingPathComponent("assets").path])
+        _ = try await Tool.run("/usr/bin/zip", ["-q", "-r", lockedZip.path, "."], cwd: locked)
+        _ = try await Tool.run("/bin/chmod", ["-R", "u+w", locked.path])
+        let lockedPack = try await ResourcePacks.add(lockedZip)
+        let firstCount = lockedPack.latest?.fileCount
+        try await ResourcePacks.remove(lockedPack)
+        check(!FileOps.exists(ResourcePacks.unpacked.appendingPathComponent(lockedPack.latest!.sha1)), "a read-only pack's cached copy can be cleared")
+        let again2 = try await ResourcePacks.add(lockedZip)
+        equal(again2.latest?.fileCount, firstCount, "and comes back whole")
+        var lockedRecipe = PackRecipe(); lockedRecipe.name = "Locked Build"
+        lockedRecipe.entries = [PackRecipe.Entry(pack: again2.id, version: again2.latest!.sha1)]
+        let lockedBuild = try await ResourcePacks.combine(lockedRecipe)
+        check(FileOps.exists(ResourcePacks.buildFile(lockedBuild, recipe: lockedRecipe.name)), "and builds")
+        check(!FileOps.children(ResourcePacks.folder).contains { $0.lastPathComponent.hasPrefix(".building") }, "leaving no working files behind")
+        try await ResourcePacks.remove(again2)
 
         // A hostile zip can't write outside its folder.
         let trap = folder("trap"), inner = trap.appendingPathComponent("a/b")

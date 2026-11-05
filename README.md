@@ -101,12 +101,15 @@ These are built in: Leaf Juice doesn't load third-party code.
 
 ## Resource packs
 
-Look through a pack's textures, then combine packs into one for your server. The top of the list wins, as in Minecraft's own list, and you can pick a
-different winner for any file or leave out parts of a pack, such as its sounds. Languages, sounds, fonts, atlases and item model overrides are
-merged rather than replaced. Your original files are never changed.
+Add packs by file, or from a Modrinth or GitHub page. Every version is kept, unchanged, and the page lets you look through a pack's textures.
 
-Players' games download a pack from the web, so Leaf Juice gives you the file and its SHA-1 to upload, for example to mc-packs.net, then sets the
-address on your server through the usual Change Queue.
+A **recipe** ranks packs into one, with the top winning as in Minecraft's own list. You can put a pack first for one kind of file, such as blocks, pick a winner for a single file, or leave out parts of a pack. Languages, sounds, fonts, atlases and item model overrides merge rather than replace. A **My changes** folder always wins, and updates never touch it.
+
+Each build keeps a lock file of every copy of every file, so an update can show exactly what would change before you accept it, and older builds stay available. The same recipe builds the same file, byte for byte, so nothing needs uploading again unless something changed.
+
+**Sharing:** a recipe exports as a small JSON file that holds no pack contents, and others download the packs from their authors. A combined pack exports with credits and each pack's license, after a review that flags any license worth checking. That review is a guide, not legal advice.
+
+Players' games download a pack from the web, so upload the build somewhere, for example mc-packs.net, and Leaf Juice sets the address on your server through the usual Change Queue.
 
 ## Install
 

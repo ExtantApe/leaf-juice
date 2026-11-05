@@ -84,13 +84,18 @@ A real 35-plugin server found what a 3-plugin test server couldn't:
 
 ## Resource packs
 
-Tested with three real Modrinth packs and a real Paper 1.21.11 server, with bots as the client. No real game client has loaded a combined pack yet.
+Tested with real Modrinth packs, including the official TARDIS packs, and a real Paper 1.21.11 server, with bots as the client. **No real game client has loaded a combined pack yet.**
 
-- Real packs combined and read back as valid. They didn't overlap, so merging overlapping files has only been proven on made-up packs.
-- Real packs aren't always clean: one shipped an empty `assets/sodium/lang/test.json`.
-- A required pack: accepting gets in, declining is kicked with Minecraft's own message, and saying nothing never finishes joining.
-- An optional pack: declining gets in, but saying nothing still never finishes joining.
-- A malformed SHA-1 doesn't stop the server. It only logs `Invalid sha1 for resource-pack-sha1`.
+- **Read-only folders:** real packs can store them in the zip. A cached copy then couldn't be cleared, and unpacking it again silently lost files, so the same recipe built something different. Unpacked copies are now made writable, and file counts are checked against the zip.
+- **Format fields:** the TARDIS pack gives `min_format` and no `pack_format`, while older packs do the reverse.
+- **Version tags:** the TARDIS packs aren't tagged for 1.21.11 on Modrinth. Leaf Juice takes the newest release and says so.
+- **Loose files:** packs commonly ship `LICENSE` and `README.md` at the top. They aren't ranked, and each is kept in `credits/<pack>/`.
+- **Real overlap:** in these packs, `assets/minecraft/sounds.json` merged between the TARDIS packs. Otherwise they barely overlapped, so most ranking has only been proven on made-up packs.
+- **Repeatable:** building twice gives the same SHA-1, and so does rebuilding from an exported recipe in an empty library.
+- **Not always clean:** one pack shipped an empty `assets/sodium/lang/test.json`.
+- **A required pack:** accepting gets in, declining is kicked with Minecraft's own message, and saying nothing never finishes joining.
+- **An optional pack:** declining gets in, but saying nothing still never finishes joining.
+- **A malformed SHA-1:** it doesn't stop the server. It only logs `Invalid sha1 for resource-pack-sha1`.
 
 ## Not known yet
 

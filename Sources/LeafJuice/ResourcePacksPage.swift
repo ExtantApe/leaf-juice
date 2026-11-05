@@ -3,37 +3,69 @@ import LeafJuiceCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Look through resource packs, combine them, and put the result on a server.
+/// Look through resource packs, rank them into recipes, build, update and share.
 struct ResourcePacksPage: View {
     let server: ServerController
-    @State private var packs: [ResourcePack] = []
-    @State private var recipe = ResourcePacks.loadRecipe()
-    @State private var conflicts: [PackConflict] = []
-    @State private var browsing: ResourcePack?
-    @State private var result: CombineResult?
+    @State private var packs: [LibraryPack] = []
+    @State private var recipe = PackRecipe()
+    @State private var recipeNames: [String] = []
+    @State private var lock: PackLock?
+    @State private var history: [PackBuild] = []
+    @State private var updates: [String: PackUpdate] = [:]
+    @State private var browsing: LibraryPack?
     @State private var working: String?
     @State private var error: String?
+    @State private var link = ""
     @State private var url = ""
     @State private var required = false
-    @State private var confirmRemove: ResourcePack?
+    @State private var lastChanges: PackChanges?
+    @State private var review: PendingUpdate?
+    @State private var sharing = false
+    @State private var confirmRemove: LibraryPack?
+    @State private var newRecipe = false
+    @State private var newName = ""
+
+    struct PendingUpdate: Identifiable {
+        var id: String { pack.id }
+        var pack: LibraryPack
+        var version: PackVersion
+        var changes: PackChanges
+    }
 
     private var live: ResourcePacks.ServerPack {
         ResourcePacks.current((try? String(contentsOf: server.paths.properties, encoding: .utf8)) ?? "")
     }
+    private var mc: String? { server.profile.software.mcVersion.isEmpty ? nil : server.profile.software.mcVersion }
+    private var enabled: [PackRecipe.Entry] { recipe.entries.filter(\.enabled) }
 
     var body: some View {
-        Page(title: "Resource Packs", subtitle: "Look through packs, combine them into one, and use it on this server.") {
+        Page(title: "Resource Packs", subtitle: "Look through packs, rank them into one, and use it on this server.") {
             if let error { Callout(tone: .danger, title: error) }
             serverCard
             libraryCard
-            if orderedEntries.filter(\.enabled).count > 0 { combineCard }
+            if !packs.isEmpty { recipeCard }
+            if !history.isEmpty { buildsCard }
             if let browsing { PackBrowser(pack: browsing) { self.browsing = nil } }
         }
-        .task { await reload() }
+        .task { await start() }
+        .sheet(item: $review) { pending in
+            UpdateReviewSheet(pending: pending) {
+                pin(pending)
+                review = nil
+            } onCancel: { review = nil }
+        }
+        .sheet(isPresented: $sharing) { ShareSheet(recipe: recipe, history: history) }
         .confirmationDialog("Remove this pack from the library?", isPresented: Binding(get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } })) {
             Button("Remove", role: .destructive) { if let pack = confirmRemove { remove(pack) } }
         } message: {
-            Text(confirmRemove?.fileName ?? "")
+            Text("All its versions go. Packs you've already built aren't affected, but recipes won't be able to rebuild with it.")
+        }
+        .alert("New recipe", isPresented: $newRecipe) {
+            TextField("Name", text: $newName)
+            Button("Create") { createRecipe() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("A recipe is one way of ranking your packs, such as one for each server.")
         }
     }
 
@@ -53,16 +85,20 @@ struct ResourcePacksPage: View {
 
     // MARK: Library
 
-    private var orderedEntries: [PackRecipe.Entry] { recipe.entries.filter { e in packs.contains { $0.fileName == e.fileName } } }
-
     private var libraryCard: some View {
         Card(title: "Library", systemImage: "photo.stack") {
-            Hint("Top of the list wins, as in Minecraft's own list. The original files are never changed.")
-            ForEach(Array(orderedEntries.enumerated()), id: \.element.fileName) { index, entry in
-                if let pack = packs.first(where: { $0.fileName == entry.fileName }) { row(pack, entry, index) }
+            Hint("Every version of every pack is kept, unchanged. Top of the list wins, as in Minecraft's own list.")
+            ForEach(Array(recipe.entries.enumerated()), id: \.element.pack) { index, entry in
+                if let pack = packs.first(where: { $0.id == entry.pack }) { row(pack, entry, index) }
             }
             HStack {
-                Button("Add Packs…") { addPacks() }.buttonStyle(.juicePrimary).disabled(working != nil)
+                TextField("Link", text: $link, prompt: Text("A Modrinth or GitHub page, or a link to a zip"))
+                    .accessibilityLabel("Link to a resource pack")
+                Button("Add Link") { addLink() }.buttonStyle(.juice).disabled(link.isEmpty || working != nil)
+                Button("Add Files…") { addFiles() }.buttonStyle(.juicePrimary).disabled(working != nil)
+            }
+            HStack {
+                Button("Check for Updates") { checkUpdates() }.buttonStyle(.juice).disabled(working != nil || !packs.contains { $0.source.canCheckForUpdates })
                 Button("Show in Finder") {
                     try? FileOps.ensureDir(ResourcePacks.library)
                     NSWorkspace.shared.open(ResourcePacks.library)
@@ -76,191 +112,513 @@ struct ResourcePacksPage: View {
         }
     }
 
-    private func row(_ pack: ResourcePack, _ entry: PackRecipe.Entry, _ index: Int) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            Toggle("Include \(pack.fileName)", isOn: Binding(get: { entry.enabled }, set: { value in update(entry) { $0.enabled = value } }))
+    private func row(_ pack: LibraryPack, _ entry: PackRecipe.Entry, _ index: Int) -> some View {
+        let version = pack.version(entry.version)
+        return HStack(alignment: .center, spacing: 10) {
+            Toggle("Include \(pack.title)", isOn: Binding(get: { entry.enabled }, set: { value in change(entry) { $0.enabled = value } }))
                 .labelsHidden().toggleStyle(.checkbox)
             VStack(alignment: .leading, spacing: 2) {
-                Text(pack.fileName).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.middle)
-                Hint([pack.format.map { "Format \($0)" }, Format.bytes(pack.size), pack.description.split(whereSeparator: \.isNewline).first.map(String.init)].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: ", ")).lineLimit(1)
+                Text(pack.title).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.middle)
+                Hint(details(pack, version)).lineLimit(1)
+                if let note = version?.note { Hint(note).foregroundStyle(Tone.warning.color) }
             }
             Spacer()
+            if let update = updates[pack.id] {
+                Button("Review \(update.version)…") { reviewUpdate(pack, update) }.buttonStyle(.juicePrimary).disabled(working != nil)
+            }
+            if pack.versions.count > 1 {
+                Menu(version?.version ?? "Version") {
+                    ForEach(pack.versions.reversed()) { candidate in
+                        Button(candidate.version) { change(entry) { $0.version = candidate.sha1 } }
+                    }
+                }
+                .fixedSize().accessibilityLabel("Version of \(pack.title)")
+            }
             Button { move(index, by: -1) } label: { Image(systemName: "arrow.up") }.buttonStyle(.juice).disabled(index == 0).accessibilityLabel("Higher priority")
-            Button { move(index, by: 1) } label: { Image(systemName: "arrow.down") }.buttonStyle(.juice).disabled(index == orderedEntries.count - 1).accessibilityLabel("Lower priority")
+            Button { move(index, by: 1) } label: { Image(systemName: "arrow.down") }.buttonStyle(.juice).disabled(index == recipe.entries.count - 1).accessibilityLabel("Lower priority")
             Button("Look Through") { browsing = pack }.buttonStyle(.juice)
             Button("Remove…") { confirmRemove = pack }.buttonStyle(.juice)
         }
     }
 
-    // MARK: Combine
+    private func details(_ pack: LibraryPack, _ version: PackVersion?) -> String {
+        var parts = [pack.license?.title ?? "No license on record"]
+        if let v = version?.format { parts.append("format \(v)") }
+        if let size = version?.size { parts.append(Format.bytes(size)) }
+        parts.append(pack.source.title)
+        return parts.joined(separator: ", ")
+    }
 
-    private let categories = ["Blocks", "Items", "Entities", "Interface", "Paintings", "Sky and weather", "Particles", "Other textures", "Models", "Sounds", "Languages", "Fonts", "Shaders", "Other"]
+    // MARK: Recipe
 
-    private var combineCard: some View {
-        Card(title: "Combine", systemImage: "square.stack.3d.down.right") {
+    private var recipeCard: some View {
+        Card(title: "Recipe", systemImage: "square.stack.3d.down.right") {
             HStack {
-                TextField("Name", text: Binding(get: { recipe.name }, set: { recipe.name = $0; save() }), prompt: Text("combined")).frame(maxWidth: 240)
-                Button("Combine") { combine() }.buttonStyle(.juicePrimary).disabled(working != nil)
+                Picker("Recipe", selection: Binding(get: { recipe.name }, set: { open($0) })) {
+                    ForEach(recipeNames, id: \.self) { Text($0).tag($0) }
+                }
+                .frame(maxWidth: 260)
+                Button("New…") {
+                    newName = ""
+                    newRecipe = true
+                }
+                .buttonStyle(.juice)
+                Spacer()
+                Button("Build") { build() }.buttonStyle(.juicePrimary).disabled(working != nil || enabled.isEmpty)
             }
-            DisclosureGroup("Leave out parts of a pack") {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(orderedEntries.filter(\.enabled), id: \.fileName) { entry in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(entry.fileName).font(.callout.weight(.semibold)).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.middle)
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)], alignment: .leading, spacing: 4) {
-                                ForEach(categories, id: \.self) { category in
-                                    Toggle(category, isOn: Binding(get: { !entry.excluded.contains(category) }, set: { keep in
-                                        update(entry) { if keep { $0.excluded.remove(category) } else { $0.excluded.insert(category) } }
-                                    }))
-                                    .toggleStyle(.checkbox)
-                                }
+            categorySection
+            leaveOutSection
+            conflictSection
+            mineSection
+            if let lastChanges, !lastChanges.isEmpty { changesSection(lastChanges) }
+            HStack {
+                Button("Share…") { sharing = true }.buttonStyle(.juice).disabled(enabled.isEmpty)
+                Button("Import Recipe…") { importRecipe() }.buttonStyle(.juice).disabled(working != nil)
+            }
+        }
+    }
+
+    private var categorySection: some View {
+        DisclosureGroup("Who wins each kind of file") {
+            VStack(alignment: .leading, spacing: 6) {
+                Hint("Follows the ranking above unless you choose a pack here. For example, one pack's blocks with another's models. Picking a winner for one file overrides this.")
+                ForEach(ResourcePacks.categories, id: \.self) { category in
+                    Picker(category, selection: Binding(get: { recipe.categoryWinners[category] ?? "" }, set: { value in
+                        recipe.categoryWinners[category] = value.isEmpty ? nil : value
+                        saved()
+                    })) {
+                        Text("By ranking").tag("")
+                        ForEach(enabled, id: \.pack) { entry in
+                            Text(packs.first { $0.id == entry.pack }?.title ?? entry.pack).tag(entry.pack)
+                        }
+                    }
+                    .frame(maxWidth: 420)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .foregroundStyle(Juice.ink)
+    }
+
+    private var leaveOutSection: some View {
+        DisclosureGroup("Leave out parts of a pack") {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(enabled, id: \.pack) { entry in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(packs.first { $0.id == entry.pack }?.title ?? entry.pack).font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), alignment: .leading)], alignment: .leading, spacing: 4) {
+                            ForEach(ResourcePacks.categories, id: \.self) { category in
+                                Toggle(category, isOn: Binding(get: { !entry.excluded.contains(category) }, set: { keep in
+                                    change(entry) { if keep { $0.excluded.remove(category) } else { $0.excluded.insert(category) } }
+                                }))
+                                .toggleStyle(.checkbox)
                             }
                         }
                     }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .foregroundStyle(Juice.ink)
+    }
+
+    @ViewBuilder private var conflictSection: some View {
+        let conflicts = lock.map(ResourcePacks.conflicts) ?? []
+        if !conflicts.isEmpty {
+            DisclosureGroup("\(conflicts.count) file\(conflicts.count == 1 ? "" : "s") differ between packs") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Hint("Every copy is kept in the library, and the winner goes in the build. Languages, sounds, fonts, atlases and item model overrides merge, so they aren't listed.")
+                    ForEach(conflicts.prefix(200)) { file in
+                        HStack {
+                            Text(file.path).font(.callout).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.head)
+                            Spacer()
+                            Picker("Winner for \(file.path)", selection: Binding(get: { file.winner }, set: { value in
+                                recipe.winners[file.path] = value
+                                saved()
+                            })) {
+                                ForEach(file.copies, id: \.pack) { copy in
+                                    Text(packs.first { $0.id == copy.pack }?.title ?? copy.pack).tag(copy.pack)
+                                }
+                            }
+                            .labelsHidden().frame(maxWidth: 220)
+                        }
+                    }
+                    if conflicts.count > 200 { Hint("And \(conflicts.count - 200) more.") }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .foregroundStyle(Juice.ink)
-            if !conflicts.isEmpty {
-                DisclosureGroup("\(conflicts.count) file\(conflicts.count == 1 ? "" : "s") in more than one pack") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Hint("The top pack's copy is used unless you pick another. Languages, sounds, fonts, atlases and item model overrides are merged, so they aren't listed.")
-                        ForEach(conflicts.prefix(200)) { conflict in
-                            HStack {
-                                Text(conflict.path).font(.callout).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.head)
-                                Spacer()
-                                Picker("Winner for \(conflict.path)", selection: Binding(get: { conflict.winner }, set: { recipe.winners[conflict.path] = $0; save() })) {
-                                    ForEach(conflict.providers, id: \.self) { Text($0).tag($0) }
-                                }
-                                .labelsHidden().frame(maxWidth: 220)
-                            }
-                        }
-                        if conflicts.count > 200 { Hint("And \(conflicts.count - 200) more.") }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .foregroundStyle(Juice.ink)
-            }
-            if let result { resultSection(result) }
         }
     }
 
-    @ViewBuilder private func resultSection(_ result: CombineResult) -> some View {
-        Callout(tone: result.warnings.isEmpty ? .good : .warning, title: "Made \(result.file.lastPathComponent)", detail: ([Format.bytes(result.size) + ", \(result.fileCount) files, \(result.merged.count) merged."] + result.warnings).joined(separator: "\n")) {
-            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([result.file]) }.buttonStyle(.juice)
-        }
-        Fact(label: "SHA-1", value: result.sha1)
-        Hint("Players' games download a pack from the web, so upload it somewhere first. mc-packs.net is free and made for this, and gives you an address with this SHA-1 in it.")
+    private var mineSection: some View {
         HStack {
-            Link("Open mc-packs.net", destination: URL(string: "https://mc-packs.net")!).buttonStyle(.juice)
-            Button("Copy SHA-1") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(result.sha1, forType: .string)
+            Text("My changes").foregroundStyle(Juice.ink)
+            Hint("Your own files, in the same layout as a pack. They always win and updates never touch them.")
+            Spacer()
+            Button("Open Folder") {
+                try? FileOps.ensureDir(ResourcePacks.mine)
+                NSWorkspace.shared.open(ResourcePacks.mine)
             }
             .buttonStyle(.juice)
         }
-        HStack {
-            TextField("Address", text: $url, prompt: Text("https://download.mc-packs.net/pack/\(result.sha1).zip"))
-                .accessibilityLabel("Web address of the uploaded pack")
-            Toggle("Players must accept it", isOn: $required).toggleStyle(.checkbox).fixedSize()
-            Button(server.state.canStart ? "Use on This Server" : "Use at Next Restart") { apply(result) }.buttonStyle(.juicePrimary).disabled(url.isEmpty)
+    }
+
+    private func changesSection(_ changes: PackChanges) -> some View {
+        Callout(tone: changes.lostPicks.isEmpty ? .info : .warning, title: "Since the last build", detail: changes.summary)
+    }
+
+    // MARK: Builds
+
+    private var buildsCard: some View {
+        Card(title: "Builds", systemImage: "shippingbox") {
+            ForEach(Array(history.prefix(8).enumerated()), id: \.element.sha1) { index, item in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.date.formatted(date: .abbreviated, time: .shortened)).foregroundStyle(Juice.ink)
+                        Hint("\(item.sha1.prefix(12))…, \(Format.bytes(item.size)), \(item.fileCount) files, \(item.merged.count) merged")
+                        ForEach(item.warnings, id: \.self) { Hint($0) }
+                    }
+                    Spacer()
+                    if live.sha1 == item.sha1 { Badge(text: "On this server", tone: .good) }
+                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([ResourcePacks.buildFile(item, recipe: recipe.name)]) }.buttonStyle(.juice)
+                    Button("Copy SHA-1") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(item.sha1, forType: .string)
+                    }
+                    .buttonStyle(.juice)
+                }
+            }
+            if let newest = history.first {
+                Divider()
+                Hint("Players' games download a pack from the web, so upload it first. mc-packs.net is free and made for this, and gives you an address with its SHA-1 in it.")
+                HStack {
+                    Link("Open mc-packs.net", destination: URL(string: "https://mc-packs.net")!).buttonStyle(.juice)
+                    TextField("Address", text: $url, prompt: Text("https://download.mc-packs.net/pack/\(newest.sha1).zip"))
+                        .accessibilityLabel("Web address of the uploaded pack")
+                    Toggle("Required", isOn: $required).toggleStyle(.checkbox).fixedSize()
+                        .help("Players who decline are disconnected.")
+                    Button(server.state.canStart ? "Use on This Server" : "Use at Next Restart") { apply(newest) }.buttonStyle(.juicePrimary).disabled(url.isEmpty)
+                }
+            }
         }
     }
 
     // MARK: Actions
 
-    private func reload() async {
-        // The first read of a big pack takes a moment, and an empty list would look like nothing's there.
-        if packs.isEmpty { working = "Reading your packs…" }
-        packs = await ResourcePacks.list()
-        working = nil
+    private func start() async {
+        recipeNames = ResourcePacks.recipeNames()
+        if recipeNames.isEmpty {
+            ResourcePacks.saveRecipe(PackRecipe())
+            recipeNames = ResourcePacks.recipeNames()
+        }
+        recipe = ResourcePacks.loadRecipe(recipeNames.first ?? "combined")
+        required = live.required
+        await reload()
         #if DEBUG
         if ProcessInfo.processInfo.environment["LEAFJUICE_SNAPSHOT"] != nil { browsing = packs.first }
         #endif
-        // Newly added packs join at the bottom; removed ones drop out.
-        for pack in packs where !recipe.entries.contains(where: { $0.fileName == pack.fileName }) {
-            recipe.entries.append(PackRecipe.Entry(fileName: pack.fileName))
-        }
-        recipe.entries.removeAll { e in !packs.contains { $0.fileName == e.fileName } }
-        required = live.required
-        save()
-        await refreshConflicts()
     }
 
-    private func refreshConflicts() async {
-        conflicts = (try? await ResourcePacks.conflicts(recipe)) ?? []
-    }
-
-    private func save() {
+    private func reload() async {
+        packs = ResourcePacks.list()
+        recipe = ResourcePacks.reconcile(recipe, with: packs)
         ResourcePacks.saveRecipe(recipe)
-        Task { await refreshConflicts() }
+        recipeNames = ResourcePacks.recipeNames()
+        history = ResourcePacks.history(recipe.name)
+        await refreshLock()
     }
 
-    private func update(_ entry: PackRecipe.Entry, _ change: (inout PackRecipe.Entry) -> Void) {
-        guard let index = recipe.entries.firstIndex(where: { $0.fileName == entry.fileName }) else { return }
-        change(&recipe.entries[index])
-        result = nil
-        save()
+    private func refreshLock() async {
+        lock = try? await ResourcePacks.resolve(recipe)
+        if let now = lock, let newest = history.first, let then = ResourcePacks.loadLock(sha1: newest.sha1, recipe: recipe.name) {
+            lastChanges = ResourcePacks.changes(from: then, to: now, recipe: recipe)
+        } else {
+            lastChanges = nil
+        }
+    }
+
+    private func saved() {
+        ResourcePacks.saveRecipe(recipe)
+        Task { await refreshLock() }
+    }
+
+    private func open(_ name: String) {
+        recipe = ResourcePacks.reconcile(ResourcePacks.loadRecipe(name), with: packs)
+        history = ResourcePacks.history(name)
+        Task { await refreshLock() }
+    }
+
+    private func createRecipe() {
+        let name = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        var fresh = PackRecipe()
+        fresh.name = name
+        fresh = ResourcePacks.reconcile(fresh, with: packs)
+        ResourcePacks.saveRecipe(fresh)
+        recipe = fresh
+        recipeNames = ResourcePacks.recipeNames()
+        history = []
+        lastChanges = nil
+        Task { await refreshLock() }
+    }
+
+    private func change(_ entry: PackRecipe.Entry, _ edit: (inout PackRecipe.Entry) -> Void) {
+        guard let index = recipe.entries.firstIndex(where: { $0.pack == entry.pack }) else { return }
+        edit(&recipe.entries[index])
+        saved()
     }
 
     private func move(_ index: Int, by offset: Int) {
-        let shown = orderedEntries
-        guard shown.indices.contains(index + offset),
-              let a = recipe.entries.firstIndex(where: { $0.fileName == shown[index].fileName }),
-              let b = recipe.entries.firstIndex(where: { $0.fileName == shown[index + offset].fileName }) else { return }
-        recipe.entries.swapAt(a, b)
-        result = nil
-        save()
+        guard recipe.entries.indices.contains(index + offset) else { return }
+        recipe.entries.swapAt(index, index + offset)
+        saved()
     }
 
-    private func addPacks() {
+    private func perform(_ text: String, _ work: @escaping () async throws -> Void) {
+        working = text
+        error = nil
+        Task {
+            do { try await work() } catch { self.error = error.localizedDescription }
+            working = nil
+        }
+    }
+
+    private func addFiles() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = [.zip]
         panel.prompt = "Add"
         guard panel.runModal() == .OK else { return }
         let urls = panel.urls
-        working = "Reading…"
-        error = nil
-        Task {
-            for url in urls {
-                do { _ = try await ResourcePacks.add(url) } catch { self.error = error.localizedDescription }
-            }
-            working = nil
+        perform("Reading…") {
+            for url in urls { try await ResourcePacks.add(url) }
             await reload()
         }
     }
 
-    private func remove(_ pack: ResourcePack) {
-        do {
-            try ResourcePacks.remove(pack)
-            if browsing == pack { browsing = nil }
-            Task { await reload() }
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func combine() {
-        working = "Combining…"
-        error = nil
-        Task {
-            do { result = try await ResourcePacks.combine(recipe) } catch { self.error = error.localizedDescription }
-            working = nil
+    private func addLink() {
+        guard let source = PackSource.parse(link) else {
+            error = "That doesn't look like a web address."
+            return
+        }
+        perform("Downloading…") {
+            try await ResourcePacks.download(source, mc: mc)
+            link = ""
+            await reload()
         }
     }
 
-    private func apply(_ result: CombineResult) {
+    private func checkUpdates() {
+        perform("Checking…") {
+            var found: [String: PackUpdate] = [:]
+            for pack in packs where pack.source.canCheckForUpdates {
+                if let update = try? await ResourcePacks.checkUpdate(pack, mc: mc) { found[pack.id] = update }
+            }
+            updates = found
+            if found.isEmpty { server.notice = "All your packs are on their newest versions." }
+        }
+    }
+
+    /// Fetches it, and works out what it'd change. The recipe stays on its current version until you accept.
+    private func reviewUpdate(_ pack: LibraryPack, _ update: PackUpdate) {
+        perform("Downloading \(update.version)…") {
+            let updated = try await ResourcePacks.download(pack.source, update: update, mc: mc)
+            guard let newest = updated.latest else { return }
+            await reload()
+            var trial = recipe
+            if let index = trial.entries.firstIndex(where: { $0.pack == updated.id }) { trial.entries[index].version = newest.sha1 }
+            let before = try await ResourcePacks.resolve(recipe)
+            let after = try await ResourcePacks.resolve(trial)
+            review = PendingUpdate(pack: updated, version: newest, changes: ResourcePacks.changes(from: before, to: after, recipe: trial))
+        }
+    }
+
+    private func pin(_ pending: PendingUpdate) {
+        guard let index = recipe.entries.firstIndex(where: { $0.pack == pending.pack.id }) else { return }
+        recipe.entries[index].version = pending.version.sha1
+        updates[pending.pack.id] = nil
+        saved()
+    }
+
+    private func remove(_ pack: LibraryPack) {
+        perform("Removing…") {
+            try await ResourcePacks.remove(pack)
+            if browsing == pack { browsing = nil }
+            await reload()
+        }
+    }
+
+    private func build() {
+        perform("Building…") {
+            _ = try await ResourcePacks.combine(recipe)
+            history = ResourcePacks.history(recipe.name)
+            await refreshLock()
+        }
+    }
+
+    private func importRecipe() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.prompt = "Import"
+        guard panel.runModal() == .OK, let file = panel.url else { return }
+        perform("Fetching its packs…") {
+            let result = try await ResourcePacks.importRecipe(Data(contentsOf: file), mc: mc)
+            ResourcePacks.saveRecipe(result.recipe)
+            recipe = result.recipe
+            await reload()
+            if !result.missing.isEmpty {
+                self.error = "Couldn't get the exact file for: \(result.missing.map(\.title).joined(separator: ", ")). Add those by hand, and the recipe will use them."
+            }
+        }
+    }
+
+    private func apply(_ build: PackBuild) {
         do {
             guard let file = server.configs.first(where: { $0.path == "server.properties" }) else { throw LeafError("This server has no server.properties yet. Start it once first.") }
-            let text = try ResourcePacks.applying(url: url, sha1: result.sha1, required: required, to: server.configText(file))
+            let text = try ResourcePacks.applying(url: url, sha1: build.sha1, required: required, to: server.configText(file))
             let outcome = try server.saveConfig(file, text: text)
             server.notice = outcome == .staged ? "The resource pack applies at the next restart." : "The resource pack is set, and players get it the next time they join."
         } catch { self.error = error.localizedDescription }
     }
 }
 
+struct UpdateReviewSheet: View {
+    let pending: ResourcePacksPage.PendingUpdate
+    let onAccept: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Update \(pending.pack.title) to \(pending.version.version)?").font(.title2.weight(.semibold)).foregroundStyle(Juice.ink)
+            Text("In this recipe: \(pending.changes.summary).").foregroundStyle(Juice.ink)
+            if !pending.changes.lostPicks.isEmpty {
+                Callout(tone: .warning, title: "\(pending.changes.lostPicks.count) file\(pending.changes.lostPicks.count == 1 ? "" : "s") you picked a winner for are gone", detail: pending.changes.lostPicks.prefix(6).joined(separator: "\n"))
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    section("Players would see these change", pending.changes.changed)
+                    section("New", pending.changes.added)
+                    section("Removed", pending.changes.removed)
+                    section("Changed, but a higher pack still wins", pending.changes.hidden)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 280)
+            Hint("The old version stays in the library, and nothing is built until you press Build.")
+            HStack {
+                Button("Keep the Current Version") { onCancel() }.buttonStyle(.juice).keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Use This Version") { onAccept() }.buttonStyle(.juicePrimary).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+    }
+
+    @ViewBuilder private func section(_ title: String, _ items: [PackChanges.Change]) -> some View {
+        if !items.isEmpty {
+            Text("\(title) (\(items.count))").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
+            ForEach(items.prefix(40)) { item in
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(item.path).font(.callout).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.head)
+                    Hint(item.detail)
+                }
+            }
+            if items.count > 40 { Hint("And \(items.count - 40) more.") }
+        }
+    }
+}
+
+/// Recipes first, because they carry no one else's work. A combined pack gets its licenses looked at first.
+struct ShareSheet: View {
+    let recipe: PackRecipe
+    let history: [PackBuild]
+    @Environment(\.dismiss) private var dismiss
+    @State private var error: String?
+
+    private var review: [(pack: LibraryPack, sharing: PackLicense.Sharing)] { ResourcePacks.licenseReview(recipe) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Share \(recipe.name)").font(.title2.weight(.semibold)).foregroundStyle(Juice.ink)
+            if let error { Callout(tone: .danger, title: error) }
+            Card(title: "The recipe", systemImage: "doc.text") {
+                Text("A small file saying where to get each pack and how to rank them. Others download the packs from their authors.").foregroundStyle(Juice.ink).fixedSize(horizontal: false, vertical: true)
+                Hint("Your own My changes files and packs added by hand aren't included, so anyone using it needs those from you.")
+                Button("Export Recipe…") { exportRecipe() }.buttonStyle(.juicePrimary)
+            }
+            Card(title: "The combined pack", systemImage: "shippingbox") {
+                Text("This shares other people's work, so check their terms first. Being free doesn't by itself give you permission.").foregroundStyle(Juice.ink).fixedSize(horizontal: false, vertical: true)
+                ForEach(review, id: \.pack.id) { item in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Badge(text: label(item.sharing), tone: tone(item.sharing)).frame(width: 110, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("\(item.pack.title), \(item.pack.license?.title ?? "no license on record")").foregroundStyle(Juice.ink)
+                            if let note = note(item.sharing) { Hint(note) }
+                        }
+                    }
+                }
+                Hint("A guide, not legal advice. The file includes credits and asks that it isn't sold, but nothing can enforce that once it's shared.")
+                Button("Export Combined Pack…") { exportPack() }.buttonStyle(.juice).disabled(history.isEmpty)
+                if history.isEmpty { Hint("Build it first.") }
+            }
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.buttonStyle(.juice).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+    }
+
+    private func label(_ sharing: PackLicense.Sharing) -> String {
+        switch sharing {
+        case .allowed: "Looks fine"
+        case .conditions: "On conditions"
+        case .ask: "Check first"
+        }
+    }
+
+    private func tone(_ sharing: PackLicense.Sharing) -> Tone {
+        switch sharing {
+        case .allowed: .good
+        case .conditions: .info
+        case .ask: .warning
+        }
+    }
+
+    private func note(_ sharing: PackLicense.Sharing) -> String? {
+        switch sharing {
+        case .allowed: nil
+        case let .conditions(text), let .ask(text): text
+        }
+    }
+
+    private func exportRecipe() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(ResourcePacks.slug(recipe.name))-recipe.json"
+        panel.allowedContentTypes = [.json]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try ResourcePacks.exportRecipe(recipe).write(to: url) } catch { self.error = error.localizedDescription }
+    }
+
+    private func exportPack() {
+        guard let newest = history.first else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(ResourcePacks.slug(recipe.name)).zip"
+        panel.allowedContentTypes = [.zip]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try? FileManager.default.removeItem(at: url)
+            try FileManager.default.copyItem(at: ResourcePacks.buildFile(newest, recipe: recipe.name), to: url)
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
 /// A pack's images, so you can see what it changes before using it.
 struct PackBrowser: View {
-    let pack: ResourcePack
+    let pack: LibraryPack
     let onClose: () -> Void
     @State private var images: [(path: String, url: URL)] = []
     @State private var search = ""
@@ -273,7 +631,7 @@ struct PackBrowser: View {
     }
 
     var body: some View {
-        Card(title: pack.fileName, systemImage: "eye") {
+        Card(title: pack.title, systemImage: "eye") {
             HStack {
                 TextField("Search", text: $search, prompt: Text("diamond")).frame(maxWidth: 220).accessibilityLabel("Search images")
                 Picker("Category", selection: $category) { ForEach(categories, id: \.self) { Text($0).tag($0) } }.frame(maxWidth: 240)
@@ -297,9 +655,10 @@ struct PackBrowser: View {
             }
             if shown.count > 400 { Hint("Showing the first 400. Search to narrow it down.") }
         }
-        .task(id: pack.fileName) {
+        .task(id: pack.id) {
             do {
-                images = try await ResourcePacks.images(in: pack)
+                guard let version = pack.latest else { return }
+                images = try await ResourcePacks.images(in: pack, version)
                 error = nil
             } catch { self.error = error.localizedDescription }
         }

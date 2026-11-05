@@ -210,6 +210,9 @@ public enum Hashing {
         return Digests(sha1: hex(a.finalize()), sha256: hex(b.finalize()), sha512: hex(c.finalize()), md5: hex(d.finalize()))
     }
 
+    /// For many small files, where working out all four would add up.
+    public static func sha1(_ data: Data) -> String { hex(Insecure.SHA1.hash(data: data)) }
+
     public static func sha256(_ text: String) -> String { hex(SHA256.hash(data: Data(text.utf8))) }
 
     private static func hex<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
