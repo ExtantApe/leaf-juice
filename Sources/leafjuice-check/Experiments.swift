@@ -127,6 +127,7 @@ import Foundation
         ("versions", expVersions), ("failures", expFailures), ("multiverse", expMultiverse),
         ("players", expPlayers), ("renames", expRenames), ("restore", expRestore),
         ("packs", expPacks),
+        ("actionhealth", expActionHealth),
     ]
     for (name, experiment) in all where groups.contains(name) || groups.contains("all") {
         print("• EXPERIMENT: \(name)")
@@ -672,6 +673,85 @@ import Foundation
     for name in FileOps.children(c.paths.root).map(\.lastPathComponent).sorted() {
         let size = FileOps.directorySize(c.paths.root.appendingPathComponent(name))
         if size > 1_000_000 { lab.saw("\(name): \(Format.bytes(size))") }
+    }
+}
+
+// MARK: - Does a plugin's update really fix its error?
+
+/// Old and new ActionHealth on old and new Minecraft, with a player really taking damage.
+/// The old jar and settings come from `.lab-sandbox/servers/lab-model`, a copy made earlier.
+@MainActor func expActionHealth(_ lab: Lab) async throws {
+    let model = lab.servers.appendingPathComponent("lab-model/plugins")
+    let oldJar = model.appendingPathComponent("ActionHealth-3.5.9-all.jar")
+    let settings = model.appendingPathComponent("ActionHealth/config.yml")
+    let newJar = lab.base.appendingPathComponent("downloads/ActionHealth-3.9.0-all.jar")
+    if !FileOps.exists(newJar) {
+        try FileOps.ensureDir(newJar.deletingLastPathComponent())
+        try await HTTP.download(HTTP.url("https://github.com/zeshan321/ActionHealth/releases/download/3.9.0/ActionHealth-3.9.0-all.jar"), to: newJar, expect: ExpectedHashes())
+    }
+    lab.saw("Old jar present: \(FileOps.exists(oldJar)). Settings present: \(FileOps.exists(settings)). New jar: \(Format.bytes(FileOps.size(newJar)))")
+    // Paper's download site sometimes times out, which says nothing about the plugin.
+    func server(_ mc: String) async throws -> ServerController {
+        var last: Error?
+        for attempt in 0..<4 {
+            do { return try await lab.fresh("ah", mc: mc) } catch {
+                last = error
+                lab.saw("Download attempt \(attempt + 1) timed out or failed.")
+                try? await Task.sleep(for: .seconds(20))
+            }
+        }
+        throw last ?? LeafError("No server")
+    }
+    for (mc, jar, label, useSettings) in [("1.21.11", newJar, "3.9.0, your settings", true), ("1.21.11", newJar, "3.9.0, fresh settings", false), ("26.3", oldJar, "3.5.9, your settings", true), ("26.3", newJar, "3.9.0, your settings", true), ("26.3", newJar, "3.9.0, fresh settings", false), ("1.21.11", oldJar, "3.5.9, fresh settings", false)] {
+        lab.heading("ActionHealth \(label) on Paper \(mc)")
+        do {
+            let c = try await server(mc)
+            defer { lab.discard(c) }
+            c.runtimes = await JavaManager.discover()
+            if c.resolvedJava() == nil || c.resolvedJava()!.major < c.javaRequirement { try await c.installJava(major: c.javaRequirement) }
+            var properties = PropertiesDocument(try String(contentsOf: c.paths.properties, encoding: .utf8))
+            properties.set("white-list", "false")
+            try FileOps.writeAtomic(properties.text, to: c.paths.properties)
+            try FileOps.ensureDir(c.paths.plugins)
+            try FileManager.default.copyItem(at: jar, to: c.paths.plugins.appendingPathComponent(jar.lastPathComponent))
+            if useSettings, FileOps.exists(settings) {
+                let target = c.paths.plugins.appendingPathComponent("ActionHealth/config.yml")
+                try FileOps.ensureDir(target.deletingLastPathComponent())
+                try FileManager.default.copyItem(at: settings, to: target)
+            }
+            await c.refreshPlugins()
+            let up = await lab.boot(c)
+            guard up.up else {
+                lab.saw("Didn't start: \(c.console.filter { $0.level >= .warn }.suffix(3).map { String($0.text.prefix(160)) })")
+                continue
+            }
+            let table = try await lab.table(mc, java: c.resolvedJava()?.path ?? "")
+            let bot = try Bot(name: "Alice", port: c.serverPort, table: table)
+            try? await Task.sleep(for: .seconds(5))
+            lab.saw("Enabled: \(c.console.contains { $0.text.contains("Enabling ActionHealth") }). Joined: \(c.players.contains("Alice"))")
+            _ = await lab.run(c, "execute at Alice run summon minecraft:zombie ~2 ~ ~ {NoAI:1b,PersistenceRequired:1b,Health:500f,attributes:[{id:\"minecraft:max_health\",base:500}]}", wait: 2)
+            for _ in 0..<8 {
+                _ = await lab.run(c, "damage @e[type=minecraft:zombie,limit=1] 1 minecraft:player_attack by Alice", wait: 1)
+                _ = await lab.run(c, "damage Alice 0.1 minecraft:mob_attack by @e[type=minecraft:zombie,limit=1]", wait: 1)
+            }
+            try? await Task.sleep(for: .seconds(10))
+            let errors = c.console.filter { $0.text.contains("craftbukkit.craftbukkit") }.count
+            let frames = c.console.filter { $0.text.contains("com.zeshanaslam.actionhealth") }.count
+            lab.saw("Damage sent. `craftbukkit.craftbukkit` errors: \(errors). Stack lines naming the plugin: \(frames). Action bars the player received: \(bot.actionBars)")
+            lab.saw("Issues: \(lab.issueSummary(c))")
+            lab.saw("Other warnings: \(c.console.filter { $0.level >= .warn && $0.text.lowercased().contains("actionhealth") }.suffix(3).map { String($0.text.prefix(170)) })")
+            bot.leave()
+            try? await Task.sleep(for: .seconds(2))
+            await lab.down(c)
+            let after = (try? String(contentsOf: c.paths.plugins.appendingPathComponent("ActionHealth/config.yml"), encoding: .utf8)) ?? ""
+            let before = (try? String(contentsOf: settings, encoding: .utf8)) ?? ""
+            func keys(_ t: String) -> Set<String> { Set(t.components(separatedBy: .newlines).filter { !$0.hasPrefix(" ") && !$0.hasPrefix("#") && $0.contains(":") }.map { String($0.prefix { $0 != ":" }) }) }
+            if useSettings {
+                let oldValue = before.components(separatedBy: .newlines).first { $0.hasPrefix("Enabled") || $0.hasPrefix("enabled") || $0.lowercased().contains("off by default") } ?? "-"
+                lab.saw("Settings kept their old keys: \(keys(before).isSubset(of: keys(after))). Keys lost: \(keys(before).subtracting(keys(after)).sorted().prefix(8)). Keys added: \(keys(after).subtracting(keys(before)).sorted().prefix(12)). Relevant line: \(oldValue.prefix(80))")
+            }
+            lab.saw("Stopped cleanly: \(c.state == .stopped)")
+        } catch { lab.saw("**Failed:** \(error)") }
     }
 }
 

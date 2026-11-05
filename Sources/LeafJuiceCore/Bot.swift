@@ -54,6 +54,8 @@ final class Bot: @unchecked Sendable {
     private var alive = true
     private(set) var inGame = false
     private(set) var disconnectReason: String?
+    /// How many action bar messages have arrived, so tests can see a plugin really sent one.
+    private(set) var actionBars = 0
     /// What the server offered, if it sent a resource pack.
     private(set) var packOffer: (url: String, hash: String, required: Bool)?
     /// How to answer a resource pack: nil says nothing, 0 loaded, 1 declined.
@@ -191,6 +193,8 @@ final class Bot: @unchecked Sendable {
                 disconnectReason = String(decoding: body, as: UTF8.self)
             }
         default:
+            // Either route shows text over the hotbar, so both count: a dedicated packet, or system chat marked as overlay.
+            if `is`("set_action_bar_text") || (`is`("system_chat") && body.last == 1) { actionBars += 1 }
             if `is`("keep_alive") {
                 reply("keep_alive", body)
             } else if `is`("ping") {

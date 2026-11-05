@@ -82,6 +82,19 @@ A real 35-plugin server found what a 3-plugin test server couldn't:
 - **Multiverse 5 keeps `environment` inside `read-only:`.**
 - **Saved issues need a second look.** Ones stored before a rule existed stayed uncategorized, so they're read again on opening.
 
+## Checking a plugin's fix before trusting it
+
+ActionHealth logged `ClassNotFoundException: org.bukkit.craftbukkit.craftbukkit.entity.CraftPlayer` thousands of times on a real server. A bot took real damage on each combination:
+
+| ActionHealth | Paper | Errors | Action bars received |
+|---|---|---|---|
+| 3.5.9, fresh settings | 1.21.11 | 5 | 0 |
+| 3.5.9, real settings | 26.3 | 2 | 0 |
+| 3.9.0, real or fresh settings | 1.21.11 | 0 | 6 and 4 |
+| 3.9.0, real or fresh settings | 26.3 | 0 | 4 and 5 |
+
+So the old version shows players nothing at all, on either Minecraft version, and a stable update fixes it. Upgrading the server alone doesn't. The update kept every existing setting and added new ones. Newer plugins can show the action bar through system chat marked as overlay, so a bot has to count both routes.
+
 ## Resource packs
 
 Tested with real Modrinth packs, including the official TARDIS packs, and a real Paper 1.21.11 server, with bots as the client. **No real game client has loaded a combined pack yet.**
