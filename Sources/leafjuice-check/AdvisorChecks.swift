@@ -374,6 +374,46 @@ private func logReport(_ log: String, jars: [String] = [], key home: String) thr
     let floodEvents = try ProblemLog(sanitizer: flooded, installedJars: []).report(lines: (w + "x\n" + flood).components(separatedBy: "\n"), limit: 500).events
     check(floodEvents.joined().count <= 60_000, "one call can't return an unlimited amount")
 
+    section("Advisor: real failures from real Paper logs")
+    let e = "[12:00:00] [Server thread/ERROR]: "
+    let realFailures = try logReport("""
+    \(e)[ModernPluginLoadingStrategy] Could not load 'plugins/.paper-remapped/Vault.jar' in 'plugins/.paper-remapped'
+    org.bukkit.plugin.UnknownDependencyException: Unknown/missing dependency plugins: [EconomyPlus]. Please download and install these plugins to run 'Vault'.
+    \(e)[ModernPluginLoadingStrategy] Could not load plugin 'Vault.jar' in folder 'plugins/.paper-remapped'
+    org.bukkit.plugin.InvalidPluginException: Unsupported API version 99.0
+    \(e)[ModernPluginLoadingStrategy] Could not load plugin 'Vault.jar' in folder 'plugins/.paper-remapped'
+    org.bukkit.plugin.InvalidPluginException: java.lang.UnsupportedClassVersionError: a/B has been compiled by a more recent version of the Java Runtime (class file version 69.0), this version of the Java Runtime only recognizes class file versions up to 65.0
+    [12:00:00] [ServerMain/ERROR]: [DirectoryProviderSource] Error preparing plugin context: Directory 'plugins/Vault.jar' failed to update!
+    \(e)Cannot load plugins/Vault/config.yml
+    org.bukkit.configuration.InvalidConfigurationException: while parsing \(secretValue)
+    \(e)[Vault] Failed to autoload world minecraft:mining: Failure{reason=WORLD_FOLDER_INVALID}
+    [12:00:00] [Paper Watchdog Thread/ERROR]: Current Thread: Server thread
+    [12:00:00] [Paper Watchdog Thread/ERROR]: \t\tVault.jar//com.example.Ticker.run(Ticker.java:2)
+    [12:00:00] [Paper Watchdog Thread/ERROR]: Current Thread: Other \(chatCanary)
+    [12:00:00] [Paper Watchdog Thread/ERROR]: \t\tVault.jar//com.example.NotThisOne.run(N.java:2)
+    """, jars: jarsHere, key: "advisor-real-failures").events.joined(separator: "\n")
+    for needle in ["a plugin jar failed to load: Vault.jar", "it needs these plugins, which aren't installed: EconomyPlus", "asks for API version 99.0", "built for a newer Java", "damaged or unreadable: Vault.jar", "couldn't read its settings file config.yml", "couldn't load world minecraft:mining: WORLD_FOLDER_INVALID", "the server froze", "com.example.Ticker.run"] {
+        check(realFailures.contains(needle), "a real failure comes through: \(needle)")
+    }
+    check(!realFailures.contains(secretValue) && !realFailures.contains(chatCanary) && !realFailures.contains("NotThisOne"), "and their free text and other threads don't: \(realFailures)")
+    let repeated = (0..<300).map { _ in w + "[LuckPerms] boom\n\tat com.example.A.b(A.java:1)" }.joined(separator: "\n") + "\n" + (0..<300).map { w + "anything \($0)" }.joined(separator: "\n")
+    let grouped = try logReport(repeated, jars: jarsHere, key: "advisor-grouped")
+    equal(grouped.events, ["WARN: message withheld, from plugin LuckPerms (seen 300 times)", "  at com.example.A.b(A.java:1)"], "repeats are grouped, and bare withheld lines are only counted")
+    equal(grouped.withheld, 600, "with everything still counted")
+    let windowRoot = folder("advisor-window")
+    let filler2 = String(repeating: w + "noise line that fills the log\n", count: 120_000)
+    write(e + "[Vault] Failed to autoload world early: Failure{reason=WORLD_FOLDER_INVALID}\n" + filler2 + w + "Can't keep up! Is the server overloaded? Running 9ms or 1 ticks behind\n", windowRoot.appendingPathComponent("logs/latest.log"))
+    write("x", windowRoot.appendingPathComponent("plugins/Vault.jar"))
+    let windowEvents = try ServerReader(root: windowRoot, sanitizer: Sanitizer(key: try PrivacyKey(directory: privateHome("advisor-window-key")))).recentProblems(limit: 100).events.joined()
+    check(windowEvents.contains("world early") && windowEvents.contains("9ms"), "the start and the end of a huge log are both read")
+    let healthRoot = folder("advisor-health")
+    write(#"{"date":"x","tps":12.5,"mspt":80.0,"players":3,"gcPauseMS":900.0}"# + "\n" + #"{"date":"y","tps":19.0,"mspt":40.0,"players":\#(1)}"#, healthRoot.appendingPathComponent(".leafjuice/metrics.jsonl"))
+    write("[x][1s] GC(1) Pause Full (G1 Compaction Pause) 2044M->2040M(2048M) 158.6ms\n", healthRoot.appendingPathComponent(".leafjuice/gc.log"))
+    write(#"{"date":"x","kind":"crash","title":"\#(chatCanary)"}"#, healthRoot.appendingPathComponent(".leafjuice/timeline.jsonl"))
+    let healthText = String(decoding: try JSONSerialization.data(withJSONObject: try ServerReader(root: healthRoot, sanitizer: Sanitizer(key: try PrivacyKey(directory: privateHome("advisor-health-key")))).summary()), as: UTF8.self)
+    for needle in [#""lowestTPS":12.5"#, #""highestTickMS":80"#, #""heapUsedAfterLastFullGCMB":2040"#, #""recordedCrashes":1"#, #""recentFullGCs":1"#] { check(healthText.contains(needle), "health includes \(needle): \(healthText)") }
+    check(!healthText.contains(chatCanary), "and only numbers")
+
     section("Advisor: a long line can't hang it")
     for (label, line) in [
         ("letters", w + String(repeating: "a", count: 200_000)), ("dots", w + String(repeating: "a.", count: 100_000)),
@@ -440,13 +480,13 @@ private func logReport(_ log: String, jars: [String] = [], key home: String) thr
     check(joined.contains("finished starting"), "allowed information lines get through")
     check(joined.contains("enabling plugin LuckPerms 5.4.1"), "and plugin lifecycle")
     check(joined.contains("message withheld, from plugin LuckPerms"), "a withheld message still names an installed plugin")
-    check(joined.range(of: #"Player-[0-9a-f]{8} joined the game"#, options: .regularExpression) != nil, "players appear as tokens")
-    check(joined.range(of: #"connected from IP-[0-9a-f]{8}"#, options: .regularExpression) != nil, "and addresses too")
+    check(joined.range(of: #"Player-[0-9a-f]{8} moved too quickly"#, options: .regularExpression) != nil, "players in problems appear as tokens")
+    check(!joined.contains("joined the game") && !joined.contains("connected from"), "and joins and addresses aren't sent at all")
     check(report.withheld > 15, "what's withheld is counted: \(report.withheld)")
 
     let unboundRoot = folder("advisor-unbound")
     write(#"[{"name":"Sam","uuid":"cccccccc-0000-4000-8000-000000000003"}]"#, unboundRoot.appendingPathComponent("usercache.json"))
-    write("\(m)Sam left the game\n[12:00:00] [User Authenticator #1/INFO]: UUID of player Sam is dddddddd-0000-4000-8000-000000000004\n", unboundRoot.appendingPathComponent("logs/latest.log"))
+    write("\(w)Sam moved too quickly!\n[12:00:00] [User Authenticator #1/INFO]: UUID of player Sam is dddddddd-0000-4000-8000-000000000004\n", unboundRoot.appendingPathComponent("logs/latest.log"))
     let unboundHome = privateHome("advisor-unbound-key")
     _ = try ServerReader(root: unboundRoot, sanitizer: Sanitizer(key: try PrivacyKey(directory: unboundHome))).recentProblems(limit: 5)
     check(try String(contentsOf: unboundHome.appendingPathComponent("key.json"), encoding: .utf8).contains("cccccccc"), "a line before someone's login isn't credited to them")

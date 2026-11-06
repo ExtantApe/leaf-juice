@@ -70,11 +70,11 @@ let readOnly: [String: Any] = ["readOnlyHint": true, "destructiveHint": false, "
 let tools: [[String: Any]] = [
     ["name": "list_servers", "description": "Tokens for the servers shared with you.",
      "inputSchema": ["type": "object", "properties": [String: Any](), "additionalProperties": false], "annotations": readOnly],
-    ["name": "server_summary", "description": "Software, version, plugin file names, and a fixed set of harmless settings.",
+    ["name": "server_summary", "description": "Software, version, plugin file names, a fixed set of harmless settings, and health numbers: TPS, tick time, memory, garbage collection and crashes. Lag and memory trouble can show here with nothing in the log.",
      "inputSchema": ["type": "object", "properties": ["server": serverProperty()], "required": ["server"], "additionalProperties": false], "annotations": readOnly],
     ["name": "open_issues", "description": "Open problems Leaf Juice has catalogued: rule, severity, plugin, count and stack trace. Log wording is never included.",
      "inputSchema": ["type": "object", "properties": ["server": serverProperty(), "limit": ["type": "integer", "minimum": 1, "maximum": 100]], "required": ["server"], "additionalProperties": false], "annotations": readOnly],
-    ["name": "recent_problems", "description": "Recognised log events and stack traces. A message that isn't a recognised shape is withheld and counted, because it could say anything.",
+    ["name": "recent_problems", "description": "Recognised problems from the start and end of the log, each with its stack trace and how many times it repeated. A message that isn't a recognised shape is withheld and counted, because it could say anything.",
      "inputSchema": ["type": "object", "properties": ["server": serverProperty(), "limit": ["type": "integer", "minimum": 1, "maximum": 500]], "required": ["server"], "additionalProperties": false], "annotations": readOnly],
     ["name": "suggest", "description": "Leave plain-text advice for the server's owner to read later. Nothing runs and nothing on the server changes. Refer to players by token.",
      "inputSchema": ["type": "object", "properties": [

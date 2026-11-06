@@ -2085,6 +2085,11 @@ if let flag = CommandLine.arguments.firstIndex(of: "--experiments") {
     exit(0)
 }
 
+if let flag = CommandLine.arguments.firstIndex(of: "--advisor-eval"), flag + 2 < CommandLine.arguments.count {
+    await runAdvisorEval(eval: URL(fileURLWithPath: CommandLine.arguments[flag + 1], isDirectory: true), scenarios: CommandLine.arguments[flag + 2].components(separatedBy: ","))
+    exit(0)
+}
+
 if let flag = CommandLine.arguments.firstIndex(of: "--lab-model") {
     guard CommandLine.arguments.contains("--i-accept-the-minecraft-eula"), flag + 2 < CommandLine.arguments.count else {
         print("--lab-model <server folder> <minecraft version> [--with-settings] needs --i-accept-the-minecraft-eula.")

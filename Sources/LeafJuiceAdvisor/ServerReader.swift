@@ -96,12 +96,58 @@ public final class ServerReader {
         return items
     }
 
+    /// The start and the end of the log. Startup failures are at the start, and a noisy plugin can write gigabytes after them.
     private func logLines() throws -> [String] {
-        guard let data = try read("logs/latest.log", tailBytes: Self.maxLogBytes) else { return [] }
-        var lines = String(decoding: data, as: UTF8.self).components(separatedBy: "\n")
-        // The tail probably began partway through a line, which could split a name or secret.
-        if data.count >= Self.maxLogBytes, !lines.isEmpty { lines.removeFirst() }
+        guard let realRoot else { throw AdvisorError("That server's folder can't be read.") }
+        guard let tail = try read("logs/latest.log", tailBytes: Self.maxLogBytes) else { return [] }
+        var lines = String(decoding: tail, as: UTF8.self).components(separatedBy: "\n")
+        // A window probably cut a line in two, which could split a name or secret. Those pieces go.
+        guard tail.count >= Self.maxLogBytes else { return lines }
+        if !lines.isEmpty { lines.removeFirst() }
+        let fd = open(realRoot + "/logs/latest.log", O_RDONLY | O_NONBLOCK | Self.noFollowAny)
+        guard fd >= 0 else { throw AdvisorError("A server file isn't safe to read, so nothing was shared.") }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw AdvisorError("A server file isn't safe to read, so nothing was shared.") }
+        if info.st_size > Self.maxLogBytes {
+            let start = try FileHandle(fileDescriptor: fd, closeOnDealloc: false).read(upToCount: min(Self.maxLogBytes, Int(info.st_size) - Self.maxLogBytes)) ?? Data()
+            var head = String(decoding: start, as: UTF8.self).components(separatedBy: "\n")
+            if !head.isEmpty { head.removeLast() }
+            lines = head + lines
+        }
         return lines
+    }
+
+    /// Numbers only, from the files Leaf Juice and Java keep. A server can be badly lagging or out of memory with nothing in its log.
+    private func health() throws -> [String: Any] {
+        var out: [String: Any] = [:]
+        if let data = try read(".leafjuice/metrics.jsonl", tailBytes: 1 << 20) {
+            let rows = String(decoding: data, as: UTF8.self).components(separatedBy: "\n").suffix(288)
+                .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            let tps = rows.compactMap { $0["tps"] as? Double }, mspt = rows.compactMap { $0["mspt"] as? Double }
+            let pauses = rows.compactMap { $0["gcPauseMS"] as? Double }
+            out["samples"] = rows.count
+            if let low = tps.min() { out["lowestTPS"] = low; out["averageTPS"] = tps.reduce(0, +) / Double(tps.count) }
+            if let high = mspt.max() { out["highestTickMS"] = high }
+            if let long = pauses.max() { out["longestGCPauseMS"] = long }
+        }
+        if let data = try read(".leafjuice/gc.log", tailBytes: 1 << 20) {
+            let full = Regexes.make(#"Pause Full [^\n]{0,60}?(\d{1,7})M->(\d{1,7})M\((\d{1,7})M\) ([\d.]{1,12})ms"#)
+            let text = String(decoding: data, as: UTF8.self)
+            let matches = full.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            out["recentFullGCs"] = matches.count
+            if let last = matches.last, let used = Range(last.range(at: 2), in: text), let max = Range(last.range(at: 3), in: text),
+               let usedMB = Int(text[used]), let maxMB = Int(text[max]) {
+                out["heapUsedAfterLastFullGCMB"] = usedMB
+                out["heapMaxMB"] = maxMB
+            }
+        }
+        if let data = try read(".leafjuice/timeline.jsonl", tailBytes: 1 << 20) {
+            let kinds = String(decoding: data, as: UTF8.self).components(separatedBy: "\n")
+                .compactMap { ((try? JSONSerialization.jsonObject(with: Data($0.utf8))) as? [String: Any])?["kind"] as? String }
+            out["recordedCrashes"] = kinds.filter { $0 == "crash" }.count
+        }
+        return out
     }
 
     /// Real files directly in `plugins`, without following anything.
@@ -163,6 +209,7 @@ public final class ServerReader {
             }
         }
         out["settings"] = settings
+        out["health"] = try health()
         // Already limited to a plain file name. A jar named after a player shows their token instead.
         out["pluginFiles"] = try jarNames().map { try sanitizer.cleanFileName($0) }
         return out
@@ -202,7 +249,7 @@ public final class ServerReader {
 
     public func recentProblems(limit: Int) throws -> ProblemLog.Report {
         try learnPlayers()
-        return try ProblemLog(sanitizer: sanitizer, installedJars: try jarNames()).report(lines: try logLines(), limit: limit)
+        return try ProblemLog(sanitizer: sanitizer, installedJars: try jarNames()).report(lines: try logLines(), limit: limit, includePlayers: false)
     }
 
     /// Before cleaning what the AI wrote, so a name from this server is recognised there too.

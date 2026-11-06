@@ -271,6 +271,14 @@ public final class ProblemLog {
     private static let loadFailed = Regexes.make(#"^Could not load '?plugins[/\\]([A-Za-z0-9_.+\-]{1,80}\.jar)'? in folder '?plugins'?$"#)
     private static let eventFailed = Regexes.make("^Could not pass event ([A-Z][A-Za-z0-9]{0,36}Event) to \(plugin) v?\(version)$")
     private static let taskFailed = Regexes.make("^Task #[0-9]{1,12} for \(plugin) v?\(version) generated an exception$")
+    private static let loadFailedModern = Regexes.make(#"^\[ModernPluginLoadingStrategy\] Could not load (?:plugin )?'(?:plugins/(?:\.paper-remapped/)?)?([A-Za-z0-9_.+\-]{1,80}\.jar)' in (?:folder )?'plugins(?:/\.paper-remapped)?'$"#)
+    private static let damagedJar = Regexes.make(#"^\[DirectoryProviderSource\] Error preparing plugin context: Directory 'plugins/([A-Za-z0-9_.+\-]{1,80}\.jar)' failed to update!$"#)
+    private static let configFailed = Regexes.make(#"^Cannot load plugins/([A-Za-z0-9_\-]{1,40})/([A-Za-z0-9_\-]{1,40}\.yml)$"#)
+    private static let worldFailed = Regexes.make(#"^\[([A-Za-z0-9_\-]{1,40})\] Failed to autoload world ([a-z0-9_.:\-]{1,60}): Failure\{reason=([A-Z_]{1,40})\}$"#)
+    private static let watchdogMain = Regexes.make(#"^Current Thread: Server thread$"#)
+    private static let missingDependency = Regexes.make(#"UnknownDependencyException: Unknown/missing dependency plugins: \[([A-Za-z0-9_\-, ]{1,200})\]"#)
+    private static let unsupportedAPI = Regexes.make(#"InvalidPluginException: Unsupported API version ([0-9.]{1,12})$"#)
+    private static let newerJava = Regexes.make(#"UnsupportedClassVersionError: .{1,200}class file version ([0-9.]{1,6})\)?, this version of the Java Runtime only recognizes class file versions up to ([0-9.]{1,6})"#)
     private static let tag = Regexes.make(#"^\[([A-Za-z0-9_\-]{1,40})\] "#)
 
     /// A real stack frame is code, with nowhere to put a sentence. ASCII only, as `\w` would allow any language. The jar suffix is dropped.
@@ -320,6 +328,17 @@ public final class ProblemLog {
         return nil
     }
 
+    /// A few exceptions whose message states the cause in a fixed form, rebuilt here from the recognised parts.
+    private func knownException(_ line: String) throws -> String? {
+        if let g = Self.groups(Self.missingDependency, line) {
+            let names = try g[1].components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.compactMap { try sanitizer.codeText($0) }
+            return "UnknownDependencyException: it needs these plugins, which aren't installed: \(names.joined(separator: ", "))"
+        }
+        if let g = Self.groups(Self.unsupportedAPI, line) { return "InvalidPluginException: it asks for API version \(g[1]), newer than this server supports" }
+        if let g = Self.groups(Self.newerJava, line) { return "UnsupportedClassVersionError: built for a newer Java (class file \(g[1]), this Java supports up to \(g[2]))" }
+        return nil
+    }
+
     /// Long words don't appear in version numbers, and neither should a person.
     private func isVersion(_ text: String) throws -> Bool {
         guard text.range(of: "[A-Za-z]{9,}", options: .regularExpression) == nil else { return false }
@@ -333,26 +352,59 @@ public final class ProblemLog {
 
     // MARK: Reading
 
-    /// Real values are only turned into tokens for the lines actually returned, so a small `limit` records little.
-    public func report(lines: [String], limit: Int) throws -> Report {
+    /// One future line of the report. Nothing here is a token yet: real values only become tokens for what's actually
+    /// returned, so a small `limit` records little.
+    private struct Draft {
+        let key: String
+        var isTrace = false
+        var isPlayer = false
+        var isRoutine = false
+        let make: () throws -> String
+    }
+
+    /// `includePlayers` adds joins and connections. Diagnosing a server doesn't need them, so the tools leave them out.
+    public func report(lines: [String], limit: Int, includePlayers: Bool = true) throws -> Report {
         try sanitizer.prepareForCode()
-        typealias Draft = () throws -> String
         var drafts: [Draft] = []
         var withheld = 0
         var inProblem = false
+        var inFrozenThread = false
+        var frozenFrames = 0
         // In line order, as a name can pass from one person to another within a log.
         var bound: [String: String] = [:]
+        func add(_ text: String, routine: Bool = false) { drafts.append(Draft(key: text, isRoutine: routine) { text }) }
+        func addPlayer(_ key: String, _ make: @escaping () throws -> String) { drafts.append(Draft(key: key, isPlayer: true, make: make)) }
         for raw in lines {
             guard raw.utf16.count <= Self.maxLine else { withheld += 1; inProblem = false; continue }
             let line = Scrub.controls(raw)
             guard !line.isEmpty else { continue }
             guard let g = Self.groups(Self.logLine, line) else {
                 // A line that isn't part of the trace doesn't end it, so a root cause further down isn't lost.
-                if inProblem, let trace = try traceLine(line) { drafts.append { trace } } else { withheld += 1 }
+                if inProblem, let known = try knownException(line) {
+                    drafts.append(Draft(key: known, isTrace: true) { known })
+                } else if inProblem, let trace = try traceLine(line) {
+                    drafts.append(Draft(key: trace, isTrace: true) { trace })
+                } else {
+                    withheld += 1
+                }
                 continue
             }
             let thread = g[1], level = Self.level(g[2]), body = g[3]
             inProblem = false
+            if thread == "Paper Watchdog Thread" {
+                // The freeze report lists every thread. Only the main one says what the server was stuck on.
+                if Self.groups(Self.watchdogMain, body) != nil {
+                    inFrozenThread = true
+                    frozenFrames = 0
+                    add("FATAL: the server froze, and the watchdog reports the main thread was running:")
+                } else if body.hasPrefix("Current Thread:") {
+                    inFrozenThread = false
+                } else if inFrozenThread, frozenFrames < 30, let trace = try traceLine("at " + body.trimmingCharacters(in: .whitespaces)) {
+                    frozenFrames += 1
+                    drafts.append(Draft(key: trace, isTrace: true) { trace })
+                }
+                continue
+            }
             // Chat has its own thread, and server events only count from the main one.
             if Self.groups(Self.authenticatorThread, thread) != nil, let a = Self.groups(Self.authenticated, body) {
                 bound[a[1]] = a[2].lowercased()
@@ -360,72 +412,116 @@ public final class ProblemLog {
                 sanitizer.learnPlayer(name: a[1])
                 continue
             }
+            if thread == "ServerMain", let m = Self.groups(Self.damagedJar, body), jars.contains(m[1]) {
+                inProblem = true
+                let jar = try sanitizer.cleanFileName(m[1])
+                add("ERROR: this plugin jar is damaged or unreadable: \(jar)")
+                continue
+            }
             guard thread == "Server thread" else {
                 withheld += 1
                 inProblem = level != "INFO" && !thread.lowercased().contains("chat")
-                if inProblem { drafts.append { "\(level): message withheld" } }
+                if inProblem { add("\(level): message withheld") }
                 continue
             }
             if let m = Self.groups(Self.loggedIn, body), Self.isValid(ip: m[2].isEmpty ? m[3] : m[2]) {
                 let address = m[2].isEmpty ? m[3] : m[2], uuid = bound[m[1]]
                 sanitizer.learnPlayer(name: m[1])
-                drafts.append { [sanitizer] in "INFO: \(try sanitizer.playerToken(name: m[1], uuid: uuid)) connected from \(try sanitizer.ipToken(address))" }
+                addPlayer("connected|\(m[1])|\(address)") { [sanitizer] in "INFO: \(try sanitizer.playerToken(name: m[1], uuid: uuid)) connected from \(try sanitizer.ipToken(address))" }
             } else if let m = Self.groups(Self.joined, body) {
                 let uuid = bound[m[1]]
                 sanitizer.learnPlayer(name: m[1])
-                drafts.append { [sanitizer] in "INFO: \(try sanitizer.playerToken(name: m[1], uuid: uuid)) \(m[2]) the game" }
+                addPlayer("\(m[2])|\(m[1])|\(uuid ?? "")") { [sanitizer] in "INFO: \(try sanitizer.playerToken(name: m[1], uuid: uuid)) \(m[2]) the game" }
             } else if let m = Self.groups(Self.lostConnection, body) {
                 let uuid = bound[m[1]]
                 sanitizer.learnPlayer(name: m[1])
-                drafts.append { [sanitizer] in "INFO: \(try sanitizer.playerToken(name: m[1], uuid: uuid)) lost connection" }
+                addPlayer("lost|\(m[1])|\(uuid ?? "")") { [sanitizer] in "INFO: \(try sanitizer.playerToken(name: m[1], uuid: uuid)) lost connection" }
             } else if let m = Self.groups(Self.movedTooFast, body) {
                 let uuid = bound[m[1]]
                 sanitizer.learnPlayer(name: m[1])
-                drafts.append { [sanitizer] in "WARN: \(try sanitizer.playerToken(name: m[1], uuid: uuid)) moved \(m[2])" }
+                drafts.append(Draft(key: "moved|\(m[1])|\(m[2])") { [sanitizer] in "WARN: \(try sanitizer.playerToken(name: m[1], uuid: uuid)) moved \(m[2])" })
             } else if let m = Self.groups(Self.behind, body) {
-                drafts.append { "WARN: the server is overloaded, running \(m[1])ms or \(m[2]) ticks behind" }
+                add("WARN: the server is overloaded, running \(m[1])ms or \(m[2]) ticks behind")
             } else if let m = Self.groups(Self.done, body) {
-                drafts.append { "INFO: the server finished starting in \(m[1])s" }
+                add("INFO: the server finished starting in \(m[1])s", routine: true)
             } else if let m = Self.groups(Self.starting, body) {
-                drafts.append { "INFO: starting Minecraft \(m[1])" }
+                add("INFO: starting Minecraft \(m[1])", routine: true)
             } else if Self.groups(Self.stopping, body) != nil {
-                drafts.append { "INFO: the server is stopping" }
+                add("INFO: the server is stopping", routine: true)
             } else if let m = Self.groups(Self.lifecycle, body), m[1] == m[3], try isVersion(m[4]), let plugin = try trustedPlugin(m[1]) {
-                drafts.append { "INFO: \(m[2].lowercased()) plugin \(plugin) \(m[4])" }
+                add("INFO: \(m[2].lowercased()) plugin \(plugin) \(m[4])", routine: true)
             } else if let m = Self.groups(Self.enableFailed, body), try isVersion(m[2]), let plugin = try trustedPlugin(m[1]) {
                 inProblem = true
-                drafts.append { "ERROR: plugin \(plugin) \(m[2]) failed to enable" }
-            } else if let m = Self.groups(Self.loadFailed, body), jars.contains(m[1]) {
+                add("ERROR: plugin \(plugin) \(m[2]) failed to enable")
+            } else if let m = Self.groups(Self.loadFailed, body) ?? Self.groups(Self.loadFailedModern, body), jars.contains(m[1]) {
                 inProblem = true
                 let jar = try sanitizer.cleanFileName(m[1])
-                drafts.append { "ERROR: a plugin jar failed to load: \(jar)" }
+                add("ERROR: a plugin jar failed to load: \(jar)")
             } else if let m = Self.groups(Self.eventFailed, body), try isVersion(m[3]), try sanitizer.codeText(m[1]) == m[1], let plugin = try trustedPlugin(m[2]) {
                 inProblem = true
-                drafts.append { "ERROR: plugin \(plugin) \(m[3]) failed handling \(m[1])" }
+                add("ERROR: plugin \(plugin) \(m[3]) failed handling \(m[1])")
             } else if let m = Self.groups(Self.taskFailed, body), try isVersion(m[2]), let plugin = try trustedPlugin(m[1]) {
                 inProblem = true
-                drafts.append { "ERROR: a scheduled task of plugin \(plugin) \(m[2]) failed" }
+                add("ERROR: a scheduled task of plugin \(plugin) \(m[2]) failed")
+            } else if let m = Self.groups(Self.configFailed, body), let plugin = try trustedPlugin(m[1]) {
+                inProblem = true
+                add("ERROR: plugin \(plugin) couldn't read its settings file \(m[2])")
+            } else if let m = Self.groups(Self.worldFailed, body), let plugin = try trustedPlugin(m[1]), let world = try sanitizer.codeText(m[2]) {
+                add("ERROR: plugin \(plugin) couldn't load world \(world): \(m[3])")
             } else if level != "INFO" {
                 // A problem happened, but its wording could be anything. Its stack may follow.
                 withheld += 1
                 inProblem = true
                 let source = try Self.groups(Self.tag, body).flatMap { try trustedPlugin($0[1]) }
-                drafts.append { "\(level): message withheld" + (source.map { ", from plugin \($0)" } ?? "") }
+                add("\(level): message withheld" + (source.map { ", from plugin \($0)" } ?? ""))
             } else {
                 withheld += 1
             }
         }
-        var events = try drafts.suffix(limit).map { try $0() }
-        // The newest are kept. This limits how much any one plugin can put in front of the AI.
-        var total = 0
-        var keep = events.count
-        for event in events.reversed() {
-            total += event.count
-            if total > Self.maxReportCharacters { break }
-            keep -= 1
+        return Report(events: try Self.assemble(drafts, limit: limit, includePlayers: includePlayers), withheld: withheld)
+    }
+
+    /// Groups each problem with its trace, keeps the first of each with a count, and drops what says nothing.
+    /// This is what stops one noisy plugin burying everything else.
+    private static func assemble(_ drafts: [Draft], limit: Int, includePlayers: Bool) throws -> [String] {
+        var blocks: [[Draft]] = []
+        for draft in drafts where includePlayers || !draft.isPlayer {
+            if draft.isTrace, !blocks.isEmpty { blocks[blocks.count - 1].append(draft) } else { blocks.append([draft]) }
         }
-        events.removeFirst(keep)
-        return Report(events: events, withheld: withheld)
+        var counts: [String: Int] = [:]
+        var order: [(key: String, block: [Draft])] = []
+        for block in blocks {
+            // A withheld message with no plugin and no trace is already in the count.
+            if block.count == 1, block[0].key.hasSuffix(": message withheld") { continue }
+            let key = block.map(\.key).joined(separator: "\n")
+            if counts[key] == nil { order.append((key, block)) }
+            counts[key, default: 0] += 1
+        }
+        // When there's too much, routine lines go first, then the oldest.
+        var kept = order
+        var lineCount = kept.reduce(0) { $0 + $1.block.count }
+        if lineCount > limit {
+            kept.removeAll { $0.block[0].isRoutine }
+            lineCount = kept.reduce(0) { $0 + $1.block.count }
+        }
+        var chosen: [(key: String, block: [Draft])] = []
+        var used = 0, characters = 0
+        for item in kept.reversed() {
+            let size = item.key.count
+            if used + item.block.count > limit || characters + size > maxReportCharacters { continue }
+            used += item.block.count
+            characters += size
+            chosen.append(item)
+        }
+        var out: [String] = []
+        for item in chosen.reversed() {
+            for (index, draft) in item.block.enumerated() {
+                let text = try draft.make()
+                let times = counts[item.key] ?? 1
+                out.append(index == 0 && times > 1 ? "\(text) (seen \(times) times)" : text)
+            }
+        }
+        return out
     }
 
     private static func level(_ word: String) -> String {
