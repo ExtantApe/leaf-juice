@@ -63,7 +63,9 @@ public final class Modules {
     init() { off = JSONStore.load(AppPaths.home.appendingPathComponent("modules.json"), defaults: []) }
 
     public func isOn(_ module: LeafModule) -> Bool {
-        module.startsOff ? off.contains("on:\(module.rawValue)") : !off.contains(module.rawValue)
+        // The trial shares this file with the real app, so it doesn't save its own choice here.
+        if module == .advisor, AdvisorTrial.isOn { return true }
+        return module.startsOff ? off.contains("on:\(module.rawValue)") : !off.contains(module.rawValue)
     }
 
     public func set(_ module: LeafModule, on: Bool) {

@@ -205,7 +205,7 @@ final class AdvisorCenter {
     /// While the app is open. Only checks when a new warning or error has appeared, at most once every six hours,
     /// so it costs nothing while the server is quiet.
     func watch(_ model: AppModel) {
-        guard !watching else { return }
+        guard !watching, !AdvisorTrial.isOn else { return }
         watching = true
         Task { [weak self] in
             while let self {
@@ -268,6 +268,33 @@ private extension Suggestion.Severity {
     var rank: Int { [.info: 0, .warning: 1, .important: 2][self] ?? 0 }
     var label: String { [.info: "Good to know", .warning: "Worth a look", .important: "Needs attention"][self] ?? "" }
     var tone: Tone { [.info: Tone.info, .warning: .warning, .important: .danger][self] ?? .info }
+}
+
+/// All the trial app shows: the Advisor page, with nothing that could start or change a server.
+struct AdvisorTrialView: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Advisor trial. This app can't start or change your servers.").foregroundStyle(Juice.muted)
+                Spacer()
+                if model.listed.count > 1 {
+                    Picker("Server", selection: Binding(get: { model.selected?.id }, set: { model.selectedID = $0 })) {
+                        ForEach(model.listed) { Text(verbatim: $0.profile.name).tag(Optional($0.id)) }
+                    }
+                    .fixedSize()
+                }
+            }
+            .padding(12)
+            Divider()
+            if let server = model.selected {
+                AdvisorPage(model: model, server: server).id(server.id)
+            } else {
+                Text("Leaf Juice doesn't list any servers yet.").foregroundStyle(Juice.muted).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
 }
 
 /// A second opinion, on request. Off until you turn it on, for each server separately.
@@ -375,10 +402,12 @@ struct AdvisorPage: View {
 
     private var settings: some View {
         Card(title: "Sharing", systemImage: "hand.raised") {
-            Toggle(isOn: Binding(get: { center.isAutomatic(server) }, set: { center.setAutomatic(server, $0) })) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Check by itself when something new goes wrong").foregroundStyle(Juice.ink)
-                    Text("At most every six hours, while Leaf Juice is open. Quiet servers cost nothing.").font(.caption).foregroundStyle(Juice.muted)
+            if !AdvisorTrial.isOn {
+                Toggle(isOn: Binding(get: { center.isAutomatic(server) }, set: { center.setAutomatic(server, $0) })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Check by itself when something new goes wrong").foregroundStyle(Juice.ink)
+                        Text("At most every six hours, while Leaf Juice is open. Quiet servers cost nothing.").font(.caption).foregroundStyle(Juice.muted)
+                    }
                 }
             }
             HStack {

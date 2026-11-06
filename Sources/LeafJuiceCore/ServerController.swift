@@ -190,6 +190,8 @@ public final class ServerController: Identifiable {
         }
         analyzer.markClean()
         issues = analyzer.sorted
+        // No scans, backup folder, ticker, schedules or update checks: each of those can change the server.
+        guard !AdvisorTrial.isOn else { return }
         refreshConfigs()
         // Wait for a servers folder to be chosen before putting anything in it.
         if !AppPaths.needsServersFolderChoice { pinBackupFolder() }
@@ -307,7 +309,7 @@ public final class ServerController: Identifiable {
     }
 
     public func start() async {
-        guard state.canStart, process == nil else { return }
+        guard !AdvisorTrial.isOn, state.canStart, process == nil else { return }
         await detectExternalServer()
         guard state.canStart else { return }
         blockers = await preflight()

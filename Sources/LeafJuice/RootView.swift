@@ -7,7 +7,9 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if let server = model.selected {
+            if AdvisorTrial.isOn {
+                AdvisorTrialView(model: model)
+            } else if let server = model.selected {
                 ServerWindow(model: model, server: server).id(server.id)
             } else {
                 WelcomeView(model: model)
