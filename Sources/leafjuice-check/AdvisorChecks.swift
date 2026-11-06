@@ -607,7 +607,12 @@ private func logReport(_ log: String, jars: [String] = [], key home: String) thr
     equal(inbox.all().suggestions.count, 0, "and a person can clear it")
 
     let linkedPath = try PrivacyKey(directory: privateHome("advisor-same-server"))
-    equal(try linkedPath.server(folder: URL(fileURLWithPath: "/private/tmp/some server"), display: "x"), try linkedPath.server(folder: URL(fileURLWithPath: "/tmp/some server/"), display: "x"), "the app and the helper agree on a server's token, however its path is written")
+    let sameServer = folder("advisor same server")
+    let sameLink = folder("advisor-links").appendingPathComponent("link")
+    try FileManager.default.createSymbolicLink(at: sameLink, withDestinationURL: sameServer)
+    let sameToken = try linkedPath.server(folder: sameServer, display: "x")
+    equal(try linkedPath.server(folder: URL(fileURLWithPath: sameServer.path + "/./"), display: "x"), sameToken, "the app and the helper agree on a server's token, however its path is written")
+    equal(try linkedPath.server(folder: sameLink, display: "x"), sameToken, "even through a link")
     let manageHome = privateHome("advisor-manage")
     let manageKey = try PrivacyKey(directory: manageHome)
     let manageClean = Sanitizer(key: manageKey)
