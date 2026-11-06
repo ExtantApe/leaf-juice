@@ -74,7 +74,7 @@ final class AdvisorCenter {
         do {
             let key = try PrivacyKey()
             let inbox = try SuggestionInbox(sanitizer: nil)
-            let token = try key.server(path: path, display: server.profile.name)
+            let token = try key.server(folder: server.paths.root, display: server.profile.name)
             items[path] = try inbox.all().suggestions.filter { $0.server == token }.map { suggestion in
                 let readable = try SuggestionInbox.readable(suggestion, key: key)
                 return Item(id: suggestion.id, severity: suggestion.severity, title: readable.title, details: readable.details, rawTitle: suggestion.title)
@@ -103,14 +103,44 @@ final class AdvisorCenter {
             do {
                 let reader = ServerReader(root: root, sanitizer: Sanitizer(key: try PrivacyKey()))
                 let report = try reader.recentProblems(limit: 500)
-                let all: [String: Any] = ["summary": try reader.summary(), "openIssues": try reader.openIssues(limit: 100), "logEvents": report.events, "messagesWithheld": report.withheld]
-                let data = try JSONSerialization.data(withJSONObject: all, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
-                return String(decoding: data, as: UTF8.self)
+                return Self.readablePreview(summary: try reader.summary(), issues: try reader.openIssues(limit: 100), report: report)
             } catch {
                 return (error as? AdvisorError)?.description ?? "This server's files couldn't be read safely, so nothing would be shared."
             }
         }.value
         previews[root.path] = text
+    }
+
+    /// Every value that would be shared, laid out for a person. Stack traces are shortened here only, so the page stays readable.
+    nonisolated private static func readablePreview(summary: [String: Any], issues: [[String: Any]], report: ProblemLog.Report) -> String {
+        func pairs(_ values: [String: Any]) -> String { values.keys.sorted().map { "  \($0): \(values[$0] ?? "")" }.joined(separator: "\n") }
+        func shortened(_ lines: [String]) -> [String] {
+            var out: [String] = [], frames = 0
+            for line in lines {
+                if line.hasPrefix("  at ") {
+                    frames += 1
+                    if frames == 4 { out.append("  … more technical lines like these") }
+                    if frames > 3 { continue }
+                } else {
+                    frames = 0
+                }
+                out.append(line)
+            }
+            return out
+        }
+        var text = "THE SERVER\n"
+        text += "  \(summary["software"] ?? "unknown") \(summary["minecraftVersion"] ?? "")\n\n"
+        text += "HEALTH NUMBERS\n\(pairs(summary["health"] as? [String: Any] ?? [:]))\n\n"
+        text += "SETTINGS\n\(pairs(summary["settings"] as? [String: Any] ?? [:]))\n\n"
+        text += "PLUGIN FILES\n" + ((summary["pluginFiles"] as? [String]) ?? []).map { "  \($0)" }.joined(separator: "\n") + "\n\n"
+        text += "PROBLEMS LEAF JUICE HAS NOTICED\n"
+        for issue in issues {
+            let plugin = (issue["plugin"] as? String).map { ", \($0)" } ?? ""
+            text += "  \(issue["severity"] ?? "") \(issue["rule"] ?? "")\(plugin), \(issue["count"] ?? 1) times\n"
+        }
+        text += "\nFROM THE LOG\n" + shortened(report.events).joined(separator: "\n")
+        text += "\n\nLOG MESSAGES KEPT BACK, AND NEVER SHARED: \(report.withheld)\n"
+        return text
     }
 
     func forgetEverything(servers: [ServerController]) {
@@ -140,7 +170,7 @@ final class AdvisorCenter {
         do {
             let inbox = try SuggestionInbox(sanitizer: nil)
             let key = try PrivacyKey()
-            let token = try key.server(path: path, display: server.profile.name)
+            let token = try key.server(folder: server.paths.root, display: server.profile.name)
             let earlier = inbox.all().suggestions.filter { $0.server == token }.map(\.id)
             let work = AdvisorPaths.home.appendingPathComponent("run", isDirectory: true)
             try FileOps.ensureDir(work)
@@ -196,7 +226,7 @@ final class AdvisorCenter {
     }
 
     private static func prompt(ignoring: [String]) -> String {
-        var text = "You look after this Minecraft server for its owner, who isn't a developer. Check for problems worth raising, and use suggest once for each real problem, most important first. Say what's wrong, which plugin or setting is responsible, and what to do, in plain words. Say what you're unsure of. If nothing is worth raising, leave no suggestion."
+        var text = "You look after this Minecraft server for its owner, who isn't a developer. Check for problems worth raising, and use suggest once for each real problem, most important first. Say what's wrong, which plugin or setting is responsible, and what to do, in plain words. Say what you're unsure of, without mentioning filters, tools or tokens: they mean nothing to the owner. If you can't tell something, suggest how they could find out. If nothing is worth raising, leave no suggestion."
         if !ignoring.isEmpty {
             text += "\n\nThe owner has decided these aren't worth raising, so don't raise them again unless they've clearly become worse:\n" + ignoring.map { "- \($0)" }.joined(separator: "\n")
         }
@@ -276,13 +306,14 @@ struct AdvisorPage: View {
                 AdvisorBullet("Speed, memory and crash numbers")
                 AdvisorBullet("Players as code names, only if a problem involves them")
             }
-            Card(title: "What it never sees", systemImage: "eye.slash") {
+            Card(title: "What's kept from it", systemImage: "eye.slash") {
                 AdvisorBullet("Chat, or the commands players type")
                 AdvisorBullet("Passwords, and plugin settings files")
                 AdvisorBullet("Player names, or addresses")
                 AdvisorBullet("Anything from your other servers, unless you share them too")
             }
         }
+        Hint("A badly behaved plugin could still slip a name or a phrase into its technical text, so have a look before you share.")
         Button("See Exactly What Would Be Shared") { showingPreview = true }.buttonStyle(.juice)
         if center.claudePath == nil {
             Callout(tone: .info, title: "This needs Claude Code", detail: "The Advisor uses your own Claude account through Claude Code, a free program from Anthropic. Leaf Juice stays free, and has no AI of its own.") {
@@ -414,10 +445,10 @@ private struct AdvisorPreview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("What the Advisor would see").font(.title3.weight(.semibold)).foregroundStyle(Juice.ink).accessibilityAddTraits(.isHeader)
-            Hint("Nothing has been sent. This is what \(server.profile.name) would share if a check ran now. Names like Player-1a2b3c4d are code names that only this Mac can translate.")
+            Hint("Nothing has been sent. This is what \(server.profile.name) would share if a check ran now, with long technical traces shortened to fit. Names like Player-1a2b3c4d are code names that only this Mac can translate.")
             ScrollView {
                 Text(verbatim: AdvisorCenter.shared.previews[server.paths.root.path] ?? "Reading…")
-                    .font(.system(.callout, design: .monospaced)).foregroundStyle(Juice.ink)
+                    .font(.system(.caption, design: .monospaced)).foregroundStyle(Juice.ink)
                     .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled).padding(10)
             }
             .background(Juice.surface, in: RoundedRectangle(cornerRadius: Juice.controlRadius))

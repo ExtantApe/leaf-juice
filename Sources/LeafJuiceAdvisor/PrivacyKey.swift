@@ -180,8 +180,9 @@ public final class PrivacyKey {
         try token(.ip, lookup: address.lowercased(), display: address)
     }
 
-    public func server(path: String, display: String) throws -> String {
-        try token(.server, lookup: path, display: display)
+    /// Named by folder, written one way everywhere. The app and the helper program must agree on the token.
+    public func server(folder: URL, display: String) throws -> String {
+        try token(.server, lookup: folder.standardizedFileURL.path, display: display)
     }
 
     /// A UUID is the person, and a name is just what they're called today. So a UUID decides the token. A name that

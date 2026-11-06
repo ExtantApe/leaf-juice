@@ -58,7 +58,7 @@ do {
     // Each server has its own record of who's who: the same name can be two people on two servers.
     let readers = folders.map { ServerReader(root: $0, sanitizer: Sanitizer(key: key)) }
     for reader in readers {
-        servers[try key.server(path: reader.root.path, display: reader.displayName)] = reader
+        servers[try key.server(folder: reader.root, display: reader.displayName)] = reader
     }
 } catch { fail("\(error)") }
 

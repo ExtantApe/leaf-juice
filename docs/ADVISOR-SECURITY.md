@@ -1,7 +1,10 @@
 # Advisor: security rules
 
-`leafjuice-mcp` lets an AI client look at a server and leave suggestions. It's a separate program. The Leaf Juice app
-doesn't load it, link it or know it exists, so the app's "no AI at runtime" rule still holds.
+`leafjuice-mcp` lets an AI client look at a server and leave suggestions. It's a separate read-only program. In the app, the
+optional **Advisor** page runs it with Claude Code. That page is off until you turn it on in Settings, each server has to be
+shared separately, and nothing is sent until you check or turn on automatic checks. With it off, the app contains no AI and
+starts none. The app starts Claude Code with every other tool removed, so the shell-access warning below doesn't apply to
+checks started there.
 
 ## The main rule
 
@@ -92,7 +95,9 @@ system allows it:
 
 Deleting the folder forgets every mapping. Old suggestions then stay untranslated, and players get new tokens.
 
-## Running it
+## Running it by hand
+
+The Advisor page does all of this for you. These steps are for using another client, or running it without the app.
 
 Name each server you want to share. Nothing else is visible.
 
