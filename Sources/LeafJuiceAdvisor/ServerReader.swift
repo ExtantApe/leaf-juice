@@ -144,13 +144,15 @@ public final class ServerReader {
         try learnPlayers()
         var out: [String: Any] = [:]
         if let software = try object(".leafjuice/server.json")?["software"] as? [String: Any] {
-            if let flavor = software["flavor"] as? String, Self.check("[a-z]{1,16}", flavor) { out["software"] = flavor }
-            if let version = software["mcVersion"] as? String, Self.check(#"[0-9][A-Za-z0-9.\-]{0,23}"#, version) { out["minecraftVersion"] = version }
+            if let flavor = software["flavor"] as? String, ["paper", "folia", "purpur", "vanilla", "custom"].contains(flavor) { out["software"] = flavor }
+            if let version = software["mcVersion"] as? String, Self.check(#"[0-9]{1,2}(\.[0-9]{1,2}){1,2}(-(pre|rc)[0-9]{1,2})?|[0-9]{2}w[0-9]{2}[a-z]"#, version) { out["minecraftVersion"] = version }
             if let build = software["build"] as? Int { out["build"] = build }
             if let java = software["requiredJava"] as? Int { out["requiredJava"] = java }
         }
         var settings: [String: String] = [:]
-        if let data = try read("server.properties", maxBytes: Self.maxPropertiesBytes), let text = String(data: data, encoding: .utf8) {
+        if let data = try read("server.properties", maxBytes: Self.maxPropertiesBytes) {
+            // Lossy, so one odd byte in a welcome message can't hide every setting. Only allowlisted lines are used.
+            let text = String(decoding: data, as: UTF8.self)
             for line in text.components(separatedBy: .newlines) where !line.hasPrefix("#") {
                 guard let split = line.firstIndex(of: "=") else { continue }
                 let key = String(line[..<split]).trimmingCharacters(in: .whitespaces)
@@ -170,24 +172,30 @@ public final class ServerReader {
     public func openIssues(limit: Int) throws -> [[String: Any]] {
         let log = ProblemLog(sanitizer: sanitizer, installedJars: try jarNames())
         try learnPlayers()
+        try sanitizer.prepareForCode()
         let all = try list(".leafjuice/issues.json")
+        var characters = 0
         var out: [[String: Any]] = []
         for issue in all where issue["status"] as? String == "open" {
             var item: [String: Any] = [:]
-            if let rule = issue["ruleID"] as? String, Self.check(#"[A-Za-z0-9_.\-]{1,64}"#, rule) { item["rule"] = rule } else { item["rule"] = "uncatalogued" }
+            if let rule = issue["ruleID"] as? String, Self.check(#"[a-z0-9][a-z0-9.\-]{0,47}"#, rule), try sanitizer.codeText(rule) == rule { item["rule"] = rule } else { item["rule"] = "uncatalogued" }
             if let severity = issue["severity"] as? String, ["info", "warning", "error", "critical"].contains(severity) { item["severity"] = severity }
-            if let category = issue["category"] as? String, Self.check("[A-Za-z ]{1,24}", category) { item["category"] = category }
-            if let plugin = issue["plugin"] as? String, let trusted = log.trustedPlugin(plugin) { item["plugin"] = trusted }
+            if let category = issue["category"] as? String, Self.check("[A-Z][a-z]{1,15}( [A-Za-z][a-z]{1,10}){0,1}", category) { item["category"] = category }
+            if let plugin = issue["plugin"] as? String, let trusted = try log.trustedPlugin(plugin) { item["plugin"] = trusted }
             for field in ["firstSeen", "lastSeen"] {
                 if let seen = issue[field] as? String, Self.check(#"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{8,16}Z"#, seen) { item[field] = seen }
             }
             if let count = issue["count"] as? Int { item["count"] = count }
             if let stack = issue["stack"] as? [String] {
                 let trace = try stack.prefix(60).filter { $0.utf16.count <= ProblemLog.maxLine }.compactMap { try log.traceLine(Scrub.controls($0)) }
-                if !trace.isEmpty { item["stack"] = Array(trace.prefix(30)) }
+                if !trace.isEmpty {
+                    item["stack"] = Array(trace.prefix(30))
+                    characters += trace.prefix(30).reduce(0) { $0 + $1.count }
+                }
             }
             out.append(item)
-            if out.count >= limit { break }
+            // The same limit as the log, on what any one plugin can put in front of the AI.
+            if out.count >= limit || characters > ProblemLog.maxReportCharacters { break }
         }
         return out
     }

@@ -10,8 +10,8 @@ in many formats, secrets in many formats, and one chat message that switched off
 design any more. Each log line either matches a fixed shape and is rewritten from the parts that were recognised, or its
 text is withheld and only counted.
 
-**The exception is code-shaped text**, which a plugin's author controls. Stack frames, exception classes, plugin names and
-versions, and jar names are limited in form, but not to what's true. See below.
+**The exception is code-shaped text**, which a plugin's author controls. Stack frames, exception classes, plugin, event and
+rule names, versions, and jar names are limited in form, but not to what's true. See below.
 
 The cost is real: the AI can see *that* a plugin logged an error and its stack trace, but not the message. New shapes can
 be added as they prove useful, each with a test.
@@ -32,16 +32,16 @@ Reads also write to the key file, when a player or address is first shared.
 
 | Threat | Defence |
 |---|---|
-| Chat or commands reach the AI | Log wording isn't sent at all, from either the log or stored issues |
-| Player names, UUIDs and IPs reach the AI | Tokens, used only in fixed shapes where the value's position is known |
+| Chat or commands reach the AI | Log wording isn't sent, from either the log or stored issues. One gap: the app stores a stack line from any thread, so unusual chat formatted exactly like a frame could reach `open_issues`, limited to that shape |
+| Player names, UUIDs and IPs reach the AI | Tokens in fixed shapes. In code-shaped text, a known player's whole name becomes a token, and an address, UUID or email drops the line |
 | Secrets reach the AI | No free text is sent, and plugin configs aren't readable. `server.properties` is an allowlist of keys and values |
-| Chat forges an identity or changes a filter | Names come only from the server's own player files and from exact line shapes on the right thread. Only the authenticator thread and `usercache.json` can tie a name to a UUID |
+| Chat forges an identity or changes a filter | Names come only from the server's own player files and from exact line shapes on the right thread. Only the authenticator thread and `usercache.json` can tie a name to a UUID. A plugin can forge that thread: see below |
 | The AI changes or breaks the server | There's no tool for it, and the program doesn't link `LeafJuiceCore` or use network or process APIs. A test checks the source |
 | The AI reads files it shouldn't | No tool takes a path. Only servers named at launch are visible, and a symlink anywhere inside a server folder, or a hard link, is refused. The folder you name may itself be reached through a link |
 | The AI recovers a real name from a token | No tool translates tokens. Only `--suggestions` does, for a person at a terminal |
 | Tokens are reversed by guessing | They're random, not derived from the value |
-| A long line hangs the program | Over-long lines are withheld before any pattern runs, and suggestions are cut to a fixed length first |
-| A safeguard fails silently | A damaged, oversized or linked key, player or issues file stops the answer, and so does a server folder that's gone. A key deleted while running is treated as a fresh start, so players get new tokens |
+| A long line hangs the program | Over-long lines are withheld before any pattern runs, and suggestions are refused or cut to a fixed length first. A flood of new players can still make an answer take many seconds |
+| A safeguard fails silently | A damaged, oversized or linked key stops every answer. So does a damaged, oversized or linked player or issues file when that answer reads it, and a server folder that's gone. A key deleted while running is treated as a fresh start, so players get new tokens |
 
 ## What it does not protect against
 
@@ -50,18 +50,23 @@ Reads also write to the key file, when a player or address is first shared.
   layer is not a security boundary.**
 - **Other programs running as you.** The key file is readable only by your user, but it isn't encrypted.
 - **A malicious or careless plugin.** Plugin code runs inside your server, so it's already trusted with far more than this.
-  It can write fake frames, up to the limits, and short phrases fit in identifiers such as `Ignore.previous.rules.now`.
-  Frames holding a known player's name, a UUID, an IP or an email are dropped, but other identifying text in code form would
-  pass, and an unknown player's name wouldn't be recognised. A report is limited to 60,000 characters.
+  It can write fake frames up to the limits, and quite long phrases fit in hyphenated or dotted identifiers such as
+  `Ignore.previous.rules.now`. A name it splices into a word, or that isn't a known player's, wouldn't be recognised. It can
+  also forge a login line, and rename a player's token to something else. Each report is limited to about 60,000 characters.
 - **Bad advice.** The AI may be wrong, or tricked by the above. A suggestion can name a real player and can say "run this
   command", so **treat suggestions as a colleague's guess. Never run one unread, and don't act against a player on one
   alone.** `--suggestions` frames each as the AI's words for that reason.
 - **A forged player file.** `usercache.json` is trusted to say who has which UUID. Something that can edit it can mislabel
-  a player. A name seen without a UUID can also attach to the next UUID seen for that name.
+  a player. A name seen without a UUID can also attach to the next UUID seen for that name, including on another server.
+- **Linking people across servers.** There's one key, so a player has the same token on every server you share. The AI can
+  see that it's the same person.
 - **Identifying someone from behaviour.** Tokens are pseudonyms. Connection times and repeated addresses can still point to
   a person, so treat the output as personal data, particularly for children's worlds.
 - **Names in plugin file names.** Installed jar names are sent if they're plain, so a jar named after a family or a private
-  project reveals that, unless the name is a known player's. A player named like a plugin garbles that plugin's entry.
+  project reveals that, unless the name is a known player's. A player named like a plugin, or like a package in a plugin's
+  code, shows as a token there. That garbles the entry a little, but nothing is hidden or leaked.
+- **Plugins it can't match.** A log tag only counts if it matches a jar's name, so `[Essentials]` from `EssentialsX.jar` shows
+  as a withheld message with no plugin named. That loses information, and it fails safe.
 - **What the AI itself might remember.** Anything sent goes to your AI provider, under its retention terms.
 
 ## Rules for changing this code

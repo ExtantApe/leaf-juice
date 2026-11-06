@@ -46,16 +46,18 @@ while !arguments.isEmpty {
 let key: PrivacyKey
 let inbox: SuggestionInbox
 var servers: [String: ServerReader] = [:]
+// Checked first, so a refusal doesn't leave a new folder inside a server.
+let advisorHome = AdvisorPaths.home.standardizedFileURL.resolvingSymlinksInPath().path + "/"
+for folder in folders {
+    let path = folder.standardizedFileURL.resolvingSymlinksInPath().path
+    guard !advisorHome.hasPrefix(path.hasSuffix("/") ? path : path + "/") else { fail("The advisor's private folder can't be inside a server folder.") }
+}
 do {
     key = try PrivacyKey()
     inbox = try SuggestionInbox(sanitizer: nil)
     // Each server has its own record of who's who: the same name can be two people on two servers.
     let readers = folders.map { ServerReader(root: $0, sanitizer: Sanitizer(key: key)) }
-    let home = AdvisorPaths.home.standardizedFileURL.resolvingSymlinksInPath().path + "/"
     for reader in readers {
-        // The key must never live where a backup or test copy would carry it.
-        let root = reader.root.resolvingSymlinksInPath().path
-        guard !home.hasPrefix(root.hasSuffix("/") ? root : root + "/") else { fail("The advisor's private folder can't be inside a server folder.") }
         servers[try key.server(path: reader.root.path, display: reader.displayName)] = reader
     }
 } catch { fail("\(error)") }
@@ -95,6 +97,7 @@ func clamp(_ value: Any?, fallback: Int, max: Int) -> Int {
 }
 
 func call(_ name: String, _ args: [String: Any]) throws -> [String: Any] {
+    try key.verify()
     guard tools.contains(where: { $0["name"] as? String == name }) else { throw AdvisorError("Unknown tool.") }
     if name == "list_servers" { return text(["servers": servers.keys.sorted()]) }
     // Tokens only: a path, or a name it hasn't been given, finds nothing.

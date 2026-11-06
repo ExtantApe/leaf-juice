@@ -110,12 +110,14 @@ public final class PrivacyKey {
         try reload()
     }
 
-    /// Runs before every answer, so a key that's been damaged while running stops things straight away.
+    /// Before every answer, so a damaged key stops things straight away, even if this answer holds no tokens.
+    public func verify() throws { try reload() }
+
     /// Parsing is skipped if the file hasn't changed, but it's always checked.
     private func reload() throws {
         var info = stat()
         let exists = lstat(file.path, &info) == 0
-        let stamp = exists ? "\(info.st_ino)|\(info.st_size)|\(info.st_mode)|\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)" : "none"
+        let stamp = exists ? "\(info.st_ino)|\(info.st_size)|\(info.st_mode)|\(info.st_nlink)|\(info.st_uid)|\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)|\(info.st_ctimespec.tv_sec).\(info.st_ctimespec.tv_nsec)" : "none"
         if stamp == loadedStamp { return }
         guard let data = try PrivateFiles.read(file) else { index([]); loadedStamp = "none"; return }
         guard let stored = try? JSONDecoder().decode(Stored.self, from: data), stored.version == 2,
