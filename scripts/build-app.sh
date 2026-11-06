@@ -23,14 +23,22 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 if $universal; then
     swift build -c release --product LeafJuice --arch arm64
     swift build -c release --product LeafJuice --arch x86_64
+    swift build -c release --product leafjuice-mcp --arch arm64
+    swift build -c release --product leafjuice-mcp --arch x86_64
+    lipo -create -output "$app/Contents/MacOS/leafjuice-mcp" \
+        .build/arm64-apple-macosx/release/leafjuice-mcp \
+        .build/x86_64-apple-macosx/release/leafjuice-mcp
     lipo -create -output "$app/Contents/MacOS/LeafJuice" \
         .build/arm64-apple-macosx/release/LeafJuice \
         .build/x86_64-apple-macosx/release/LeafJuice
 else
     swift build -c release --product LeafJuice
+    swift build -c release --product leafjuice-mcp
     cp .build/release/LeafJuice "$app/Contents/MacOS/LeafJuice"
+    cp .build/release/leafjuice-mcp "$app/Contents/MacOS/leafjuice-mcp"
 fi
 strip -x "$app/Contents/MacOS/LeafJuice" 2>/dev/null || true
+strip -x "$app/Contents/MacOS/leafjuice-mcp" 2>/dev/null || true
 
 [ -f brand/AppIcon.icns ] || swift scripts/make-icon.swift brand
 cp brand/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"

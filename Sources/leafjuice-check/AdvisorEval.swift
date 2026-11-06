@@ -127,6 +127,11 @@ private func evalShell(_ line: String) async throws { _ = try await Tool.run("/b
             case "healthy-plugin": try plant()
             case "enable-npe", "event-npe", "task-ex", "db", "inject": try plant(mode: name)
             case "lag": try plant(mode: "lag"); dwell = 400
+            case "async", "message-only", "bad-data": try plant(mode: name)
+            case "missing-class": try plant("HomeWarps-noclass.jar", mode: name)
+            case "dup-jar":
+                try plant()
+                try FileManager.default.copyItem(at: jars.appendingPathComponent("HomeWarps.jar"), to: plugins.appendingPathComponent("HomeWarps-old.jar"))
             case "bad-config":
                 try plant(mode: name)
                 try FileOps.writeAtomic("radius: 5\nworlds:\n  - main\n bad_indent: [unclosed\n", to: data.appendingPathComponent("config.yml"))

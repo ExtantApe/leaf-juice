@@ -71,7 +71,38 @@ public final class SuggestionInbox {
         return (out, unreadable)
     }
 
+    public func remove(id: String) {
+        files.filter { $0.lastPathComponent.hasSuffix("-\(id).json") }.forEach { try? FileManager.default.removeItem(at: $0) }
+    }
+
+    private var ignoredFile: URL { folder.deletingLastPathComponent().appendingPathComponent("not-worth-raising.json") }
+
+    private func ignoredTitles() -> [String: [String]] {
+        guard let data = try? PrivateFiles.read(ignoredFile) else { return [:] }
+        return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
+    }
+
+    /// Kept as the AI wrote them, with tokens, so they can go back to it without sharing anything new.
+    public func neverRaised(server: String) -> [String] { ignoredTitles()[server] ?? [] }
+
+    public func neverRaiseAgain(_ title: String, server: String) {
+        var all = ignoredTitles()
+        var titles = all[server] ?? []
+        if !titles.contains(title) { titles.append(title) }
+        all[server] = Array(titles.suffix(50))
+        if let data = try? JSONEncoder().encode(all) { try? PrivateFiles.write(data, to: ignoredFile) }
+    }
+
+    /// The key, suggestions and everything else the advisor stores. Servers aren't involved.
+    public static func forgetEverything(home: URL = AdvisorPaths.home) { try? FileManager.default.removeItem(at: home) }
+
     public func clear() { files.forEach { try? FileManager.default.removeItem(at: $0) } }
+
+    /// For the app, as separate text with real names back in.
+    public static func readable(_ suggestion: Suggestion, key: PrivacyKey) throws -> (title: String, details: String) {
+        func show(_ text: String) throws -> String { Scrub.controls(try key.reveal(Scrub.controls(text))) }
+        return (try show(suggestion.title).components(separatedBy: .newlines).joined(separator: " "), try show(suggestion.details))
+    }
 
     /// For a person to read, with real names back in. Each one is framed as the AI's words, and its body is marked line
     /// by line so it can't forge a second entry. Cleaned afterwards too, because a stored file could have been edited.

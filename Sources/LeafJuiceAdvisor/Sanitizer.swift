@@ -14,7 +14,7 @@ enum Regexes {
     static let url = make(#"\b[a-z][a-z0-9+.\-]{0,20}(?::[a-z][a-z0-9+.\-]{0,20}){0,3}://[^\s"'<>]{0,4000}"#, [.caseInsensitive])
     static let bearer = make(#"\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=\-]{1,4000}"#, [.caseInsensitive])
     static let keyValue = make(
-        #"((?:password|passwd|pwd|pass|passphrase|secret|token|api[-_ ]?key|authorization|auth|credential|private[-_ ]?key|webhook|session|cookie|license[-_ ]?key)[\w.\-]{0,40}["']?\s{0,4}(?:=>?|:|\bis\b)\s{0,4})(?:"[^"]{0,4000}"|'[^']{0,4000}'|[^\n]{0,4000})"#,
+        #"((?<![A-Za-z])(?:password|passwd|pwd|passphrase|pass|secret|api[-_ ]?key|authorization|private[-_ ]?key|license[-_ ]?key|token|credential|webhook|cookie)[\w.\-]{0,40}["']?\s{0,4}(?:=>?|:)\s{0,4})(?:"[^"]{0,4000}"|'[^']{0,4000}'|[^\n.;,]{0,300})"#,
         [.caseInsensitive])
     static let flagValue = make(#"(--?(?:password|passwd|pwd|pass|token|secret|api[-_]?key)[ =])\S{1,4000}"#, [.caseInsensitive])
     static let email = make(#"\b[A-Z0-9._%+\-]{1,64}@[A-Z0-9.\-]{1,255}\.[A-Z]{2,24}\b"#, [.caseInsensitive])

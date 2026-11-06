@@ -175,6 +175,7 @@ struct ServerWindow: View {
         switch model.visiblePage {
         case .resourcePacks: ResourcePacksPage(server: server)
         case .wiki: WikiPage(server: server)
+        case .advisor: AdvisorPage(model: model, server: server)
         case .overview: OverviewPage(model: model, server: server, renaming: $renaming)
         case .console: ConsolePage(server: server)
         case .history: HistoryPage(server: server)
@@ -222,6 +223,7 @@ struct Sidebar: View {
         case .plugins: server.plugins.filter { server.record(for: $0).available != nil }.count
         case .software: server.softwareUpdate == nil ? 0 : 1
         case .changes: server.pending.count
+        case .advisor: AdvisorCenter.shared.count(server)
         default: 0
         }
     }

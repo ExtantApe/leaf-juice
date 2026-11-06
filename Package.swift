@@ -9,7 +9,7 @@ let package = Package(
         // Everything testable: no SwiftUI, no AppKit.
         .target(name: "LeafJuiceCore"),
         // The Mac app.
-        .executableTarget(name: "LeafJuice", dependencies: ["LeafJuiceCore"]),
+        .executableTarget(name: "LeafJuice", dependencies: ["LeafJuiceCore", "LeafJuiceAdvisor"]),
         // Self-tests as a plain executable, so they run without Xcode (XCTest needs it).
         .executableTarget(name: "leafjuice-check", dependencies: ["LeafJuiceCore", "LeafJuiceAdvisor", "leafjuice-mcp"]),
         // Privacy layer for the optional advisor. It must never depend on LeafJuiceCore: see docs/ADVISOR-SECURITY.md.

@@ -1341,7 +1341,14 @@ do {
     do { // Modules: on by default, remembered, and off means off.
         let store = Modules.shared
         store.reload()
-        check(LeafModule.allCases.allSatisfy(store.isOn), "everything starts on")
+        check(LeafModule.allCases.filter { !$0.startsOff }.allSatisfy(store.isOn), "everything starts on")
+        check(!store.isOn(.advisor), "except the Advisor, which sends data elsewhere")
+        store.set(.advisor, on: true)
+        check(store.isOn(.advisor), "which you can turn on")
+        store.reload()
+        check(store.isOn(.advisor), "and stays on")
+        store.set(.advisor, on: false)
+        check(!store.isOn(.advisor), "until you turn it off")
         store.set(.history, on: false)
         check(!store.isOn(.history), "off"); check(store.isOn(.players), "only that one")
         store.reload()
