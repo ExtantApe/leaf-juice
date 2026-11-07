@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import LeafJuiceCore
 import SwiftUI
 
@@ -20,7 +21,7 @@ struct PackHostingCard: View {
     @State private var refresh = 0
 
     private var settings: PackHostSettings { server.packHostSettings }
-    private var built: [String] { recipeNames.filter { !ResourcePacks.history($0).isEmpty } }
+    private var built: [String] { _ = refresh; return recipeNames.filter { !ResourcePacks.history($0).isEmpty } + ResourcePacks.exactNames() }
 
     var body: some View {
         Card(title: "Hosting", systemImage: "antenna.radiowaves.left.and.right") {
@@ -31,6 +32,10 @@ struct PackHostingCard: View {
                 if live.isSet { Callout(tone: .warning, title: "server.properties still sets a pack", detail: "With \(plugin) sending the packs, this should usually be empty. Clear it on the Configs page if \(plugin) is meant to send every pack.") }
             }
             serving
+            HStack {
+                Button("Add an Exact Pack…") { addExact(to: nil) }.buttonStyle(.juice)
+                Hint("Serves a zip exactly as it is, such as BlueMapHUD's /bmhud pack export, so its SHA-1 doesn't change.")
+            }
             if built.isEmpty {
                 Hint("Build a recipe, and its address shows here.")
             } else {
@@ -83,14 +88,28 @@ struct PackHostingCard: View {
     private func row(_ name: String) -> some View {
         let isElsewhere = settings.recipes[ResourcePacks.slug(name)]?.elsewhere != nil
         let newest = ResourcePacks.history(name).first?.sha1
-        let perWorld = server.hasPerWorldPacks && !isElsewhere
+        let exact = ResourcePacks.isExact(name)
+        let perWorld = (server.hasPerWorldPacks || exact) && !isElsewhere
         let sha1 = isElsewhere || perWorld ? newest : server.servedPackSHA1(recipe: name)
         let url = perWorld ? newest.flatMap { server.packBuildAddress(recipe: name, sha1: $0) } : server.packAddress(recipe: name)
         return VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text(name).font(.body.weight(.semibold)).foregroundStyle(Juice.ink)
                 if isElsewhere { Badge(text: "Hosted elsewhere", tone: .info) }
+                if exact { Badge(text: "Exact file", tone: .info) }
                 Spacer()
+                if exact { Button("Add New Version…") { addExact(to: name) }.buttonStyle(.juice) }
+            }
+            if exact, !isElsewhere {
+                if let template = server.packAddressTemplate(recipe: name) {
+                    HStack {
+                        Fact(label: "Address with {sha1}", value: template)
+                        Button("Copy") { copy(template) }.buttonStyle(.juice).accessibilityLabel("Copy the address with {sha1}")
+                    }
+                }
+                Callout(tone: .warning, title: "Players can't get this pack while Leaf Juice is closed", detail: "If it's required, they can't join without it. Keep Leaf Juice open whenever the server is running.")
+                Hint("Each version keeps its own address. New Address changes all of them, so a plugin's public-url breaks until you paste the new one in.")
+                ForEach(ResourcePacks.history(name).first?.warnings ?? [], id: \.self) { Hint($0) }
             }
             Fact(label: perWorld ? "Newest build's address" : "Address", value: url ?? "Enter an address above")
             Fact(label: "SHA-1", value: sha1 ?? (isElsewhere ? "Build it first" : "Nothing served yet"))
@@ -127,6 +146,21 @@ struct PackHostingCard: View {
                 }
                 Hint("Leave it empty to serve it from here again.")
             }
+        }
+    }
+
+    private func addExact(to existing: String?) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.zip]
+        panel.prompt = existing == nil ? "Add" : "Add Version"
+        guard panel.runModal() == .OK, let file = panel.url else { return }
+        let name = existing ?? file.deletingPathExtension().lastPathComponent
+        Task {
+            do {
+                try await ResourcePacks.addExact(file, name: name)
+                error = nil
+                reload()
+            } catch { self.error = error.localizedDescription }
         }
     }
 
