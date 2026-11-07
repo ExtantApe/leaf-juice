@@ -120,9 +120,18 @@ func call(_ name: String, _ args: [String: Any]) throws -> [String: Any] {
               let title = args["title"] as? String, let details = args["details"] as? String else {
             throw AdvisorError("A suggestion needs a severity, a title and details.")
         }
-        try reader.prepareForSuggestion()
-        let saved = try inbox.add(server: token, severity: severity, title: title, details: details, using: reader.sanitizer)
-        return text(["saved": saved.id])
+        do {
+            try reader.prepareForSuggestion()
+            let saved = try inbox.add(server: token, severity: severity, title: title, details: details, using: reader.sanitizer)
+            return text(["saved": saved.id])
+        } catch {
+            // So the app doesn't report that there was nothing to raise.
+            if let receipt {
+                let fd = open(receipt + ".suggest-failed", O_CREAT | O_WRONLY | O_NOFOLLOW, 0o600)
+                if fd >= 0 { close(fd) }
+            }
+            throw error
+        }
     default:
         throw AdvisorError("Unknown tool.")
     }

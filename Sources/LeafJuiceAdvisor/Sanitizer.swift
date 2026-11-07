@@ -29,11 +29,15 @@ enum Regexes {
     /// Long unbroken text, which is how most keys look when their format is unknown.
     /// Stricter than the ones above: inside code, a dot or underscore next to these is no excuse.
     /// Any four dotted numbers, or an address written with dashes or underscores, as real code holds neither.
-    static let codeIP = make(#"(?<![0-9])[0-9]{1,5}(?:\.[0-9]{1,5}){3}(?![0-9])|(?<![0-9])0*(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(?:[\-_]0*(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}(?![0-9])"#)
+    static let codeIP = make(#"(?<![0-9])[0-9]{1,5}(?:\.[0-9]{1,5}){3}(?![0-9])|(?<![0-9])0*(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(?:[\-_$/+]0*(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}(?![0-9])"#)
     /// 32 hex digits or more, however they're split up.
-    static let codeUUID = make(#"(?:[0-9a-f][.\-_]?){32}"#, [.caseInsensitive])
+    static let codeUUID = make(#"(?:[0-9a-f][.\-_$/+]?){32}"#, [.caseInsensitive])
     /// A module version such as `java.base@21.0.1` has no letters after its dot, so it isn't caught.
-    static let codeEmail = make(#"@[A-Za-z0-9\-]{1,63}\.[A-Za-z]{2,}"#)
+    static let codeEmail = make(#"@[A-Za-z0-9\-]{1,63}[.$][A-Za-z]{2,}"#)
+    /// Key formats beyond the ones `knownPrefixes` looks for, including with dots for dashes.
+    static let codeKey = make(#"AIza[A-Za-z0-9_\-]{16,}|glpat-[A-Za-z0-9_\-]{8,}|sk[-_.]ant[-_.]"#)
+    /// Long and full of digits, which a real name in code isn't.
+    static let digitHeavy = make(#"(?<![A-Za-z0-9])(?=(?:[A-Za-z]*[0-9]){8})[A-Za-z0-9]{24,}"#)
     static let identifier = make("[A-Za-z0-9_]+")
     static let longOpaque = make(#"[A-Za-z0-9_+/=.\-]{24,4000}"#)
 }
@@ -93,6 +97,7 @@ public enum Scrub {
 public final class Sanitizer {
     public static let removed = "[removed]"
     static let maxNames = 100_000
+    static let maxNamesInCode = 5000
     private let key: PrivacyKey
     /// By exact name: on an offline server, `Alice` and `alice` can be different people.
     private var uuidOf: [String: String] = [:]
@@ -160,8 +165,9 @@ public final class Sanitizer {
     static let codeWords: Set<String> = ["java", "javax", "jdk", "sun", "kotlin", "kt", "groovy", "scala", "net", "org", "com", "io", "minecraft", "mojang", "bukkit", "craftbukkit", "spigotmc", "papermc", "paper", "server", "level", "world", "player", "entity", "block", "item", "thread", "run", "main", "lang", "util", "base", "app", "init", "clinit", "native", "method", "unknown", "source", "plugin", "plugins", "reflect", "invoke", "event", "command", "exception", "error", "get", "set", "tick", "load", "enable", "disable", "core", "api", "internal", "impl", "common", "network", "jar"]
 
     /// The player whose name is in an identifier: all of it, any run of its `_` parts, or spliced into a longer word.
-    private func nameInside(_ lower: String) -> String? {
-        if let known = identifierMatches[lower] { return known }
+    private func nameInside(_ word: String) -> String? {
+        let lower = word.lowercased()
+        if let known = identifierMatches[word] { return known }
         var found: String?
         if !Self.codeWords.contains(lower) {
             if displayOf[lower] != nil { found = lower }
@@ -174,11 +180,16 @@ public final class Sanitizer {
                 }
             }
             // Short names turn up inside ordinary words, so these only count from five letters.
-            if found == nil, displayOf.count <= 5000 {
+            if found == nil {
                 found = displayOf.keys.filter { $0.count >= 5 && !Self.codeWords.contains($0) && lower.contains($0) }.max { $0.count < $1.count }
             }
+            // `EmmaHandler` holds `Emma` as one whole word of its own, which is safe to look for at any length.
+            if found == nil {
+                let words = word.replacingOccurrences(of: "([a-z0-9])([A-Z])", with: "$1 $2", options: .regularExpression).lowercased().split(separator: " ").map(String.init)
+                found = words.first { $0.count >= 3 && displayOf[$0] != nil && !Self.codeWords.contains($0) }
+            }
         }
-        identifierMatches[lower] = .some(found)
+        identifierMatches[word] = .some(found)
         return found
     }
 
@@ -186,11 +197,20 @@ public final class Sanitizer {
     /// code wouldn't. Swapped rather than dropped, so a player who takes a word found in code as a name can't hide evidence.
     func codeText(_ text: String) throws -> String? {
         let range = NSRange(text.startIndex..., in: text)
-        for regex in [Regexes.codeUUID, Regexes.codeIP, Regexes.codeEmail, Regexes.email, Regexes.knownPrefixes] where regex.firstMatch(in: text, range: range) != nil { return nil }
-        return try Scrub.replace(text, Regexes.identifier) { word in
-            guard let name = nameInside(word.lowercased()) else { return word }
+        for regex in [Regexes.codeUUID, Regexes.codeIP, Regexes.codeEmail, Regexes.email, Regexes.knownPrefixes, Regexes.codeKey, Regexes.digitHeavy] where regex.firstMatch(in: text, range: range) != nil { return nil }
+        // Past this the name checks below would take too long, so nothing is shared rather than less being checked.
+        guard displayOf.count <= Self.maxNamesInCode else { throw AdvisorError("There are too many player names to check, so nothing was shared.") }
+        let swapped = try Scrub.replace(text, Regexes.identifier) { word in
+            guard let name = nameInside(word) else { return word }
             return try key.knownPlayerToken(lookup: "name:\(name)") ?? playerToken(name: displayOf[name] ?? name)
         }
+        // A name split across parts, as in `Mary.Jane` or `FakeKid$Alice`, can only be dropped.
+        let joined = swapped.lowercased().filter { $0.isLetter || $0.isNumber }
+        let splitName = displayOf.keys.contains { key in
+            let squashed = key.filter { $0.isLetter || $0.isNumber }
+            return squashed.count >= 6 && !Self.codeWords.contains(key) && joined.contains(squashed)
+        }
+        return splitName ? nil : swapped
     }
 
     /// For suggestions. Nothing new is recorded unless it's a known player: an address or ID the AI made up isn't shared
@@ -282,13 +302,15 @@ public final class ProblemLog {
         guard squashed.count >= 3, tag.count <= 40, tag.utf8.allSatisfy({ $0 < 128 }),
               tag.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }) else { return nil }
         guard pluginNames.contains(squashed) else { return nil }
-        return try sanitizer.codeText(tag)
+        // A tag that's also a player's name could be that player using `/say`.
+        guard let clean = try sanitizer.codeText(tag), clean == tag else { return nil }
+        return clean
     }
 
     // MARK: Shapes
 
     /// The format of `logs/latest.log`. The thread is part of what's checked, because chat has its own.
-    private static let logLine = Regexes.make(#"^\[\d\d:\d\d:\d\d\] \[([^\]]{1,80})/(INFO|WARN|WARNING|ERROR|FATAL|SEVERE|DEBUG|TRACE)\](?: \[[^\]]{0,80}\])?: (.*)$"#)
+    private static let logLine = Regexes.make(#"^\[\d\d:\d\d:\d\d\] \[([^\]]{1,80})/(INFO|WARN|WARNING|ERROR|FATAL|SEVERE|DEBUG|TRACE)\](?: \[[^\]]{0,80}\])?: (?:System chat: )?(.*)$"#)
     private static let authenticatorThread = Regexes.make(#"^User Authenticator #\d{1,9}$"#)
     private static let name = #"([.*]?[A-Za-z0-9_]{2,16})"#
     private static let version = #"([0-9][A-Za-z0-9.+\-]{0,23})"#
@@ -322,7 +344,7 @@ public final class ProblemLog {
     private static let tag = Regexes.make(#"^\[([A-Za-z0-9_\-]{1,40})\] "#)
 
     /// A real stack frame is code, with nowhere to put a sentence. ASCII only, as `\w` would allow any language. The jar suffix is dropped.
-    private static let frame = Regexes.make(#"^\s*at ((?:[A-Za-z0-9_.$@\-]{0,80}/{1,2}){0,3}[A-Za-z0-9_$\-]{1,80}(?:\.[A-Za-z0-9_$\-]{1,80}){1,24}(?:\.<(?:init|clinit)>)?)\(([A-Za-z0-9_$.\-]{1,80}\.(?:java|kt|kts|groovy|scala)(?::[0-9]{1,7})?|Native Method|Unknown Source)\)(?:\s{0,4}[~?]?\[[^\]]{0,160}\])?$"#)
+    private static let frame = Regexes.make(#"^\s*at ((?:[A-Za-z0-9_.$@\-]{0,80}/{1,2}){0,3}[A-Za-z0-9_$\-]{1,80}(?:\.[A-Za-z0-9_$\-]{1,80}){1,24}(?:\.<(?:init|clinit)>)?)\(([A-Za-z0-9_$\-]{1,80}\.(?:java|kt|kts|groovy|scala)(?::[0-9]{1,7})?|Native Method|Unknown Source)\)(?:\s{0,4}[~?]?\[[^\]]{0,160}\])?$"#)
     /// Only the exception's class. Its message can hold anything, including what a player typed.
     private static let exception = Regexes.make(#"^\s*(Caused by: |Suppressed: )?((?:[a-zA-Z_][A-Za-z0-9_$]{0,80}\.){1,12}[A-Za-z0-9_$]{0,80}(?:Exception|Error|Throwable))(?::.*)?$"#)
     private static let moreFrames = Regexes.make(#"^\s*\.\.\. ([0-9]{1,6}) (?:more|common frames omitted)$"#)
@@ -332,14 +354,16 @@ public final class ProblemLog {
         return (0..<m.numberOfRanges).map { i in Range(m.range(at: i), in: text).map { String(text[$0]) } ?? "" }
     }
 
+    static func looksLikeRule(_ rule: String) -> Bool { looksLikeCode(rule) }
+
     /// Small words that join a sentence, and never sit side by side as parts of a real class path.
     private static let sentenceWords: Set<String> = ["is", "the", "my", "and", "to", "at", "me", "please", "ignore", "previous", "instructions", "tell", "owner", "password", "you", "your", "am", "are", "he", "she", "her", "his", "lives", "says", "call", "hi", "there", "rules", "this", "that", "of", "in", "with", "from"]
 
     /// Identifiers in real code are short and rarely full of underscores, and a path doesn't read as a sentence.
     /// This doesn't stop a determined plugin, but it costs it.
     private static func looksLikeCode(_ text: String) -> Bool {
-        let parts = text.split(whereSeparator: { $0 == "." || $0 == "/" || $0 == "$" })
-        guard text.count <= 240, parts.count <= 18 else { return false }
+        let parts = text.split(whereSeparator: { $0 == "." || $0 == "/" || $0 == "$" || $0 == "-" })
+        guard text.count <= 240, parts.count <= 24, text.split(separator: ".").allSatisfy({ $0.filter { $0 == "-" }.count <= 4 }) else { return false }
         guard parts.allSatisfy({ $0.count <= 56 && $0.filter { $0 == "_" }.count <= 3 }) else { return false }
         return Set(parts.map { $0.lowercased() }).intersection(sentenceWords).count < 2
     }
@@ -361,7 +385,7 @@ public final class ProblemLog {
     private func knownException(_ line: String) throws -> String? {
         if let g = Self.groups(Self.missingDependency, line) {
             let names = try g[1].components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.map { try sanitizer.codeText($0) }.compactMap { $0 }
-            guard names.count == g[1].components(separatedBy: ",").count else { return nil }
+            guard names.count == g[1].components(separatedBy: ",").count, g[1].components(separatedBy: ",").allSatisfy(Self.looksLikeCode) else { return nil }
             return "UnknownDependencyException: it needs these plugins, which aren't installed: \(names.joined(separator: ", "))"
         }
         if let g = Self.groups(Self.unsupportedAPI, line) { return "InvalidPluginException: it asks for API version \(g[1]), newer than this server supports" }
@@ -371,8 +395,11 @@ public final class ProblemLog {
 
     /// Long words don't appear in version numbers, and neither should a person.
     private func isVersion(_ text: String) throws -> Bool {
-        guard text.range(of: "[A-Za-z]{9,}", options: .regularExpression) == nil else { return false }
-        return try sanitizer.codeText(text) == text
+        guard text.range(of: "[A-Za-z]{9,}", options: .regularExpression) == nil,
+              text.range(of: #"^[0-9]{1,4}(\.[0-9]{1,4}){0,3}([-+.][A-Za-z0-9]{1,12}){0,4}$"#, options: .regularExpression) != nil else { return false }
+        // `2.21.0-dev+93-abc1234` has two parts with letters. A phrase has more.
+        let worded = text.split(whereSeparator: { "-+.".contains($0) }).filter { $0.contains(where: \.isLetter) }
+        return try worded.count <= 2 && sanitizer.codeText(text) == text
     }
 
     private static func isValid(ip: String) -> Bool {
@@ -466,6 +493,12 @@ public final class ProblemLog {
                 inProblem = true
                 let jar = try sanitizer.cleanFileName(m[1]) ?? "one whose name isn't shared"
                 add("ERROR: this plugin jar is damaged or unreadable: \(jar)")
+                continue
+            }
+            if thread == "ServerMain", level != "INFO", let m = Self.groups(Self.loadFailed, body) ?? Self.groups(Self.loadFailedModern, body), jars.contains(m[1]) {
+                inProblem = true
+                let jar = try sanitizer.cleanFileName(m[1]) ?? "one whose name isn't shared"
+                add("ERROR: a plugin jar failed to load: \(jar)")
                 continue
             }
             guard thread == "Server thread" else {
@@ -564,7 +597,8 @@ public final class ProblemLog {
         var used = 0, characters = 0
         for item in kept.reversed() {
             let size = item.key.count
-            if used + item.block.count > limit || characters + size > maxReportCharacters { continue }
+            // Stops at the first that doesn't fit, so a smaller limit only ever shows less of the same, and the preview stays the upper bound.
+            if used + item.block.count > limit || characters + size > maxReportCharacters { break }
             used += item.block.count
             characters += size
             chosen.append(item)

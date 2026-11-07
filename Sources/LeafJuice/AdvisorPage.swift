@@ -111,7 +111,7 @@ final class AdvisorCenter {
             do {
                 let key = try PrivacyKey()
                 let reader = ServerReader(root: root, sanitizer: Sanitizer(key: key))
-                return SharedPreview.text(serverToken: try key.server(folder: root, display: display), summary: try reader.summary(), issues: try reader.openIssues(limit: 100), report: try reader.recentProblems(limit: 500))
+                return SharedPreview.text(serverToken: try key.server(folder: root, display: display), summary: try reader.summary(), issues: try reader.openIssues(limit: 100), report: try reader.recentProblems(limit: 500), dismissed: try SuggestionInbox(sanitizer: nil).neverRaised(server: root.path))
             } catch {
                 return (error as? AdvisorError)?.description ?? "This server's files couldn't be read safely, so nothing would be shared."
             }
@@ -157,8 +157,12 @@ final class AdvisorCenter {
             let work = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("leafjuice-run-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: work, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             defer { try? FileManager.default.removeItem(at: work) }
-            let config = work.appendingPathComponent("client.json")
-            let receipt = work.appendingPathComponent("read")
+            // Its settings hold real paths, so they stay out of the folder the AI runs in.
+            let setup = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("leafjuice-setup-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: setup, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            defer { try? FileManager.default.removeItem(at: setup) }
+            let config = setup.appendingPathComponent("client.json")
+            let receipt = setup.appendingPathComponent("read")
             let client: [String: Any] = ["mcpServers": ["leafjuice": ["command": program, "args": ["--server", path, "--receipt", receipt.path]]]]
             try JSONSerialization.data(withJSONObject: client).write(to: config, options: .withoutOverwriting)
 
@@ -167,9 +171,9 @@ final class AdvisorCenter {
             }
             running[path] = nil
             switch outcome {
-            case .finished where !FileManager.default.fileExists(atPath: receipt.path):
-                // It never got as far as reading the log, so "nothing to raise" wouldn't be true.
-                phases[path] = .failed("The check couldn't read this server, so your earlier advice has been kept.")
+            case .finished where !FileManager.default.fileExists(atPath: receipt.path), .finished where FileManager.default.fileExists(atPath: receipt.path + ".suggest-failed"):
+                // It never read the log or couldn't leave its advice, so "nothing to raise" wouldn't be true.
+                phases[path] = .failed("The check couldn't read this server or save its advice, so your earlier advice has been kept.")
             case .finished:
                 // A new check replaces the last one, so its advice never piles up.
                 earlier.forEach { inbox.remove(id: $0) }
@@ -225,7 +229,7 @@ final class AdvisorCenter {
     private enum Outcome: Sendable { case finished, cancelled, failed(String) }
 
     /// The one place the AI client is started. `--tools ""` takes away its shell and files, `--setting-sources ""` and the
-    /// empty folder keep your CLAUDE.md files and settings out of what's sent, and nothing is left in Claude's own history.
+    /// empty folder keep your CLAUDE.md files and settings out of what's sent, and no transcript is kept. Claude Code still leaves a small log of tool names and timings in its Caches folder.
     private static func run(claude: String, config: URL, folder: URL, prompt: String, started: @MainActor (Process) -> Void) async throws -> Outcome {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: claude)
@@ -234,18 +238,21 @@ final class AdvisorCenter {
         process.arguments = ["-p", prompt, "--model", "sonnet", "--output-format", "json", "--settings", #"{"disableAllHooks":true}"#, "--setting-sources", "", "--system-prompt", systemPrompt, "--disable-slash-commands", "--no-session-persistence", "--mcp-config", config.path, "--strict-mcp-config", "--tools", "", "--allowedTools", allowed]
         // Only what it needs to run and find your sign-in, so nothing from wherever this app was started changes where data goes.
         let inherited = ProcessInfo.processInfo.environment
-        process.environment = ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LEAFJUICE_HOME"].reduce(into: ["PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"]) { $0[$1] = inherited[$1] }
+        process.environment = ["HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LEAFJUICE_HOME"].reduce(into: ["PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "DISABLE_TELEMETRY": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"]) { $0[$1] = inherited[$1] }
         let output = Pipe()
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
         try process.run()
         started(process)
-        let timeout = Task.detached { try await Task.sleep(for: .seconds(300)); process.terminate() }
+        let begun = Date(), limit: TimeInterval = 300
+        let timeout = Task.detached { try await Task.sleep(for: .seconds(limit)); process.terminate() }
         let data = await Task.detached(priority: .utility) { output.fileHandleForReading.readDataToEndOfFile() }.value
         process.waitUntilExit()
         timeout.cancel()
-        if process.terminationReason == .uncaughtSignal { return .cancelled }
+        if process.terminationReason == .uncaughtSignal {
+            return Date().timeIntervalSince(begun) >= limit - 1 ? .failed("The check took too long, so it was stopped. Your earlier advice has been kept.") : .cancelled
+        }
         let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         if body?["is_error"] as? Bool == true || body == nil {
             let said = (body?["result"] as? String)?.lowercased() ?? ""

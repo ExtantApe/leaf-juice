@@ -221,6 +221,8 @@ public final class ServerReader {
     }
 
     /// Facts only. A stored title or sample can be any line from the log, chat included, so neither is ever sent.
+    private static let issueCategories: Set<String> = ["Configuration", "Java", "Memory", "Network", "Performance", "Plugins", "Security", "Setup", "Software", "System", "World", "Other", "Uncategorized"]
+
     public func openIssues(limit: Int) throws -> [[String: Any]] {
         let log = ProblemLog(sanitizer: sanitizer, installedJars: try jarNames())
         try learnPlayers()
@@ -230,9 +232,9 @@ public final class ServerReader {
         var out: [[String: Any]] = []
         for issue in all where issue["status"] as? String == "open" {
             var item: [String: Any] = [:]
-            if let rule = issue["ruleID"] as? String, Self.check(#"[a-z0-9][a-z0-9.\-]{0,47}"#, rule), try sanitizer.codeText(rule) == rule { item["rule"] = rule } else { item["rule"] = "uncatalogued" }
+            if let rule = issue["ruleID"] as? String, Self.check(#"[a-z0-9][a-z0-9.\-]{0,47}"#, rule), ProblemLog.looksLikeRule(rule), try sanitizer.codeText(rule) == rule { item["rule"] = rule } else { item["rule"] = "uncatalogued" }
             if let severity = issue["severity"] as? String, ["info", "warning", "error", "critical"].contains(severity) { item["severity"] = severity }
-            if let category = issue["category"] as? String, Self.check("[A-Z][a-z]{1,15}( [A-Za-z][a-z]{1,10}){0,1}", category) { item["category"] = category }
+            if let category = issue["category"] as? String, Self.issueCategories.contains(category) { item["category"] = category }
             if let plugin = issue["plugin"] as? String, let trusted = try log.trustedPlugin(plugin) { item["plugin"] = trusted }
             for field in ["firstSeen", "lastSeen"] {
                 if let seen = issue[field] as? String, Self.check(#"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]{8,16}Z"#, seen) { item[field] = seen }

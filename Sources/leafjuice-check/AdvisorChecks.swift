@@ -181,6 +181,41 @@ private func logReport(_ log: String, jars: [String] = [], key home: String) thr
         let out = try sent(attack.0, "advisor-review-\(index)")
         check(!out.contains(attack.1), "blocked: \(attack.2): \(out)")
     }
+    let secondRound: [(String, String, String)] = [
+        ("at com.x.Y.run(my.name.is.Tom.and.my.password.is.hunter2.I.am.ten.java:1)", "hunter2", "a sentence in the file part"),
+        ("at my-password-is-hunter2-and-i-am-ten.x.run(F.java:1)", "hunter2", "a sentence with hyphens"),
+        ("UnknownDependencyException: Unknown/missing dependency plugins: [my-password-is-hunter2, tommy-lives-on-oak-street]", "hunter2", "a sentence as a dependency"),
+        (e + "Error occurred while enabling CoolPlugin v1-Tommy-Oak-St-12 (Is it up to date?)", "Tommy", "a phrase as a version"),
+        ("at com.x.MaryJane.run(F.java:1)", "MaryJane", "a name with its underscore removed"),
+        ("at com.x.Mary.Jane.run(F.java:1)", "Mary.Jane", "a name split by a dot"),
+        ("at com.x.FakeKid$Alice.run(F.java:1)", "FakeKid$Alice", "a name split by a dollar sign"),
+        ("at a.b$192$168$1$50.run(F.java:1)", "192$168", "an address split by dollar signs"),
+        ("at a.b11111111$2222$4333$8444$555555555555.run(F.java:1)", "11111111", "a UUID split by dollar signs"),
+        ("at kid@gmail$com/a.b.c(F.java:1)", "gmail", "an email with a dollar sign"),
+        ("at a.AIza\u{53}yD4f8kQ1234567890abcdefghijklmnopqrs.run(F.java:1)", "AIza", "a Google key"),
+        ("at a.glpat\u{2D}AbCdEf1234567890abcd.run(F.java:1)", "glpat", "a GitLab token"),
+        ("at a.sk.ant.api03.AbCdEf1234567890.run(F.java:1)", "AbCdEf", "a key with dots for dashes"),
+    ]
+    for (index, attack) in secondRound.enumerated() {
+        let out = try sent(attack.0, "advisor-review2-\(index)")
+        check(!out.contains(attack.1), "blocked: \(attack.2): \(out)")
+    }
+    let shortName = try logReport(i + "Emma joined the game\n" + e + "boom\n\tat com.x.EmmaHandler.run(F.java:1)", jars: jars, key: "advisor-review2-short").events.joined()
+    check(!shortName.contains("Emma"), "a short name as a whole word inside a class is hidden: \(shortName)")
+    let chat26 = try logReport("[12:00:00] [Server thread/INFO]: System chat: NewKid26 joined the game\n" + e + "boom\n\tat com.x.NewKid26.run(F.java:1)", jars: jars, key: "advisor-review2-26").events.joined()
+    check(!chat26.contains("NewKid26"), "names are learned from the newer log format too")
+    let say = try logReport(i + "Essentials joined the game\n" + i + "[Essentials] Enabling Essentials v1-meet-me-at-gym", jars: ["Essentials.jar"], key: "advisor-review2-say").events.joined()
+    check(!say.contains("meet"), "a player with a plugin's name can't use /say to pass as it: \(say)")
+    let noisy = "[12:00:00] [Server thread/ERROR]: Error occurred while enabling CoolPlugin v9.9.9-OLDBLOCK (Is it up to date?)\n" + (0..<260).map { e + "boom\n\tat com.example.Noisy\($0).run(N.java:1)" }.joined(separator: "\n")
+    let noisySanitizer = Sanitizer(key: try PrivacyKey(directory: privateHome("advisor-review2-limit")))
+    let noisyLog = ProblemLog(sanitizer: noisySanitizer, installedJars: jars)
+    let largest = Set(try noisyLog.report(lines: noisy.components(separatedBy: "\n"), limit: 500).events)
+    for limit in [1, 3, 100, 250] {
+        let smaller = try noisyLog.report(lines: noisy.components(separatedBy: "\n"), limit: limit).events
+        check(smaller.allSatisfy(largest.contains), "a smaller limit never shows something the preview doesn't, at \(limit)")
+    }
+    let realVersions = try logReport(e + "Error occurred while enabling CoolPlugin v2.21.0-dev+93-abc1234 (Is it up to date?)\n" + e + "Error occurred while enabling CoolPlugin v1.21.4-2 (Is it up to date?)\n" + e + "Error occurred while enabling CoolPlugin v5.4.102-SNAPSHOT (Is it up to date?)", jars: jars, key: "advisor-review2-versions").events.joined(separator: "\n")
+    for version in ["2.21.0-dev+93-abc1234", "1.21.4-2", "5.4.102-SNAPSHOT"] { check(realVersions.contains(version), "a real version still reads: \(version): \(realVersions)") }
     let later = try logReport(e + "boom\n\tat com.x.NewKidBob.run(Foo.java:1)\n" + i + "NewKidBob joined the game", jars: jars, key: "advisor-review-later").events.joined()
     check(!later.contains("NewKidBob"), "a name first seen later in the log is hidden in earlier traces")
     let floodFrames = (0..<60).map { "\tat com.example.Frame\($0).run(F.java:1)" }.joined(separator: "\n")

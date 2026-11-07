@@ -36,7 +36,7 @@ Reads also write to the key file, when a player or address is first shared.
 | Threat | Defence |
 |---|---|
 | Chat or commands reach the AI | Log wording isn't sent, from either the log or stored issues. One gap: the app stores a stack line from any thread, so unusual chat formatted exactly like a frame could reach `open_issues`, limited to that shape |
-| Player names, UUIDs and IPs reach the AI | Tokens in fixed shapes. In code-shaped text, a known player's name becomes a token wherever it sits, except for common code words such as `server`, which say nothing about anyone. An address, UUID, email or known key format drops the line, however it's written. Jars and frames that read like sentences are dropped too. World and settings file names are sent only if they're standard |
+| Player names, UUIDs and IPs reach the AI | Tokens in fixed shapes. In code-shaped text, a known player's name becomes a token wherever it sits, except for common code words such as `server`, which say nothing about anyone. An address, UUID, email or known key format drops the line, however it's written. Jars and frames with sentence words are dropped too, though that only catches wording it knows. World and settings file names are sent only if they're standard |
 | Secrets reach the AI | No free text is sent, and plugin configs aren't readable. `server.properties` is an allowlist of keys and values |
 | Chat forges an identity or changes a filter | Names come only from the server's own player files and from exact line shapes on the right thread. Only the authenticator thread and `usercache.json` can tie a name to a UUID. A plugin can forge that thread: see below |
 | The AI changes or breaks the server | There's no tool for it, and the program doesn't link `LeafJuiceCore` or use network or process APIs. A test checks the source |
@@ -136,9 +136,16 @@ The app starts Claude Code from a new empty temporary folder, with `--tools ""`,
 - **`@` in a prompt reads a file, even with no tools.** So nothing the AI wrote goes into a prompt unless it's been cut down to letters, digits, spaces and hyphens, and the key is never near the working folder.
 - **What Claude Code still sends by itself:** your account email, the temporary folder's path, and basic system details such as the OS version. The email is the one on your Anthropic account.
 - **`--safe-mode` can't be used.** It also turns off the Advisor's tools.
-- **Not tested:** a `CLAUDE.md` in `~/.claude` under `--setting-sources ""`. A planted one in a parent folder was kept out.
+- **Kept out, tested with markers:** `CLAUDE.md`, rules, skills, hooks and settings in a parent folder and in a stand-in home folder.
+- **What Claude Code leaves behind:** a small log of tool names and timings in `~/Library/Caches/claude-cli-nodejs`, with no player data. No transcript is kept.
 - **What's left:** a check only counts if the helper confirms it read the log, otherwise earlier advice is kept.
 
 ## What a plugin can still do
 
-A plugin runs inside the server, so it could send data out by itself without involving the Advisor. Short words chosen by a plugin can still reach the AI in class names, plugin names, versions and event names. Frames are capped at 20 per trace and 60,000 characters per report, and the preview shows all of it. A name spliced into a word is only caught from five letters, and a player named exactly like a plugin or a code word shows up as a token in that position, or not at all.
+A plugin runs inside the server, so it could send data out by itself without involving the Advisor. Short words chosen by a plugin can still reach the AI in class names, plugin names, versions and event names. Frames are capped at 20 per trace and 60,000 characters per report, and the preview shows all of it. Known gaps, all visible in the preview:
+
+- **Names:** a name inside a word is caught from five letters, or from three as a whole word in `EmmaHandler`. Names that aren't known players, such as a family name in a jar's file, can't be recognised. A player named like a code word, such as `Main`, isn't hidden where that word appears in code. One named like a method, such as `Max`, gets a token that its position gives away.
+- **Plugin text:** a plugin can still choose readable class names like `Meet.Tommy.tonight`, and a short word in a version.
+- **Odd spellings:** an address with mixed separators or in hex isn't recognised.
+- **The key folder check** doesn't see through firmlink paths such as `/System/Volumes/Data`, which the app's default location doesn't use.
+- **The sentence and name checks** have only been run on made-up logs.
