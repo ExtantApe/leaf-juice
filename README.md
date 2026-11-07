@@ -95,7 +95,7 @@ running. A pass means these checks passed, and the board lists what they don't c
 
 ## Features you can turn off
 
-Worlds and Multiverse, Players, History, Cleanup, Test copies, Backup drills, the Lab, Resource packs and the Wiki are all switches in **Settings**, and all
+Worlds and Multiverse, Players, History, Cleanup, Test copies, Backup drills, the Lab, Resource packs and Plugin links are all switches in **Settings**, and all
 on by default. Off hides the feature and stops its background work. Nothing it saved is deleted, and turning it back on picks up where it left off.
 These are built in: Leaf Juice doesn't load third-party code.
 
@@ -117,9 +117,11 @@ Players' games download a pack from the web, so upload the build somewhere, for 
 
 Every backup can also be copied to a **second location**, ideally another drive, with each copy checked against the original. If the main backups are lost, they can be copied back. Leaf Juice also sends a **Mac notification** for crashes, failed backups and low disk space, and you can turn that off in Settings.
 
-## Wiki
+## Plugin links
 
-A wiki for each server, built from its plugins, ranks and worlds, and viewable right in the app. The player view only lists commands a rank can be shown to use, and has no plugin settings, player names, operators or secrets. The admin view adds permissions. Your own welcome text, rules and plugin notes are kept when it updates, and you can export both views as web pages and Markdown to host anywhere.
+One page listing each enabled plugin, its version and a link to its documentation, with the server's version at the top. It only shows in the app for now.
+
+A link is filled in only when the plugin's source is already known: its jar matched a file on Modrinth, or you set the source yourself. Modrinth's wiki link comes first, then its source code link. A `plugin.yml` website or a match by name stays a suggestion until you press Use, because a name can match the wrong project. Searching by name sends that plugin's name to Hangar and SpigotMC, so it only happens when you ask, one plugin at a time. You can also type your own link.
 
 ## Install
 

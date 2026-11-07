@@ -1,0 +1,165 @@
+import LeafJuiceCore
+import SwiftUI
+
+/// Each plugin, its version and where to read about it. A link nobody has confirmed stays a suggestion.
+struct LinksPage: View {
+    @Bindable var server: ServerController
+    @State private var rows: [PluginLinkRow] = []
+    @State private var searched: [String: [PluginLinkSuggestion]] = [:]
+    @State private var searching: String?
+    @State private var refreshing = false
+    @State private var error: String?
+    @State private var editing: PluginLinkRow?
+
+    var body: some View {
+        Page(title: "Plugin Links", subtitle: "What's on this server, and where to read about each plugin.") {
+            if let error { Callout(tone: .warning, title: "Modrinth couldn't be reached", detail: error) }
+            Card(title: "This server", systemImage: "server.rack") {
+                Fact(label: "Runs", value: server.profile.software.label)
+                Fact(label: "Plugins with a link", value: "\(rows.filter { $0.link != nil }.count) of \(rows.count)")
+                HStack {
+                    Hint("Only a known source fills in a link. Everything else waits for you to choose it.")
+                    Spacer()
+                    Button(refreshing ? "Checking…" : "Check Modrinth Again") { refresh(all: true) }.buttonStyle(.juice).disabled(refreshing)
+                }
+            }
+            if rows.isEmpty {
+                Hint("No enabled plugins on this server.")
+            } else {
+                Card(title: "Plugins", systemImage: "link") {
+                    ForEach(rows) { row in
+                        rowView(row)
+                        if row.id != rows.last?.id { Divider() }
+                    }
+                }
+            }
+        }
+        .task {
+            await server.refreshPlugins()
+            reload()
+            refresh(all: false)
+        }
+        .sheet(item: $editing) { row in
+            LinkEditor(row: row, server: server) { reload() }
+        }
+    }
+
+    @ViewBuilder private func rowView(_ row: PluginLinkRow) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(row.name).font(.body.weight(.semibold)).foregroundStyle(Juice.ink).textSelection(.enabled)
+                Hint(row.version.isEmpty ? "Version unknown" : row.version)
+                Spacer()
+                if let link = row.link, let url = URL(string: link.url) {
+                    Link(destination: url) { Label(link.host, systemImage: "arrow.up.right.square") }
+                        .help(link.url)
+                } else {
+                    Text("No link").foregroundStyle(Juice.muted)
+                }
+                Button(row.link == nil ? "Add…" : "Change…") { editing = row }.buttonStyle(.juice)
+            }
+            if let link = row.link { Hint(link.origin.explanation) }
+            if row.link == nil {
+                ForEach(row.suggestions + (searched[row.key] ?? []).filter { found in !row.suggestions.contains { $0.id == found.id } }) { suggestion in
+                    suggestionView(suggestion, row)
+                }
+                if searched[row.key]?.isEmpty == true { Hint("Nothing found by that name.") }
+                if searched[row.key] == nil {
+                    HStack {
+                        Button(searching == row.key ? "Searching…" : "Search by Name") { search(row) }
+                            .buttonStyle(.juice).disabled(searching != nil)
+                        Hint("Sends this plugin's name to Hangar and SpigotMC.")
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func suggestionView(_ suggestion: PluginLinkSuggestion, _ row: PluginLinkRow) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Badge(text: "Suggestion", tone: .info)
+            if let url = URL(string: suggestion.link.url) {
+                Link(suggestion.link.host, destination: url).help(suggestion.link.url)
+            }
+            Hint(suggestion.reason)
+            Spacer()
+            Button("Use") {
+                server.chooseLink(suggestion.link.url, origin: suggestion.link.origin, forPlugin: row.key)
+                reload()
+            }
+            .buttonStyle(.juice)
+            .accessibilityLabel("Use \(suggestion.link.host) for \(row.name)")
+        }
+    }
+
+    private func reload() { rows = server.pluginLinkRows }
+
+    private func refresh(all: Bool) {
+        refreshing = true
+        Task {
+            defer { refreshing = false }
+            do {
+                try await server.refreshModrinthLinks(all: all)
+                error = nil
+            } catch let failure {
+                error = failure.localizedDescription
+            }
+            reload()
+        }
+    }
+
+    private func search(_ row: PluginLinkRow) {
+        guard let plugin = server.plugins.first(where: { $0.key == row.key }) else { return }
+        searching = row.key
+        Task {
+            searched[row.key] = await PluginLinks.searchByName(plugin)
+            searching = nil
+        }
+    }
+}
+
+private struct LinkEditor: View {
+    let row: PluginLinkRow
+    let server: ServerController
+    let changed: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var text = ""
+    @State private var invalid = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Link for \(row.name)").font(.title2.weight(.semibold)).foregroundStyle(Juice.ink)
+            TextField("Web address", text: $text, prompt: Text("https://example.com/docs"))
+                .textFieldStyle(.roundedBorder)
+            if invalid { Callout(tone: .danger, title: "That isn't a web address", detail: "It needs to start with https:// or http://.") }
+            if server.pluginLinkStore.chosen[row.key] != nil {
+                Hint("Removing your choice goes back to the plugin's known source, if it has one.")
+            }
+            HStack {
+                if server.pluginLinkStore.chosen[row.key] != nil {
+                    Button("Remove My Choice") {
+                        server.clearChosenLink(forPlugin: row.key)
+                        changed()
+                        dismiss()
+                    }
+                    .buttonStyle(.juice)
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }.buttonStyle(.juice).keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    if server.chooseLink(text, origin: .typed, forPlugin: row.key) {
+                        changed()
+                        dismiss()
+                    } else {
+                        invalid = true
+                    }
+                }
+                .buttonStyle(.juicePrimary).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
+        .onAppear { text = row.link?.url ?? "" }
+    }
+}

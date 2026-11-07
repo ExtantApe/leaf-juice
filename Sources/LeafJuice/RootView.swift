@@ -174,7 +174,7 @@ struct ServerWindow: View {
     @ViewBuilder private var pageView: some View {
         switch model.visiblePage {
         case .resourcePacks: ResourcePacksPage(server: server)
-        case .wiki: WikiPage(server: server)
+        case .links: LinksPage(server: server)
         case .overview: OverviewPage(model: model, server: server, renaming: $renaming)
         case .console: ConsolePage(server: server)
         case .history: HistoryPage(server: server)

@@ -312,7 +312,7 @@ do {
             equal(a.sorted.first?.ruleID, rule.id, "sample routes to \(rule.id): \(sample)")
         }
     }
-    let pages = Set(["resourcePacks", "wiki", "launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
+    let pages = Set(["resourcePacks", "links", "launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
     for rule in rules { if let a = rule.action { check(pages.contains(a.page), "\(rule.id) action page") } }
     check(rules.allSatisfy { !$0.title.isEmpty && !$0.explanation.isEmpty }, "rules have text")
 }
@@ -1359,114 +1359,59 @@ do {
         check(c.lastSizeCheck != oldCheck, "and on starts it")
     }
     await resourcePackChecks()
-    do { // The wiki: reading plugin.yml in the shapes it really takes.
-        let yaml = """
-        name: Example
-        version: '1.2'
-        description: Does things
-        author: Someone
-        commands:
-          home:
-            description: Go home
-            usage: /<command> [name]
-            aliases: [h, gohome]
-            permission: example.home
-          warp:
-            description: >
-              Goes somewhere
-            aliases:
-            - w
-            permission: example.warp
-          secret:
-            description: Admin things
-            usage: "§cUse /<command>"
-            permission: example.admin
-          open:
-            description: No permission declared
-        permissions:
-          example.home:
-            description: Use home
-            default: true
-          example.warp:
-            description: Use warp
-            default: op
-          example.admin:
-            description: Staff
-            default: op
-          example.*:
-            description: Everything
-            children:
-              example.home: true
-              example.warp: true
-              example.admin: true
-          nope.only:
-            default: false
-        """
-        let manual = PluginManualReader.parse(yaml)
-        equal(manual?.name, "Example", "name read"); equal(manual?.authors, ["Someone"], "author read"); equal(manual?.commands.map(\.name), ["home", "warp", "secret", "open"], "commands read")
-        equal(manual?.commands[0].aliases, ["h", "gohome"], "inline aliases"); equal(manual?.commands[1].aliases, ["w"], "listed aliases"); equal(manual?.commands[1].description, "Goes somewhere", "folded text")
-        equal(manual?.permissions.first { $0.node == "example.*" }?.children.count, 3, "permission children"); equal(manual?.permissions.first { $0.node == "nope.only" }?.defaultValue, "false", "a default")
-        equal(Wiki.tidyUsage("§cUse /<command>", "secret"), "Use /secret", "usage tidied")
-        equal(PluginManualReader.parse("nothing useful"), nil, "not a plugin.yml")
-
-        // Ranks, from a real export's shape.
-        let export = #"{"groups":{"vip":{"nodes":[{"type":"permission","key":"example.warp","value":true},{"type":"prefix","key":"prefix.100.&6VIP","value":true},{"type":"weight","key":"weight.10","value":true}]},"default":{"nodes":[{"type":"permission","key":"example.home","value":false}]},"moderator":{"nodes":[{"type":"inheritance","key":"group.vip","value":true},{"type":"permission","key":"example.*","value":true,"context":{"server":"survival"}},{"type":"permission","key":"example.home","value":false}]}}}"#
-        let ranks = WikiRanks.parse(Data(export.utf8))
-        equal(ranks.map(\.name), ["default", "moderator", "vip"], "ranks read, by weight")
-        equal(ranks.first { $0.name == "vip" }?.prefix, "VIP", "prefix without color codes"); equal(ranks.first { $0.name == "vip" }?.weight, 10, "weight")
-        equal(ranks.first { $0.name == "moderator" }?.grants.first?.context, "server=survival", "context kept")
-        let perms = manual!.permissions
-        let vip = ranks.first { $0.name == "vip" }!, moderator = ranks.first { $0.name == "moderator" }!, base = ranks.first { $0.name == "default" }!
-        equal(WikiRanks.has(vip, node: "example.warp", ranks: ranks, permissions: perms), true, "direct")
-        equal(WikiRanks.has(vip, node: "example.admin", ranks: ranks, permissions: perms), nil, "silent")
-        equal(WikiRanks.has(moderator, node: "example.warp", ranks: ranks, permissions: perms), true, "wildcard")
-        equal(WikiRanks.has(moderator, node: "example.home", ranks: ranks, permissions: perms), false, "an exact no beats a wildcard")
-        equal(WikiRanks.has(base, node: "example.home", ranks: ranks, permissions: perms), false, "denied for everyone")
-        let commands = manual!.commands
-        func who(_ i: Int) -> WikiContent.Who { Wiki.who(commands[i], permissions: perms, ranks: ranks) }
-        check(!who(0).everyone, "a default rank's no overrides the plugin's default yes")
-        equal(who(1).ranks.sorted(), ["moderator", "vip"], "a rank-only command names its ranks"); check(!who(1).everyone, "and isn't for everyone")
-        equal(who(2).ranks, ["moderator"], "an admin command only goes to who has it")
-        check(who(3).unconfirmed, "no declared permission is told apart"); check(!who(3).isPublic, "and isn't called public")
-        check(Wiki.who(commands[0], permissions: perms, ranks: []).everyone, "with no ranks known, the plugin's default applies")
-        check(!Wiki.who(commands[2], permissions: perms, ranks: []).isPublic, "and an op-only command stays private")
-
-        // Nothing it shouldn't.
-        let props = "rcon.password=hunter2\nmanagement-server-secret=topsecret\nresource-pack=https\\://x.example/secretlink.zip\nresource-pack-sha1=abc123def\ndifficulty=hard\npvp=false\nserver-ip=10.0.0.5\nrequire-resource-pack=true\n"
-        var settings = WikiSettings()
-        settings.address = "play.example.com"; settings.rules = "Be <kind>.\n\nNo griefing."
-        var wiki = Wiki.assemble(serverName: "My <Server>", message: "Hello & welcome", software: "Paper 1.21.11", properties: props, manuals: [manual!], ranks: ranks, ranksKnown: true, worlds: [
-            .init(name: "world", environment: "Normal", gameMode: "Survival", difficulty: "Hard", hidden: false), .init(name: "staffbase", environment: "Normal", gameMode: "Creative", difficulty: "Easy", hidden: true),
-        ], settings: settings)
-        let playerPage = Wiki.html(wiki, admin: false), adminPage = Wiki.html(wiki, admin: true)
-        for secret in ["hunter2", "topsecret", "secretlink", "abc123def", "10.0.0.5"] {
-            check(!playerPage.contains(secret), "player wiki never has \(secret)"); check(!adminPage.contains(secret), "admin wiki never has \(secret)")
-            check(!Wiki.markdown(wiki, admin: true).contains(secret), "markdown never has \(secret)")
-        }
-        check(playerPage.contains("My &lt;Server&gt;") && !playerPage.contains("My <Server>"), "text is escaped"); check(playerPage.contains("Be &lt;kind&gt;."), "your words too")
-        check(playerPage.contains("Hard"), "allowed facts shown"); check(playerPage.contains("Required. Accept it"), "the pack is explained, not linked")
-        check(!playerPage.contains("example.warp"), "players don't see permission nodes"); check(adminPage.contains("example.warp"), "admins do")
-        check(!playerPage.contains("staffbase"), "a hidden world stays hidden"); check(adminPage.contains("staffbase"), "except from admins")
-        check(playerPage.contains("/warp") || playerPage.contains("warp"), "a rank's command is listed for players")
-        check(!playerPage.contains("No permission declared"), "unconfirmed commands stay out by default")
-        wiki.settings.showUnconfirmed = true
-        check(Wiki.html(wiki, admin: false).contains("No permission declared"), "unless you say otherwise")
-        wiki.settings.hiddenPlugins = ["Example"]
-        check(!Wiki.html(wiki, admin: false).contains("Goes somewhere"), "a plugin can be left out"); check(Wiki.html(wiki, admin: true).contains("Goes somewhere"), "of the player wiki only")
-        wiki.settings = settings
-        let exported = folder("wiki-export")
-        try Wiki.write(wiki, to: exported)
-        write("A note from me", Wiki.notesFile(wiki.serverName, plugin: "Example"))
-        try Wiki.write(wiki, to: exported)
-        check((try String(contentsOf: exported.appendingPathComponent("player/index.html"), encoding: .utf8)).contains("A note from me"), "notes appear")
-        check(FileOps.exists(Wiki.notesFile(wiki.serverName, plugin: "Example")), "and survive exporting again")
-        check(FileOps.exists(exported.appendingPathComponent("player/wiki.md")) && FileOps.exists(exported.appendingPathComponent("admin/index.html")), "both views, as pages and Markdown")
-
+    do {
         // Names that collide on a Mac.
         let collide = folder("case-collide")
         write("online-mode=false\n", collide.appendingPathComponent("server.properties"))
         check(PlayerMerge.caseCollisions(ServerPaths(root: collide), players: []).isEmpty, "nothing to warn about with no players")
-    } catch { failures.append("wiki threw: \(error)") }
+    }
+    do { // Plugin links: a known source fills one in, and nothing else does.
+        for bad in ["javascript:alert(1)", "file:///etc/passwd", "ftp://example.com", "https://", "not a link", "https://user:pass@example.com/", "https://me@example.com/", "https://example.com/" + String(repeating: "a", count: 3000), ""] {
+            equal(PluginLinks.clean(bad), nil, "not a link: \(bad.prefix(40))")
+        }
+        equal(PluginLinks.clean("  https://example.com/docs \n"), "https://example.com/docs", "spaces trimmed"); equal(PluginLinks.clean("http://example.com"), "http://example.com", "plain http allowed")
+        equal(PluginLink(url: "https://docs.example.com/a", origin: .typed).host, "docs.example.com", "the host is what gets shown")
+
+        let modrinth: PluginSource = .modrinth(project: "abc", allowBeta: false)
+        equal(PluginLinks.fromSource(modrinth, modrinth: ModrinthLinks(wiki: "https://w.example.com", code: "https://c.example.com")), PluginLink(url: "https://w.example.com", origin: .modrinthWiki), "wiki first")
+        equal(PluginLinks.fromSource(modrinth, modrinth: ModrinthLinks(code: "https://c.example.com")), PluginLink(url: "https://c.example.com", origin: .modrinthCode), "then its source code")
+        equal(PluginLinks.fromSource(modrinth, modrinth: ModrinthLinks(wiki: "javascript:alert(1)", code: "https://c.example.com"))?.origin, .modrinthCode, "a bad wiki link is skipped")
+        equal(PluginLinks.fromSource(modrinth, modrinth: nil)?.url, "https://modrinth.com/plugin/abc", "before Modrinth answers, its page")
+        equal(PluginLinks.fromSource(.github(repo: "o/r", assetPattern: "", prereleases: false), modrinth: nil)?.url, "https://github.com/o/r", "a GitHub repo, not its releases")
+        equal(PluginLinks.fromSource(.spigot(resourceID: 7), modrinth: nil)?.url, "https://www.spigotmc.org/resources/7/", "SpigotMC page")
+        equal(PluginLinks.fromSource(.hangar(project: "o/p", channel: "Release"), modrinth: nil)?.url, "https://hangar.papermc.io/o/p", "Hangar page")
+        equal(PluginLinks.fromSource(.web(url: "javascript:alert(1)", linkPattern: ""), modrinth: nil), nil, "a bad source gives no link")
+        equal(PluginLinks.fromSource(.none, modrinth: nil), nil, "no source, no link")
+
+        func plugin(_ name: String, website: String? = nil, enabled: Bool = true) -> InstalledPlugin {
+            var d = PluginDescriptor(name: name); d.version = "1.2"; d.website = website
+            return InstalledPlugin(fileName: "\(name).jar\(enabled ? "" : ".disabled")", enabled: enabled, descriptor: d, digests: nil, size: 1)
+        }
+        var store = PluginLinkStore()
+        store.modrinth["abc"] = ModrinthLinks(wiki: "https://w.example.com")
+        let sources: [String: PluginSource] = ["known": modrinth, "typed": modrinth]
+        store.chosen["typed"] = PluginLink(url: "https://mine.example.com", origin: .typed)
+        let rows = PluginLinks.rows([plugin("Known"), plugin("Typed"), plugin("Site", website: "https://site.example.com"), plugin("BadSite", website: "javascript:alert(1)"), plugin("Private"), plugin("Off", enabled: false)], source: { sources[$0.key] ?? .none }, store: store)
+        func row(_ key: String) -> PluginLinkRow? { rows.first { $0.key == key } }
+        equal(row("known")?.link?.origin, .modrinthWiki, "a known source fills in the link"); equal(row("known")?.version, "1.2", "with its version")
+        equal(row("typed")?.link?.url, "https://mine.example.com", "your choice wins")
+        equal(row("site")?.link, nil, "a website field is never the link by itself"); equal(row("site")?.suggestions.first?.link.origin, .website, "it's a suggestion")
+        equal(row("badsite")?.suggestions.count, 0, "a bad website isn't even suggested")
+        equal(row("private")?.link, nil, "nothing known, no link"); check(row("off") == nil, "a disabled plugin isn't listed")
+
+        let answer = #"[{"id":"AAA","slug":"some-plugin","wiki_url":"https://w.example.com","source_url":null},{"id":"BBB","wiki_url":null,"source_url":"https://c.example.com"}]"#
+        let parsed = try PluginLinks.parseModrinth(Data(answer.utf8))
+        equal(parsed["AAA"]?.wiki, "https://w.example.com", "by ID"); equal(parsed["some-plugin"]?.wiki, "https://w.example.com", "and by slug"); equal(parsed["BBB"]?.code, "https://c.example.com", "no slug is fine")
+        let asked = try PluginLinks.modrinthAddress(["a b", "c"]).absoluteString
+        check(asked.hasPrefix("https://api.modrinth.com/v2/projects?ids=") && !asked.contains(" "), "project IDs go in the address, encoded")
+
+        let c = ServerController(root: folder("links"), profile: ServerProfile())
+        equal(c.chooseLink("javascript:alert(1)", origin: .typed, forPlugin: "x"), false, "a bad link is refused"); equal(c.pluginLinkStore.chosen["x"], nil, "and not saved")
+        equal(c.chooseLink("https://mine.example.com", origin: .typed, forPlugin: "x"), true, "a good one is saved"); equal(c.pluginLinkStore.chosen["x"]?.origin, .typed, "and survives reading back")
+        c.clearChosenLink(forPlugin: "x"); equal(c.pluginLinkStore.chosen["x"], nil, "and can be removed")
+        try await c.refreshModrinthLinks(all: true)  // No plugins, so this must not reach for the network or fail.
+        c.stopTicker()
+    } catch { failures.append("plugin links threw: \(error)") }
     do { // The audit: paths that delete or move by name.
         let r = folder("audit-names")
         equal(FileOps.child("", of: r), nil, "an empty name isn't the folder itself"); equal(FileOps.child(".", of: r), nil, "nor is a dot")
@@ -2144,12 +2089,6 @@ if CommandLine.arguments.contains("--plugin-report") {
         for p in proposals { print("    \(p.plugin.name) \(p.plugin.version): \(p.options.map { "\($0.suggestion.source.summary) \($0.newest ?? "?")\($0.looksWrong ? " WRONG" : "")" })") }
         c.stopTicker()
     } catch { print("  find sources failed: \(error)") }
-    var manuals: [PluginManual] = []
-    for plugin in plugins where plugin.enabled { if let m = await PluginManualReader.read(jar: paths.plugins.appendingPathComponent(plugin.fileName)) { manuals.append(m) } }
-    let wiki = Wiki.assemble(serverName: "Test", message: "", software: "", properties: "", manuals: manuals, ranks: [], ranksKnown: false, worlds: [], settings: WikiSettings())
-    print("  wiki: read \(manuals.count) manuals, \(wiki.commandCount) commands, \(wiki.publicCommandCount) open to everyone by plugin defaults, \(wiki.plugins.flatMap(\.entries).filter(\.who.unconfirmed).count) not stated, \(wiki.plugins.flatMap(\.manual.permissions).count) permissions")
-    print("  per plugin: \(wiki.plugins.filter { !$0.entries.isEmpty }.map { "\($0.manual.name) \($0.entries.filter(\.who.isPublic).count)/\($0.entries.count)" }.joined(separator: ", "))")
-    print("  page sizes: player \(Wiki.html(wiki, admin: false).count), admin \(Wiki.html(wiki, admin: true).count)")
     print("  groups: \(PluginThemes.batches(plugins.filter { !Trial.disabledInCopies.contains($0.key) }).map { "\($0.title):\($0.plugins.count)" })")
     exit(0)
 }
@@ -2165,20 +2104,6 @@ if CommandLine.arguments.contains("--perf") {
         let took = Date().timeIntervalSince(start)
         print("  \(title): \(Int(Double(count) / took)) lines a second")
     }
-    exit(0)
-}
-if let flag = CommandLine.arguments.firstIndex(of: "--wiki-demo"), flag + 1 < CommandLine.arguments.count {
-    // Writes an example wiki from the sandbox's plugin copies with made-up ranks and words, for looking at the page.
-    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".lab-sandbox", isDirectory: true)
-    let paths = ServerPaths(root: base.appendingPathComponent("servers/lab-model", isDirectory: true))
-    var manuals: [PluginManual] = []
-    for plugin in await PluginScanner.scan(paths) where plugin.enabled { if let m = await PluginManualReader.read(jar: paths.plugins.appendingPathComponent(plugin.fileName)) { manuals.append(m) } }
-    let ranks = WikiRanks.parse(Data(#"{"groups":{"default":{"nodes":[{"type":"permission","key":"gsit.*","value":true},{"type":"permission","key":"chestsort.use","value":true}]},"member":{"nodes":[{"type":"weight","key":"weight.10","value":true},{"type":"prefix","key":"prefix.10.&aMember","value":true},{"type":"inheritance","key":"group.default","value":true},{"type":"permission","key":"tardis.use","value":true}]},"moderator":{"nodes":[{"type":"weight","key":"weight.50","value":true},{"type":"inheritance","key":"group.member","value":true},{"type":"permission","key":"citizens.*","value":true}]}}}"#.utf8))
-    var settings = WikiSettings()
-    settings.address = "play.example.com"; settings.welcome = "A friendly survival server.\n\nSay hello when you arrive."; settings.rules = "Be kind.\nNo griefing."
-    let wiki = Wiki.assemble(serverName: "Example Server", message: "Welcome in", software: "Paper 1.21.11", properties: "difficulty=normal\ngamemode=survival\nmax-players=20\npvp=false\nresource-pack=https\\://x/y.zip\nrequire-resource-pack=true\n", manuals: manuals, ranks: ranks, ranksKnown: true, worlds: [.init(name: "world", environment: "Normal", gameMode: "Survival", difficulty: "Normal", hidden: false), .init(name: "mining", environment: "Normal", gameMode: "Survival", difficulty: "Hard", hidden: false), .init(name: "deep", environment: "Nether", gameMode: "Survival", difficulty: "Hard", hidden: false)], settings: settings)
-    try! Wiki.write(wiki, to: URL(fileURLWithPath: CommandLine.arguments[flag + 1]))
-    print("  commands open to players: \(wiki.publicCommandCount) of \(wiki.commandCount)")
     exit(0)
 }
 if CommandLine.arguments.contains("--lab-demo") {
@@ -2234,6 +2159,9 @@ if CommandLine.arguments.contains("--real-paper") {
 @MainActor func runLiveAPIs() async {
     section("LIVE: APIs")
     do {
+        let links = try await PluginLinks.lookUpModrinth(["luckperms", "viaversion"])
+        check(PluginLinks.clean(links["luckperms"]?.wiki ?? "") != nil, "Modrinth gives LuckPerms a wiki link")
+        check(PluginLinks.clean(links["viaversion"]?.code ?? "") != nil, "and ViaVersion its source code")
         let versions = try await SoftwareCatalog.versions(.paper)
         check(versions.first.map { gv($0) > gv("1.21") } == true, "paper versions newest first: \(versions.prefix(2))")
         let paper = try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")
