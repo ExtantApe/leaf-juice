@@ -28,8 +28,12 @@ enum Regexes {
     static let ipv6 = make(#"(?<![\w:.])(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?::(?:[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){0,6})?)(?![\w])"#, [.caseInsensitive])
     /// Long unbroken text, which is how most keys look when their format is unknown.
     /// Stricter than the ones above: inside code, a dot or underscore next to these is no excuse.
-    static let codeIP = make(#"(?<!\d)(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?!\d)"#)
-    static let codeUUID = make(#"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])"#, [.caseInsensitive])
+    /// Any four dotted numbers, or an address written with dashes or underscores, as real code holds neither.
+    static let codeIP = make(#"(?<![0-9])[0-9]{1,5}(?:\.[0-9]{1,5}){3}(?![0-9])|(?<![0-9])0*(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])(?:[\-_]0*(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])){3}(?![0-9])"#)
+    /// 32 hex digits or more, however they're split up.
+    static let codeUUID = make(#"(?:[0-9a-f][.\-_]?){32}"#, [.caseInsensitive])
+    /// A module version such as `java.base@21.0.1` has no letters after its dot, so it isn't caught.
+    static let codeEmail = make(#"@[A-Za-z0-9\-]{1,63}\.[A-Za-z]{2,}"#)
     static let identifier = make("[A-Za-z0-9_]+")
     static let longOpaque = make(#"[A-Za-z0-9_+/=.\-]{24,4000}"#)
 }
@@ -58,6 +62,8 @@ public enum Scrub {
         var out = String.UnicodeScalarView()
         for scalar in plain.unicodeScalars {
             if scalar == "\n" || scalar == "\t" { out.append(scalar); continue }
+            // Variation selectors and blank fillers, which are invisible without being marked as format characters.
+            if scalar.properties.isDefaultIgnorableCodePoint { continue }
             switch scalar.properties.generalCategory {
             case .control, .format, .privateUse, .unassigned, .surrogate: continue
             case .lineSeparator, .paragraphSeparator: out.append("\n")
@@ -93,6 +99,7 @@ public final class Sanitizer {
     private var nameOf: [String: String] = [:]
     private var displayOf: [String: String] = [:]
     private var namePattern: NSRegularExpression?
+    private var identifierMatches: [String: String?] = [:]
 
     public init(key: PrivacyKey) { self.key = key }
 
@@ -101,8 +108,10 @@ public final class Sanitizer {
     public func learnPlayer(name: String, uuid: String? = nil) {
         guard Self.validName.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil else { return }
         let lower = name.lowercased()
-        if displayOf[lower] == nil { namePattern = nil }
+        if displayOf[lower] == nil { namePattern = nil; identifierMatches = [:] }
         displayOf[lower] = name
+        // A Bedrock name's marker isn't part of an identifier, so code holds the name without it.
+        if lower.hasPrefix(".") || lower.hasPrefix("*") { displayOf[String(lower.dropFirst())] = name }
         if let uuid, Regexes.uuid.firstMatch(in: uuid, range: NSRange(uuid.startIndex..., in: uuid))?.range.length == uuid.utf16.count {
             uuidOf[name] = uuid.lowercased()
             nameOf[uuid.lowercased()] = name
@@ -132,26 +141,54 @@ public final class Sanitizer {
         }
     }
 
-    /// A plain file name, with any player's name in it swapped. It's already been checked as a jar name, so the rest stays readable.
-    func cleanFileName(_ name: String) throws -> String {
+    /// A jar's name with any player's name in it swapped, or nil if it doesn't look like a plugin's: it holds an address,
+    /// key or UUID, or reads like a sentence.
+    func cleanFileName(_ name: String) throws -> String? {
         try learnKnownNames()
-        return try swapNames(name)
+        guard name.hasSuffix(".jar"), name.count <= 64 else { return nil }
+        let stem = String(name.dropLast(4))
+        let words = stem.split(whereSeparator: { "-_.+".contains($0) }).filter { $0.count >= 2 && $0.allSatisfy(\.isLetter) }
+        guard words.count <= 5 else { return nil }
+        return try codeText(stem).map { $0 + ".jar" }
     }
 
     /// Before a run of `codeText` calls, so it doesn't have to read the key for each one.
     func prepareForCode() throws { try learnKnownNames() }
 
-    /// Code-shaped text with any player's name swapped, or nil if it holds an address, UUID or email, which real code
-    /// wouldn't. Swapped rather than dropped, so a player who takes a word found in code as a name can't hide evidence.
-    /// Looks up whole identifiers in a set, so this stays quick however many names there are.
-    func codeText(_ text: String, swap: Bool = true) throws -> String? {
-        let range = NSRange(text.startIndex..., in: text)
-        for regex in [Regexes.codeUUID, Regexes.codeIP, Regexes.email] where regex.firstMatch(in: text, range: range) != nil { return nil }
-        guard swap else { return text }
-        return try Scrub.replace(text, Regexes.identifier) { word in
-            let lower = word.lowercased()
+    /// Words every stack trace is full of. A player who takes one as a name stays hidden, as the word says nothing about
+    /// them, and swapping it would both garble the trace and show where the name sits.
+    static let codeWords: Set<String> = ["java", "javax", "jdk", "sun", "kotlin", "kt", "groovy", "scala", "net", "org", "com", "io", "minecraft", "mojang", "bukkit", "craftbukkit", "spigotmc", "papermc", "paper", "server", "level", "world", "player", "entity", "block", "item", "thread", "run", "main", "lang", "util", "base", "app", "init", "clinit", "native", "method", "unknown", "source", "plugin", "plugins", "reflect", "invoke", "event", "command", "exception", "error", "get", "set", "tick", "load", "enable", "disable", "core", "api", "internal", "impl", "common", "network", "jar"]
+
+    /// The player whose name is in an identifier: all of it, any run of its `_` parts, or spliced into a longer word.
+    private func nameInside(_ lower: String) -> String? {
+        if let known = identifierMatches[lower] { return known }
+        var found: String?
+        if !Self.codeWords.contains(lower) {
+            if displayOf[lower] != nil { found = lower }
             let parts = lower.split(separator: "_").map(String.init)
-            guard let name = displayOf[lower] != nil ? lower : parts.first(where: { displayOf[$0] != nil }) else { return word }
+            search: for length in stride(from: parts.count, through: 1, by: -1) {
+                guard found == nil else { break }
+                for start in 0...(parts.count - length) {
+                    let run = parts[start..<(start + length)].joined(separator: "_")
+                    if displayOf[run] != nil, !Self.codeWords.contains(run) { found = run; break search }
+                }
+            }
+            // Short names turn up inside ordinary words, so these only count from five letters.
+            if found == nil, displayOf.count <= 5000 {
+                found = displayOf.keys.filter { $0.count >= 5 && !Self.codeWords.contains($0) && lower.contains($0) }.max { $0.count < $1.count }
+            }
+        }
+        identifierMatches[lower] = .some(found)
+        return found
+    }
+
+    /// Code-shaped text with any player's name swapped, or nil if it holds an address, UUID, email or key, which real
+    /// code wouldn't. Swapped rather than dropped, so a player who takes a word found in code as a name can't hide evidence.
+    func codeText(_ text: String) throws -> String? {
+        let range = NSRange(text.startIndex..., in: text)
+        for regex in [Regexes.codeUUID, Regexes.codeIP, Regexes.codeEmail, Regexes.email, Regexes.knownPrefixes] where regex.firstMatch(in: text, range: range) != nil { return nil }
+        return try Scrub.replace(text, Regexes.identifier) { word in
+            guard let name = nameInside(word.lowercased()) else { return word }
             return try key.knownPlayerToken(lookup: "name:\(name)") ?? playerToken(name: displayOf[name] ?? name)
         }
     }
@@ -216,6 +253,7 @@ public final class ProblemLog {
 
     static let maxLine = 2000
     static let maxReportCharacters = 60_000
+    static let maxFramesPerTrace = 20
     private let sanitizer: Sanitizer
     private let pluginNames: Set<String>
     private let jars: Set<String>
@@ -262,8 +300,8 @@ public final class ProblemLog {
     private static let joined = Regexes.make("^\(name) (joined|left) the game$")
     private static let lostConnection = Regexes.make("^\(name) lost connection: .{0,300}$")
     private static let movedTooFast = Regexes.make("^\(name) moved (too quickly|wrongly)!.{0,60}$")
-    private static let behind = Regexes.make(#"^Can't keep up! Is the server overloaded\? Running (\d{1,9})ms or (\d{1,9}) ticks behind$"#)
-    private static let done = Regexes.make(#"^Done \(([0-9.,]{1,10})s\)! For help, type "help"$"#)
+    private static let behind = Regexes.make(#"^Can't keep up! Is the server overloaded\? Running ([0-9]{1,9})ms or ([0-9]{1,9}) ticks behind$"#)
+    private static let done = Regexes.make(#"^Done \(([0-9]{1,4}[.,][0-9]{1,3})s\)! For help, type "help"$"#)
     private static let starting = Regexes.make("^Starting minecraft server version \(minecraftVersion)$")
     private static let stopping = Regexes.make(#"^Stopping (?:the )?server$"#)
     private static let lifecycle = Regexes.make("^\\[\(plugin)\\] (Enabling|Disabling|Loading) \(plugin) v?\(version)(?: \\(build [0-9]{1,9}\\))?$")
@@ -276,13 +314,15 @@ public final class ProblemLog {
     private static let configFailed = Regexes.make(#"^Cannot load plugins/([A-Za-z0-9_\-]{1,40})/([A-Za-z0-9_\-]{1,40}\.yml)$"#)
     private static let worldFailed = Regexes.make(#"^\[([A-Za-z0-9_\-]{1,40})\] Failed to autoload world ([a-z0-9_.:\-]{1,60}): Failure\{reason=([A-Z_]{1,40})\}$"#)
     private static let watchdogMain = Regexes.make(#"^Current Thread: Server thread$"#)
-    private static let missingDependency = Regexes.make(#"UnknownDependencyException: Unknown/missing dependency plugins: \[([A-Za-z0-9_\-, ]{1,200})\]"#)
-    private static let unsupportedAPI = Regexes.make(#"InvalidPluginException: Unsupported API version ([0-9.]{1,12})$"#)
+    /// Anchored to the whole line, so a message that only quotes these words doesn't match. The closing sentence isn't sent.
+    private static let exceptionPrefix = #"^\s*(?:Caused by: )?(?:[A-Za-z_][A-Za-z0-9_$]{0,40}\.){0,8}"#
+    private static let missingDependency = Regexes.make(exceptionPrefix + #"UnknownDependencyException: Unknown/missing dependency plugins: \[([A-Za-z0-9_\-]{1,40}(?:, ?[A-Za-z0-9_\-]{1,40}){0,9})\](?:\. Please download and install these plugins to run '[^']{1,80}'\.)?$"#)
+    private static let unsupportedAPI = Regexes.make(exceptionPrefix + #"InvalidPluginException: Unsupported API version ([0-9]{1,2}(?:\.[0-9]{1,2}){0,2})$"#)
     private static let newerJava = Regexes.make(#"UnsupportedClassVersionError: .{1,200}class file version ([0-9.]{1,6})\)?, this version of the Java Runtime only recognizes class file versions up to ([0-9.]{1,6})"#)
     private static let tag = Regexes.make(#"^\[([A-Za-z0-9_\-]{1,40})\] "#)
 
     /// A real stack frame is code, with nowhere to put a sentence. ASCII only, as `\w` would allow any language. The jar suffix is dropped.
-    private static let frame = Regexes.make(#"^\s*at ((?:[A-Za-z0-9_.$@\-]{0,80}/{1,2}){0,3}[A-Za-z0-9_$\-]{1,80}(?:\.[A-Za-z0-9_$\-]{1,80}){1,24}(?:\.<(?:init|clinit)>)?)\(([A-Za-z0-9_$.\-]{1,80}\.(?:java|kt|kts|groovy|scala)(?::\d{1,7})?|Native Method|Unknown Source)\)(?:\s{0,4}[~?]?\[[^\]]{0,160}\])?$"#)
+    private static let frame = Regexes.make(#"^\s*at ((?:[A-Za-z0-9_.$@\-]{0,80}/{1,2}){0,3}[A-Za-z0-9_$\-]{1,80}(?:\.[A-Za-z0-9_$\-]{1,80}){1,24}(?:\.<(?:init|clinit)>)?)\(([A-Za-z0-9_$.\-]{1,80}\.(?:java|kt|kts|groovy|scala)(?::[0-9]{1,7})?|Native Method|Unknown Source)\)(?:\s{0,4}[~?]?\[[^\]]{0,160}\])?$"#)
     /// Only the exception's class. Its message can hold anything, including what a player typed.
     private static let exception = Regexes.make(#"^\s*(Caused by: |Suppressed: )?((?:[a-zA-Z_][A-Za-z0-9_$]{0,80}\.){1,12}[A-Za-z0-9_$]{0,80}(?:Exception|Error|Throwable))(?::.*)?$"#)
     private static let moreFrames = Regexes.make(#"^\s*\.\.\. ([0-9]{1,6}) (?:more|common frames omitted)$"#)
@@ -292,37 +332,26 @@ public final class ProblemLog {
         return (0..<m.numberOfRanges).map { i in Range(m.range(at: i), in: text).map { String(text[$0]) } ?? "" }
     }
 
-    /// Identifiers in real code are short and rarely full of underscores. This doesn't stop a determined plugin, but it costs it.
+    /// Small words that join a sentence, and never sit side by side as parts of a real class path.
+    private static let sentenceWords: Set<String> = ["is", "the", "my", "and", "to", "at", "me", "please", "ignore", "previous", "instructions", "tell", "owner", "password", "you", "your", "am", "are", "he", "she", "her", "his", "lives", "says", "call", "hi", "there", "rules", "this", "that", "of", "in", "with", "from"]
+
+    /// Identifiers in real code are short and rarely full of underscores, and a path doesn't read as a sentence.
+    /// This doesn't stop a determined plugin, but it costs it.
     private static func looksLikeCode(_ text: String) -> Bool {
-        text.split(whereSeparator: { $0 == "." || $0 == "/" }).allSatisfy { part in
-            part.count <= 64 && part.filter { $0 == "_" }.count <= 3
-        }
-    }
-
-    /// Code from Java or the server itself. A player named `server` shouldn't turn these into nonsense.
-    private static let platformCode = ["java.", "javax.", "jdk.", "sun.", "kotlin.", "net.minecraft.", "org.bukkit.", "org.spigotmc.", "io.papermc.", "com.mojang.", "ca.spottedleaf.", "com.destroystokens."]
-
-    private func isPlatformCode(_ text: String) -> Bool {
-        let classPart = text.components(separatedBy: "/").last ?? text
-        return Self.platformCode.contains { classPart.hasPrefix($0) }
-    }
-
-    /// `Main.java:12`, with only `Main` open to being a name, as a player named `java` shouldn't change every file.
-    private func placeInFile(_ place: String, platform: Bool) throws -> String? {
-        if place.hasSuffix("Method") || place.hasSuffix("Source") { return place }
-        guard let dot = place.firstIndex(of: "."), try sanitizer.codeText(place, swap: false) != nil else { return nil }
-        return try sanitizer.codeText(String(place[..<dot]), swap: !platform).map { $0 + place[dot...] }
+        let parts = text.split(whereSeparator: { $0 == "." || $0 == "/" || $0 == "$" })
+        guard text.count <= 240, parts.count <= 18 else { return false }
+        guard parts.allSatisfy({ $0.count <= 56 && $0.filter { $0 == "_" }.count <= 3 }) else { return false }
+        return Set(parts.map { $0.lowercased() }).intersection(sentenceWords).count < 2
     }
 
     /// A frame or an exception's class, and nothing else. Only the code's own parts are checked, not the words added here.
     func traceLine(_ line: String) throws -> String? {
         if let g = Self.groups(Self.frame, line), Self.looksLikeCode(g[1]) {
-            let platform = isPlatformCode(g[1])
-            guard let code = try sanitizer.codeText(g[1], swap: !platform), let place = try placeInFile(g[2], platform: platform) else { return nil }
+            guard let code = try sanitizer.codeText(g[1]), let place = try sanitizer.codeText(g[2]) else { return nil }
             return "  at \(code)(\(place))"
         }
         if let g = Self.groups(Self.exception, line), Self.looksLikeCode(g[2]) {
-            return try sanitizer.codeText(g[2], swap: !isPlatformCode(g[2])).map { "\(g[1])\($0)" }
+            return try sanitizer.codeText(g[2]).map { "\(g[1])\($0)" }
         }
         if let g = Self.groups(Self.moreFrames, line) { return "  ... \(g[1]) more" }
         return nil
@@ -331,7 +360,8 @@ public final class ProblemLog {
     /// A few exceptions whose message states the cause in a fixed form, rebuilt here from the recognised parts.
     private func knownException(_ line: String) throws -> String? {
         if let g = Self.groups(Self.missingDependency, line) {
-            let names = try g[1].components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.compactMap { try sanitizer.codeText($0) }
+            let names = try g[1].components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }.map { try sanitizer.codeText($0) }.compactMap { $0 }
+            guard names.count == g[1].components(separatedBy: ",").count else { return nil }
             return "UnknownDependencyException: it needs these plugins, which aren't installed: \(names.joined(separator: ", "))"
         }
         if let g = Self.groups(Self.unsupportedAPI, line) { return "InvalidPluginException: it asks for API version \(g[1]), newer than this server supports" }
@@ -350,7 +380,26 @@ public final class ProblemLog {
         return inet_pton(AF_INET, ip, &v4) == 1 || inet_pton(AF_INET6, ip, &v6) == 1
     }
 
+    /// Settings files every plugin might have. Any other can be named after a player, so it isn't named.
+    private static let commonSettingsFiles: Set<String> = ["config.yml", "settings.yml", "messages.yml", "lang.yml", "language.yml", "permissions.yml", "plugin.yml"]
+    /// A world can be named after anyone, so only the standard ones are named. Likewise only known failure reasons.
+    private static let standardWorlds: Set<String> = ["world", "world_nether", "world_the_end", "minecraft:overworld", "minecraft:the_nether", "minecraft:the_end"]
+    private static let worldFailures: Set<String> = ["WORLD_FOLDER_INVALID", "WORLD_NON_EXISTENT", "WORLD_EXIST", "WORLD_LOAD_FAILED", "INVALID_WORLD", "LEVEL_DAT_INVALID"]
+
     // MARK: Reading
+
+    /// Learns names before anything is built, so a name that appears late in the log is still hidden in an earlier trace.
+    public func learnNames(from lines: [String]) {
+        for raw in lines where raw.utf16.count <= Self.maxLine && (raw.contains("UUID of player") || raw.contains(" the game") || raw.contains(" logged in with") || raw.contains(" lost connection") || raw.contains(" moved ")) {
+            let line = Scrub.controls(raw)
+            guard let g = Self.groups(Self.logLine, line) else { continue }
+            if Self.groups(Self.authenticatorThread, g[1]) != nil, let a = Self.groups(Self.authenticated, g[3]) {
+                sanitizer.learnPlayer(name: a[1])
+            } else if g[1] == "Server thread", let m = Self.groups(Self.loggedIn, g[3]) ?? Self.groups(Self.joined, g[3]) ?? Self.groups(Self.lostConnection, g[3]) ?? Self.groups(Self.movedTooFast, g[3]) {
+                sanitizer.learnPlayer(name: m[1])
+            }
+        }
+    }
 
     /// One future line of the report. Nothing here is a token yet: real values only become tokens for what's actually
     /// returned, so a small `limit` records little.
@@ -365,6 +414,7 @@ public final class ProblemLog {
     /// `includePlayers` adds joins and connections. Diagnosing a server doesn't need them, so the tools leave them out.
     public func report(lines: [String], limit: Int, includePlayers: Bool = true) throws -> Report {
         try sanitizer.prepareForCode()
+        learnNames(from: lines)
         var drafts: [Draft] = []
         var withheld = 0
         var inProblem = false
@@ -414,7 +464,7 @@ public final class ProblemLog {
             }
             if thread == "ServerMain", let m = Self.groups(Self.damagedJar, body), jars.contains(m[1]) {
                 inProblem = true
-                let jar = try sanitizer.cleanFileName(m[1])
+                let jar = try sanitizer.cleanFileName(m[1]) ?? "one whose name isn't shared"
                 add("ERROR: this plugin jar is damaged or unreadable: \(jar)")
                 continue
             }
@@ -450,12 +500,15 @@ public final class ProblemLog {
                 add("INFO: the server is stopping", routine: true)
             } else if let m = Self.groups(Self.lifecycle, body), m[1] == m[3], try isVersion(m[4]), let plugin = try trustedPlugin(m[1]) {
                 add("INFO: \(m[2].lowercased()) plugin \(plugin) \(m[4])", routine: true)
+            } else if level == "INFO" {
+                // Each shape below reports a failure, which is never logged at this level. Anything here could be a person.
+                withheld += 1
             } else if let m = Self.groups(Self.enableFailed, body), try isVersion(m[2]), let plugin = try trustedPlugin(m[1]) {
                 inProblem = true
                 add("ERROR: plugin \(plugin) \(m[2]) failed to enable")
             } else if let m = Self.groups(Self.loadFailed, body) ?? Self.groups(Self.loadFailedModern, body), jars.contains(m[1]) {
                 inProblem = true
-                let jar = try sanitizer.cleanFileName(m[1])
+                let jar = try sanitizer.cleanFileName(m[1]) ?? "one whose name isn't shared"
                 add("ERROR: a plugin jar failed to load: \(jar)")
             } else if let m = Self.groups(Self.eventFailed, body), try isVersion(m[3]), try sanitizer.codeText(m[1]) == m[1], let plugin = try trustedPlugin(m[2]) {
                 inProblem = true
@@ -465,17 +518,16 @@ public final class ProblemLog {
                 add("ERROR: a scheduled task of plugin \(plugin) \(m[2]) failed")
             } else if let m = Self.groups(Self.configFailed, body), let plugin = try trustedPlugin(m[1]) {
                 inProblem = true
-                add("ERROR: plugin \(plugin) couldn't read its settings file \(m[2])")
-            } else if let m = Self.groups(Self.worldFailed, body), let plugin = try trustedPlugin(m[1]), let world = try sanitizer.codeText(m[2]) {
-                add("ERROR: plugin \(plugin) couldn't load world \(world): \(m[3])")
-            } else if level != "INFO" {
+                add("ERROR: plugin \(plugin) couldn't read " + (Self.commonSettingsFiles.contains(m[2]) ? "its settings file \(m[2])" : "one of its settings files"))
+            } else if let m = Self.groups(Self.worldFailed, body), let plugin = try trustedPlugin(m[1]) {
+                let world = Self.standardWorlds.contains(m[2]) ? "world \(m[2])" : "a world"
+                add("ERROR: plugin \(plugin) couldn't load \(world)" + (Self.worldFailures.contains(m[3]) ? ": \(m[3])" : ""))
+            } else {
                 // A problem happened, but its wording could be anything. Its stack may follow.
                 withheld += 1
                 inProblem = true
                 let source = try Self.groups(Self.tag, body).flatMap { try trustedPlugin($0[1]) }
                 add("\(level): message withheld" + (source.map { ", from plugin \($0)" } ?? ""))
-            } else {
-                withheld += 1
             }
         }
         return Report(events: try Self.assemble(drafts, limit: limit, includePlayers: includePlayers), withheld: withheld)
@@ -485,7 +537,11 @@ public final class ProblemLog {
     /// This is what stops one noisy plugin burying everything else.
     private static func assemble(_ drafts: [Draft], limit: Int, includePlayers: Bool) throws -> [String] {
         var blocks: [[Draft]] = []
+        var framesInRow = 0
         for draft in drafts where includePlayers || !draft.isPlayer {
+            // The top of each trace is what explains it, and this limits what any one trace can carry.
+            framesInRow = draft.key.hasPrefix("  at ") ? framesInRow + 1 : 0
+            if framesInRow > maxFramesPerTrace { continue }
             if draft.isTrace, !blocks.isEmpty { blocks[blocks.count - 1].append(draft) } else { blocks.append([draft]) }
         }
         var counts: [String: Int] = [:]

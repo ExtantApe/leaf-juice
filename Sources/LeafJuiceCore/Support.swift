@@ -191,6 +191,7 @@ public enum JSONStore {
     }
 
     public static func save<T: Encodable>(_ value: T, to url: URL) throws {
+        guard !AdvisorTrial.isOn else { throw LeafError("The Advisor trial doesn't save anything.") }
         try FileOps.ensureDir(url.deletingLastPathComponent())
         try encoder.encode(value).write(to: url, options: .atomic)
     }

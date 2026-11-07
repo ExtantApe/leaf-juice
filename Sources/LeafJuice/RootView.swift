@@ -6,18 +6,21 @@ struct RootView: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        Group {
-            if AdvisorTrial.isOn {
-                AdvisorTrialView(model: model)
-            } else if let server = model.selected {
-                ServerWindow(model: model, server: server).id(server.id)
-            } else {
-                WelcomeView(model: model)
+        // Without the sheets: adding or setting up a server writes to its folder.
+        if AdvisorTrial.isOn {
+            AdvisorTrialView(model: model)
+        } else {
+            Group {
+                if let server = model.selected {
+                    ServerWindow(model: model, server: server).id(server.id)
+                } else {
+                    WelcomeView(model: model)
+                }
             }
+            .sheet(isPresented: $model.showAddServer) { AddServerSheet(model: model) }
+            .sheet(item: $model.labSetup) { request in LabSetupSheet(model: model, then: request.then) }
+            .sheet(isPresented: $model.showFolderSetup, onDismiss: offerServers) { ServersFolderSheet() }
         }
-        .sheet(isPresented: $model.showAddServer) { AddServerSheet(model: model) }
-        .sheet(item: $model.labSetup) { request in LabSetupSheet(model: model, then: request.then) }
-        .sheet(isPresented: $model.showFolderSetup, onDismiss: offerServers) { ServersFolderSheet() }
     }
 
     /// If the chosen folder already holds servers, go straight to picking from them. Nothing is imported until you do.

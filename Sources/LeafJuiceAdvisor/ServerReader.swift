@@ -177,6 +177,8 @@ public final class ServerReader {
         for item in try list("usercache.json") {
             if let name = item["name"] as? String { sanitizer.learnPlayer(name: name, uuid: item["uuid"] as? String) }
         }
+        // So what's hidden doesn't depend on which tool the AI happens to call first.
+        ProblemLog(sanitizer: sanitizer, installedJars: []).learnNames(from: try logLines())
         for file in ["whitelist.json", "ops.json", "banned-players.json"] {
             for item in try list(file) {
                 if let name = item["name"] as? String { sanitizer.learnPlayer(name: name) }
@@ -210,8 +212,11 @@ public final class ServerReader {
         }
         out["settings"] = settings
         out["health"] = try health()
-        // Already limited to a plain file name. A jar named after a player shows their token instead.
-        out["pluginFiles"] = try jarNames().map { try sanitizer.cleanFileName($0) }
+        // Only names that look like a plugin's. A jar named after a player shows their token instead.
+        let jars = try jarNames()
+        let shared = try jars.map { try sanitizer.cleanFileName($0) }.compactMap { $0 }
+        out["pluginFiles"] = shared
+        if shared.count < jars.count { out["pluginFilesNotNamed"] = jars.count - shared.count }
         return out
     }
 

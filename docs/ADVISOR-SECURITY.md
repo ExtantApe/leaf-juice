@@ -36,7 +36,7 @@ Reads also write to the key file, when a player or address is first shared.
 | Threat | Defence |
 |---|---|
 | Chat or commands reach the AI | Log wording isn't sent, from either the log or stored issues. One gap: the app stores a stack line from any thread, so unusual chat formatted exactly like a frame could reach `open_issues`, limited to that shape |
-| Player names, UUIDs and IPs reach the AI | Tokens in fixed shapes. In code-shaped text, a known player's whole name becomes a token, and an address, UUID or email drops the line |
+| Player names, UUIDs and IPs reach the AI | Tokens in fixed shapes. In code-shaped text, a known player's name becomes a token wherever it sits, except for common code words such as `server`, which say nothing about anyone. An address, UUID, email or known key format drops the line, however it's written. Jars and frames that read like sentences are dropped too. World and settings file names are sent only if they're standard |
 | Secrets reach the AI | No free text is sent, and plugin configs aren't readable. `server.properties` is an allowlist of keys and values |
 | Chat forges an identity or changes a filter | Names come only from the server's own player files and from exact line shapes on the right thread. Only the authenticator thread and `usercache.json` can tie a name to a UUID. A plugin can forge that thread: see below |
 | The AI changes or breaks the server | There's no tool for it, and the program doesn't link `LeafJuiceCore` or use network or process APIs. A test checks the source |
@@ -128,3 +128,17 @@ To read suggestions with real names, in your own terminal:
 
 `--clear-suggestions` empties the inbox, which holds 200 at most. Both refuse to run when their output isn't a terminal.
 That stops an agent casually running them through a pipe, but it isn't a boundary: one with a shell could get around it.
+
+## Running Claude Code
+
+The app starts Claude Code from a new empty temporary folder, with `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, a fixed `--system-prompt`, `--disable-slash-commands`, `--no-session-persistence` and a short list of environment variables. Each of these was tested with planted markers and made-up data, with one exception noted below.
+
+- **`@` in a prompt reads a file, even with no tools.** So nothing the AI wrote goes into a prompt unless it's been cut down to letters, digits, spaces and hyphens, and the key is never near the working folder.
+- **What Claude Code still sends by itself:** your account email, the temporary folder's path, and basic system details such as the OS version. The email is the one on your Anthropic account.
+- **`--safe-mode` can't be used.** It also turns off the Advisor's tools.
+- **Not tested:** a `CLAUDE.md` in `~/.claude` under `--setting-sources ""`. A planted one in a parent folder was kept out.
+- **What's left:** a check only counts if the helper confirms it read the log, otherwise earlier advice is kept.
+
+## What a plugin can still do
+
+A plugin runs inside the server, so it could send data out by itself without involving the Advisor. Short words chosen by a plugin can still reach the AI in class names, plugin names, versions and event names. Frames are capped at 20 per trace and 60,000 characters per report, and the preview shows all of it. A name spliced into a word is only caught from five letters, and a player named exactly like a plugin or a code word shows up as a token in that position, or not at all.

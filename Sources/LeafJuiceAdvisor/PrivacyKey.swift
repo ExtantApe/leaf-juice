@@ -19,6 +19,26 @@ public enum AdvisorPaths {
 }
 
 /// Files only this user can touch: no symlinks, no one else's files, and no loosened permissions.
+extension AdvisorPaths {
+    /// Whether the advisor's folder is inside a server folder, or would be once it's made. Links are followed as far as
+    /// the path exists, as a path that doesn't exist yet can't be resolved in one go.
+    public static func homeIsInside(server: URL, home: URL = AdvisorPaths.home) -> Bool {
+        func real(_ url: URL) -> String {
+            var existing = url.standardizedFileURL
+            var rest: [String] = []
+            while realpath(existing.path, nil) == nil, existing.path != "/" {
+                rest.insert(existing.lastPathComponent, at: 0)
+                existing = existing.deletingLastPathComponent()
+            }
+            guard let resolved = realpath(existing.path, nil) else { return url.path }
+            defer { free(resolved) }
+            return ([String(cString: resolved)] + rest).joined(separator: "/")
+        }
+        let root = real(server)
+        return (real(home) + "/").hasPrefix(root.hasSuffix("/") ? root : root + "/")
+    }
+}
+
 enum PrivateFiles {
     static func ensureDirectory(_ url: URL) throws {
         if mkdir(url.path, 0o700) != 0 && errno == ENOENT {

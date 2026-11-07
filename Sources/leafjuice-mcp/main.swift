@@ -1,5 +1,6 @@
 // A read-only MCP server over stdin and stdout. See docs/ADVISOR-SECURITY.md before changing anything here.
 //   leafjuice-mcp --server <folder> [--server <folder>...]    Serve those servers, and no others.
+//                 [--receipt <file>]                          Create that file once the log has been read, so the app can tell a real check from an empty one.
 //   leafjuice-mcp --suggestions                               Show suggestions with real names, for a person at a terminal.
 //   leafjuice-mcp --clear-suggestions                         Delete them, also only from a terminal.
 import Darwin
@@ -36,9 +37,11 @@ if CommandLine.arguments.contains("--suggestions") || CommandLine.arguments.cont
 // MARK: Setup
 
 var folders: [URL] = []
+var receipt: String?
 var arguments = Array(CommandLine.arguments.dropFirst())
 while !arguments.isEmpty {
     let argument = arguments.removeFirst()
+    if argument == "--receipt", !arguments.isEmpty { receipt = arguments.removeFirst(); continue }
     guard argument == "--server", !arguments.isEmpty else { fail("Usage: leafjuice-mcp --server <folder> [--server <folder>...], or --suggestions") }
     folders.append(URL(fileURLWithPath: arguments.removeFirst(), isDirectory: true))
 }
@@ -47,10 +50,8 @@ let key: PrivacyKey
 let inbox: SuggestionInbox
 var servers: [String: ServerReader] = [:]
 // Checked first, so a refusal doesn't leave a new folder inside a server.
-let advisorHome = AdvisorPaths.home.standardizedFileURL.resolvingSymlinksInPath().path + "/"
 for folder in folders {
-    let path = folder.standardizedFileURL.resolvingSymlinksInPath().path
-    guard !advisorHome.hasPrefix(path.hasSuffix("/") ? path : path + "/") else { fail("The advisor's private folder can't be inside a server folder.") }
+    guard !AdvisorPaths.homeIsInside(server: folder) else { fail("The advisor's private folder can't be inside a server folder.") }
 }
 do {
     key = try PrivacyKey()
@@ -109,6 +110,10 @@ func call(_ name: String, _ args: [String: Any]) throws -> [String: Any] {
         return text(["issues": try reader.openIssues(limit: clamp(args["limit"], fallback: 25, max: 100))])
     case "recent_problems":
         let report = try reader.recentProblems(limit: clamp(args["limit"], fallback: 100, max: 500))
+        if let receipt {
+            let fd = open(receipt, O_CREAT | O_WRONLY | O_NOFOLLOW, 0o600)
+            if fd >= 0 { close(fd) }
+        }
         return text(["events": report.events, "messagesWithheld": report.withheld])
     case "suggest":
         guard let raw = args["severity"] as? String, let severity = Suggestion.Severity(rawValue: raw),

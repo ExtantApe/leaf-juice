@@ -82,6 +82,14 @@ public final class SuggestionInbox {
         return (try? JSONDecoder().decode([String: [String]].self, from: data)) ?? [:]
     }
 
+    /// A dismissed title, made safe to put in a prompt. These were written by the AI, possibly misled by a plugin, and
+    /// Claude Code reads a file named with `@` in a prompt: letters, digits, spaces and hyphens leave nothing to expand.
+    public static func promptTitle(_ title: String) -> String? {
+        let kept = title.unicodeScalars.filter { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == " " || $0 == "-") }
+        let text = String(String.UnicodeScalarView(kept)).split(separator: " ").joined(separator: " ")
+        return text.isEmpty ? nil : String(text.prefix(maxTitle))
+    }
+
     /// Kept as the AI wrote them, with tokens, so they can go back to it without sharing anything new.
     public func neverRaised(server: String) -> [String] { ignoredTitles()[server] ?? [] }
 
@@ -94,7 +102,11 @@ public final class SuggestionInbox {
     }
 
     /// The key, suggestions and everything else the advisor stores. Servers aren't involved.
-    public static func forgetEverything(home: URL = AdvisorPaths.home) { try? FileManager.default.removeItem(at: home) }
+    /// False if it couldn't all be deleted.
+    @discardableResult public static func forgetEverything(home: URL = AdvisorPaths.home) -> Bool {
+        guard FileManager.default.fileExists(atPath: home.path) else { return true }
+        return (try? FileManager.default.removeItem(at: home)) != nil
+    }
 
     public func clear() { files.forEach { try? FileManager.default.removeItem(at: $0) } }
 

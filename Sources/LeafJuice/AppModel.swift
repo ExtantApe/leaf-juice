@@ -158,6 +158,7 @@ final class AppModel {
     /// Forgets a server. Its folder stays exactly where it is.
     func remove(_ controller: ServerController) {
         guard !controller.isLab else { return }
+        AdvisorCenter.shared.share(controller, false)
         controller.stopTicker()
         servers.removeAll { $0.id == controller.id }
         if selectedID == controller.id { selectedID = servers.first?.id }
