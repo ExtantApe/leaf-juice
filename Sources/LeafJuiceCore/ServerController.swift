@@ -24,6 +24,11 @@ public final class ServerController: Identifiable {
     @ObservationIgnored var accessApplying = false
     /// Only tests turn this on, because bots can't join an online-mode server.
     @ObservationIgnored var accessAllowsOffline = false
+    /// The plugin links page, when it's being served. Sessions live here and nowhere else.
+    @ObservationIgnored var linksTidying: Task<Void, Never>?
+    public internal(set) var linksWeb: LinksWeb?
+    public internal(set) var linksListener: LinksListener?
+    public var linksPageError: String?
     public nonisolated let id: UUID
     public private(set) var paths: ServerPaths
     public var profile: ServerProfile { didSet { if profile != oldValue { saveProfile() } } }
