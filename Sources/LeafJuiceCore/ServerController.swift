@@ -21,6 +21,9 @@ public struct ReadinessRow: Identifiable, Equatable, Sendable {
 /// One server: its process, settings and everything that happens to it. All state lives on the main actor.
 @MainActor @Observable
 public final class ServerController: Identifiable {
+    @ObservationIgnored var accessApplying = false
+    /// Only tests turn this on, because bots can't join an online-mode server.
+    @ObservationIgnored var accessAllowsOffline = false
     public nonisolated let id: UUID
     public private(set) var paths: ServerPaths
     public var profile: ServerProfile { didSet { if profile != oldValue { saveProfile() } } }
@@ -860,6 +863,7 @@ public final class ServerController: Identifiable {
         tickCount += 1
         if tickCount % 12 == 1 { tickDisk() }
         if isTrialCopy { return }
+        if state == .running { await applyWaitingAccess() }
         tickAnalytics(now: now)
         if let pid = process?.pid { metrics = sampler.sample(pid: pid) }
         analyzer.setPlugins(plugins)

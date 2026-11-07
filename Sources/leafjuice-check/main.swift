@@ -2,6 +2,7 @@
 //   swift run leafjuice-check          Offline suite, plus the full server lifecycle against a small
 //                                      stand-in jar (compiled here if a JDK is available). No Minecraft.
 //   ... --live                         Also calls the real Paper, Modrinth, Hangar, Spiget, GitHub APIs.
+//   ... --real-prejoin --i-accept-the-minecraft-eula
 //   ... --sandbox --i-accept-the-minecraft-eula
 //                                      A lasting test server in .lab-sandbox/, seeded with bot players and several worlds.
 //                                      Each run tests a throwaway clone. Add --sandbox-wipe to start it afresh.
@@ -11,6 +12,7 @@
 //   ... --real-paper --i-accept-the-minecraft-eula
 //                                      Boots real Paper. The second flag is your own acceptance of
 //                                      https://aka.ms/MinecraftEULA, for a throwaway server in a temp folder.
+import CryptoKit
 import Foundation
 @testable import LeafJuiceCore
 
@@ -312,7 +314,7 @@ do {
             equal(a.sorted.first?.ruleID, rule.id, "sample routes to \(rule.id): \(sample)")
         }
     }
-    let pages = Set(["resourcePacks", "links", "launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
+    let pages = Set(["resourcePacks", "links", "allowlist", "launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
     for rule in rules { if let a = rule.action { check(pages.contains(a.page), "\(rule.id) action page") } }
     check(rules.allSatisfy { !$0.title.isEmpty && !$0.explanation.isEmpty }, "rules have text")
 }
@@ -1412,6 +1414,72 @@ do {
         try await c.refreshModrinthLinks(all: true)  // No plugins, so this must not reach for the network or fail.
         c.stopTicker()
     } catch { failures.append("plugin links threw: \(error)") }
+    do { // Adding players before they've joined.
+        let id = "069a79f444e94726a5befca90e38aaf5", full = "069a79f4-44e9-4726-a5be-fca90e38aaf5"
+        func look(_ typed: String, _ status: Int, _ body: String) -> AccountLookup.Outcome { AccountLookup.interpret(typed: typed, status: status, data: Data(body.utf8)) }
+        equal(look("mAdEuP", 200, #"{"id":"\#(id)","name":"MadeUp"}"#), .found(MojangAccount(name: "MadeUp", uuid: full)), "any capitals find the real spelling and ID")
+        equal(look("other", 200, #"{"id":"\#(id)","name":"MadeUp"}"#), .noAccount, "an answer for another name isn't a match")
+        equal(look("x", 404, #"{"errorMessage":"Couldn't find"}"#), .noAccount, "no such account"); equal(look("x", 204, ""), .noAccount, "the older way of saying so")
+        if case .unreachable = look("x", 429, "") {} else { check(false, "being rate limited isn't the same as no account") }
+        if case .unreachable = look("x", 500, "") {} else { check(false, "an outage isn't the same as no account") }
+        if case .unreachable = look("x", 200, "nonsense") {} else { check(false, "an unreadable answer isn't a match") }
+        if case .unreachable = look("x", 200, #"{"id":"nope","name":"x"}"#) {} else { check(false, "a bad ID isn't a match") }
+        for bad in ["", "a b", "semi;colon", "seventeen_letters", "new\nline", "../x"] { check(!AccountLookup.isValidName(bad), "not a name: \(bad.debugDescription)") }
+        check(AccountLookup.isValidName("Made_Up1"), "a real name"); equal(AccountLookup.dashed(full), full, "an ID stays the same"); equal(AccountLookup.dashed("no"), nil, "or isn't one")
+        let invalid = await AccountLookup.lookUp("bad name;")
+        equal(invalid, .invalid, "a bad name is never sent")
+
+        // What LuckPerms prints, as observed.
+        equal(LuckPermsText.groupList(["[11:10:12 INFO]: [LP] Showing group entries:    (page 1 of 1 - 3 entries)", "[11:10:12 INFO]: [LP] Groups: (name, weight, tracks)", "[11:10:12 INFO]: [LP] -  default - 0", "[11:10:12 INFO]: [LP] -  made-up_one - 10"]), ["default", "made-up_one"], "groups read")
+        equal(LuckPermsText.parents(["[11:10:30 INFO]: [LP] x's Parents:  (page 1 of 1 - 3 entries)", "[11:10:30 INFO]: > default ", "[11:10:30 INFO]: > madeup-one ", "[11:10:30 INFO]: Saved the game"]), ["default", "madeup-one"], "parents read, and nothing after them")
+        equal(LuckPermsText.parents(["[LP] A user for x could not be found."]), nil, "no header means not known, rather than none")
+        equal(LuckPermsText.pageCount(["[LP] x's Parents:  (page 2 of 3 - 40 entries)"]), 3, "pages counted")
+        equal(LuckPermsText.checkResult(["[LP]     Result: true"]), .yes, "can sign in"); equal(LuckPermsText.checkResult(["[LP]     Result: false"]), .no, "can't"); equal(LuckPermsText.checkResult(["[LP]     Result: undefined"]), .noGroupGivesIt, "left to the default"); equal(LuckPermsText.checkResult(["whatever"]), .unknown, "unknown stays unknown")
+        for bad in ["", "a b", "A;op me", "../x", "UPPER"] { check(!LuckPermsText.isValidGroup(bad), "not a group: \(bad)") }
+
+        // Don't combine.
+        var rules = PlayerAccessSettings()
+        rules.conflicts = [["group-a", "group-b"]]
+        equal(rules.warnings(adding: ["group-a", "group-b"]).count, 1, "choosing both warns")
+        equal(rules.warnings(adding: ["group-a"], alreadyHas: ["group-b"]).count, 1, "and so does adding to someone who has the other")
+        equal(rules.warnings(adding: ["group-a"]).count, 0, "one alone doesn't")
+        equal(rules.warnings(adding: [], alreadyHas: ["group-a", "group-b"]).count, 0, "and a change that doesn't add to the pair doesn't nag")
+        check(PlayerAccessSettings().grantable.isEmpty, "no group is offered until ticked")
+
+        // Refusals, before anything reaches a console.
+        let root = folder("access"), paths = ServerPaths(root: root)
+        write("online-mode=true\n", paths.properties)
+        write(#"[{"uuid":"\#(full)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+        let c = ServerController(root: root, profile: ServerProfile())
+        defer { c.stopTicker() }
+        equal(c.playerAccessBlocked, nil, "online mode can add players")
+        check(c.accessRefusal(AccessChange(uuid: "not-an-id", name: "MadeUp")) != nil, "a bad ID is refused")
+        check(c.accessRefusal(AccessChange(uuid: full, name: "a; stop")) != nil, "a name can't carry a command")
+        check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp", addGroups: ["group-a"])) != nil, "an unticked group is refused")
+        var ticked = PlayerAccessSettings(); ticked.grantable = ["group-a", "BAD;GROUP"]; c.playerAccessSettings = ticked
+        check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp", addGroups: ["BAD;GROUP"])) != nil, "even a ticked group needs a safe name")
+        check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp", addGroups: ["group-a"])) != nil, "groups need LuckPerms")
+        equal(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp")), nil, "the allowlist alone doesn't")
+        check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp", addToAllowlist: false)) != nil, "an empty change is refused")
+
+        // A stopped server: additions wait, and removals don't have to.
+        equal(c.allowlist.map(\.name), ["MadeUp"], "the list reads")
+        let other = "00000000-0000-4000-8000-00000000000c"
+        let held = await c.requestAccess(AccessChange(uuid: other, name: "MadeUpTwo"))
+        equal(held, nil, "stopped, an addition is accepted"); equal(c.waitingAccess.map(\.name), ["MadeUpTwo"], "and waits")
+        check(!c.allowlist.contains { $0.uuid == other }, "without touching the allowlist")
+        let replaced = await c.requestAccess(AccessChange(uuid: other, name: "MadeUpTwo"))
+        equal(replaced, nil, "asking again"); equal(c.waitingAccess.count, 1, "replaces it")
+        let reopened = ServerController(root: root, profile: ServerProfile())
+        defer { reopened.stopTicker() }
+        equal(reopened.waitingAccess.count, 1, "and survives quitting")
+        c.cancelAccess(c.waitingAccess[0].id); equal(c.waitingAccess.count, 0, "it can be cancelled")
+        let removal = await c.removeFromAllowlist(AllowlistEntry(uuid: full, name: "MadeUp"))
+        equal(removal, nil, "stopped, removing works"); equal(c.allowlist.count, 0, "and the file is updated")
+        write("online-mode=false\n", paths.properties)
+        check(c.playerAccessBlocked != nil, "offline mode can't add players")
+        check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp")) != nil, "and refuses")
+    }
     do { // The audit: paths that delete or move by name.
         let r = folder("audit-names")
         equal(FileOps.child("", of: r), nil, "an empty name isn't the folder itself"); equal(FileOps.child(".", of: r), nil, "nor is a dot")
@@ -2148,12 +2216,141 @@ if CommandLine.arguments.contains("--sandbox") {
 
 await runLifecycleWithStandIn()
 if CommandLine.arguments.contains("--live") { await runLiveAPIs() }
+if CommandLine.arguments.contains("--real-prejoin") {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealPrejoin()
+    } else {
+        print("Skipping --real-prejoin: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
 if CommandLine.arguments.contains("--real-paper") {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         await runRealPaper()
     } else {
         print("Skipping --real-paper: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
     }
+}
+
+/// Real Paper and LuckPerms on throwaway servers: an account that has never joined, through to a first join.
+@MainActor func runRealPrejoin() async {
+    section("REAL PRE-JOIN (EULA accepted by the person running this)")
+    func server(_ name: String, port: Int, online: Bool) async throws -> ServerController {
+        let root = folder(name)
+        write("server-port=\(port)\nonline-mode=\(online)\nnetwork-compression-threshold=-1\nwhite-list=true\nenforce-whitelist=true\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: name)
+        try EULA.accept(c.paths)
+        let build = try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")!
+        try await c.installSoftware(build)
+        try await c.addPlugin(source: .modrinth(project: "luckperms", allowBeta: false))
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        await c.start()
+        await checkUntil(240, "\(name) up: \(c.state)") { c.state == .running }
+        await c.refreshPlugins()
+        for group in ["madeup-one", "madeup-two", "madeup-staff"] { c.send("lp creategroup \(group)"); try? await Task.sleep(for: .seconds(1)) }
+        c.send("lp group madeup-one permission set latchkey.signin true")
+        try? await Task.sleep(for: .seconds(2))
+        await c.refreshGroups()
+        return c
+    }
+    do {
+        // These accounts only ever appear on this temporary server's own lists.
+        guard case let .found(first) = await AccountLookup.lookUp("nOtCh"), case let .found(second) = await AccountLookup.lookUp("JEB_") else { throw LeafError("Mojang lookup failed") }
+        equal(first.name, "Notch", "the real spelling comes back"); equal(second.name, "jeb_", "for any capitals")
+        let afterLookup = try? await SoftwareCatalog.versions(.vanilla)
+        check(afterLookup?.isEmpty == false, "a lookup doesn't break Mojang's version list afterwards")
+        let missing = await AccountLookup.lookUp("ZzqQmadeUpNoSu9")
+        equal(missing, .noAccount, "a made-up name has no account")
+        let c = try await server("prejoin-online", port: 25590, online: true)
+        defer { c.forceStop(); c.stopTicker() }
+        equal(c.playerAccessSettings.knownGroups, ["default", "madeup-one", "madeup-staff", "madeup-two"], "groups read from the server")
+        var settings = c.playerAccessSettings
+        settings.grantable = ["madeup-one", "madeup-two", "no-such-group"]
+        c.playerAccessSettings = settings
+
+        let unknownAtFirst = await c.currentGroups(uuid: first.uuid)
+        equal(unknownAtFirst, ["default"], "someone who has never joined has only the default")
+        let refused = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, addGroups: ["madeup-staff"]))
+        check(refused?.contains("isn't marked") == true, "an unticked group is refused: \(refused ?? "")")
+        check(!c.allowlist.contains { $0.uuid == first.uuid }, "and they aren't added")
+
+        // A group that's gone stops before the allowlist.
+        let stopped = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, addGroups: ["madeup-two", "no-such-group"]))
+        check(stopped?.contains("doesn't exist") == true, "a missing group stops it: \(stopped ?? "")")
+        check(!c.allowlist.contains { $0.uuid == first.uuid }, "before the allowlist")
+        equal(c.waitingAccess.first?.problem != nil, true, "and it stays in view")
+        c.cancelAccess(c.waitingAccess[0].id)
+
+        let added = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, addGroups: ["madeup-one", "madeup-two"]))
+        equal(added, nil, "a never-joined account is added: \(added ?? "")")
+        equal(c.allowlist.first { $0.uuid == first.uuid }?.name, "Notch", "on the allowlist with its ID")
+        let groups = await c.currentGroups(uuid: first.uuid)
+        equal(groups, ["default", "madeup-one", "madeup-two"], "with its groups")
+        let signIn = await c.signInAccess(uuid: first.uuid)
+        equal(signIn, .yes, "a group holding the permission gives sign-in")
+        equal(c.waitingAccess.count, 0, "and nothing's left waiting")
+        let again = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, addGroups: ["madeup-one"]))
+        equal(again, nil, "repeating it is safe")
+        let trimmed = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, removeGroups: ["madeup-one"], addToAllowlist: false))
+        equal(trimmed, nil, "a group can be removed")
+        let fewer = await c.currentGroups(uuid: first.uuid)
+        equal(fewer, ["default", "madeup-two"], "and it's gone")
+        let noSignIn = await c.signInAccess(uuid: first.uuid)
+        equal(noSignIn, .noGroupGivesIt, "with sign-in")
+        _ = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, addGroups: ["madeup-one"], addToAllowlist: false))
+
+        // Stopped: everything waits, and happens once it's back.
+        await c.stop()
+        await checkUntil(60, "stopped") { !c.state.isLive }
+        let held = await c.requestAccess(AccessChange(uuid: second.uuid, name: second.name, addGroups: ["madeup-one"]))
+        equal(held, nil, "stopped, it's accepted"); equal(c.waitingAccess.count, 1, "and waits")
+        check(!c.allowlist.contains { $0.uuid == second.uuid }, "without a half-done allowlist entry")
+        await c.start()
+        await checkUntil(240, "back up") { c.state == .running }
+        await checkUntil(40, "the waiting change applied by itself") { c.waitingAccess.isEmpty }
+        equal(c.allowlist.first { $0.uuid == second.uuid }?.name, "jeb_", "on the allowlist after starting")
+        let secondGroups = await c.currentGroups(uuid: second.uuid)
+        equal(secondGroups, ["default", "madeup-one"], "with its groups")
+        let kept = await c.currentGroups(uuid: first.uuid)
+        equal(kept, ["default", "madeup-one", "madeup-two"], "and the first account's groups survived the restart")
+
+        let running = await c.removeFromAllowlist(AllowlistEntry(uuid: second.uuid, name: second.name))
+        equal(running, nil, "running, removing works"); check(!c.allowlist.contains { $0.uuid == second.uuid }, "and the list agrees")
+        let stay = await c.currentGroups(uuid: second.uuid)
+        equal(stay, ["default", "madeup-one"], "their groups stay")
+        await c.stop()
+        await checkUntil(60, "stopped") { !c.state.isLive }
+    } catch { failures.append("real pre-join online: \(error)") }
+    do {
+        // Offline mode, because a bot can't join an online-mode server. Being set by ID is the same either way.
+        let name = "MadeUpBot"
+        var bytes = Array(Insecure.MD5.hash(data: Data("OfflinePlayer:\(name)".utf8)))
+        bytes[6] = (bytes[6] & 0x0F) | 0x30
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        let uuid = UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15])).uuidString.lowercased()
+        let c = try await server("prejoin-offline", port: 25589, online: false)
+        defer { c.forceStop(); c.stopTicker() }
+        check(c.playerAccessBlocked != nil, "offline mode is refused for real use")
+        c.accessAllowsOffline = true
+        var settings = c.playerAccessSettings
+        settings.grantable = ["madeup-one"]
+        c.playerAccessSettings = settings
+        let table = try await ProtocolTable.load(mc: "1.21.11", cache: folder("prejoin-protocol"), java: c.resolvedJava()?.path ?? "")
+        let early = try Bot(name: name, port: 25589, table: table)
+        try? await Task.sleep(for: .seconds(4))
+        check(!early.inGame, "before being added, the allowlist keeps them out")
+        early.leave()
+        let added = await c.requestAccess(AccessChange(uuid: uuid, name: name, addGroups: ["madeup-one"]))
+        equal(added, nil, "added before they've ever joined: \(added ?? "")")
+        let bot = try Bot(name: name, port: 25589, table: table)
+        defer { bot.leave() }
+        await checkUntil(60, "they can join: \(bot.disconnectReason ?? "")") { bot.inGame }
+        try? await Task.sleep(for: .seconds(2))
+        let groups = await c.currentGroups(uuid: uuid)
+        equal(groups, ["default", "madeup-one"], "their groups are there on first join")
+        bot.leave()
+        await c.stop()
+        await checkUntil(60, "stopped") { !c.state.isLive }
+    } catch { failures.append("real pre-join offline: \(error)") }
 }
 
 @MainActor func runLiveAPIs() async {

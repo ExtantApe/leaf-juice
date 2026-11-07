@@ -145,6 +145,8 @@ Merging two offline profiles left `playernames.json` and the old `players/<uuid>
 
 `lp export <name> --without-users` writes groups, weights, prefixes, inheritance and contexts to `plugins/LuckPerms/<name>.json.gz`, with no players in it. Its default H2 database can't be read directly, so the wiki asks while the server runs and keeps a copy.
 
+On 1.21.11 with LuckPerms 5.5, `lp user <uuid> parent add <group>` works for an account that has never joined, with or without dashes, while `lp user <name>` says the user can't be found. Groups set that way survive a restart. A bot's first join on an offline-mode server kept them too. A real first join on online mode hasn't been seen, because bots can't do one. `whitelist add` matches any capitals and stores the account's own spelling and ID, and says "That player does not exist" for a name with no account. Mojang's `users/profiles/minecraft/<name>` does the same, with a 404 for no account.
+
 ## An audit of what deletes things
 
 Reading every delete, move and shell call found these, all now fixed and tested:

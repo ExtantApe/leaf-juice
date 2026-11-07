@@ -117,6 +117,18 @@ Players' games download a pack from the web, so upload the build somewhere, for 
 
 Every backup can also be copied to a **second location**, ideally another drive, with each copy checked against the original. If the main backups are lost, they can be copied back. Leaf Juice also sends a **Mac notification** for crashes, failed backups and low disk space, and you can turn that off in Settings.
 
+## Allowlist
+
+Add someone before they've ever joined. Type their name in any capitals and Leaf Juice asks Mojang for the real account, then shows you its spelling and ID. If there's no such account, or Mojang can't be reached, nothing is added. Java accounts only, and it needs `online-mode=true`.
+
+With LuckPerms you can choose their groups too. Groups go on first, then the allowlist, and both are read back, so nobody can join with only the default access while it's half done. While the server is stopped the whole thing waits, shows under **Not finished**, and happens when the server is running. Each server is its own list.
+
+A group is only offered once you've ticked it, so a new or admin group never appears by itself. You can mark pairs of groups as **Don't combine**, and choosing both warns you before saving. It doesn't stop you. Group names only come from your server and your choices.
+
+Taking someone off the allowlist leaves their groups alone. Changing someone's groups needs the server running.
+
+**Tested:** real Paper 1.21.11 and LuckPerms on throwaway servers, including a bot's first join on offline mode. **Not tested:** a real first join on online mode, or the screen being clicked through.
+
 ## Plugin links
 
 One page listing each enabled plugin, its version and a link to its documentation, with the server's version at the top. It only shows in the app for now.
