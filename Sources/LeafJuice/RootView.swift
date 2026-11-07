@@ -179,6 +179,7 @@ struct ServerWindow: View {
         case .console: ConsolePage(server: server)
         case .history: HistoryPage(server: server)
         case .players: PlayersPage(server: server)
+        case .allowlist: AllowlistPage(server: server)
         case .worlds: WorldsPage(model: model, server: server)
         case .cleanup: CleanupPage(server: server)
         case .plugins: PluginsPage(model: model, server: server)

@@ -5,13 +5,13 @@ import SwiftUI
 import UserNotifications
 
 enum PageID: String, CaseIterable, Identifiable, Hashable {
-    case overview, console, history, players, worlds, plugins, software, configs, resourcePacks, links, launch, backups, changes, cleanup
+    case overview, console, history, players, allowlist, worlds, plugins, software, configs, resourcePacks, links, launch, backups, changes, cleanup
     var id: String { rawValue }
     /// The module a page belongs to. Nil for the essentials, which are always there.
     var module: LeafModule? {
         switch self {
         case .worlds: .worlds
-        case .players: .players
+        case .players, .allowlist: .players
         case .history: .history
         case .cleanup: .cleanup
         case .resourcePacks: .resourcePacks
@@ -26,6 +26,7 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         case .console: "Console"
         case .history: "History"
         case .players: "Players"
+        case .allowlist: "Allowlist"
         case .worlds: "Worlds"
         case .cleanup: "Cleanup"
         case .plugins: "Plugins"
@@ -44,6 +45,7 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         case .console: "terminal"
         case .history: "chart.xyaxis.line"
         case .players: "person.2"
+        case .allowlist: "person.badge.plus"
         case .worlds: "globe.americas"
         case .cleanup: "sparkles"
         case .plugins: "puzzlepiece.extension"
