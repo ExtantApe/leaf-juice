@@ -3,17 +3,21 @@
 //                                      stand-in jar (compiled here if a JDK is available). No Minecraft.
 //   ... --live                         Also calls the real Paper, Modrinth, Hangar, Spiget, GitHub APIs.
 //   ... --real-prejoin --i-accept-the-minecraft-eula
+//   ... --real-signin <Latchkey.jar> --i-accept-the-minecraft-eula
 //   ... --sandbox --i-accept-the-minecraft-eula
 //                                      A lasting test server in .lab-sandbox/, seeded with bot players and several worlds.
 //                                      Each run tests a throwaway clone. Add --sandbox-wipe to start it afresh.
 //   ... --lab --i-accept-the-minecraft-eula
 //   ... --experiments <versions,failures,multiverse,players,renames,restore|all> --i-accept-the-minecraft-eula
 //                                      Tries things and writes down what really happened, in .lab-sandbox/findings/.
+//   ... --real-map --i-accept-the-minecraft-eula
+//                                      Real BlueMap, Multiverse and LuckPerms behind the sign-in page, on a throwaway server.
 //   ... --real-paper --i-accept-the-minecraft-eula
 //                                      Boots real Paper. The second flag is your own acceptance of
 //                                      https://aka.ms/MinecraftEULA, for a throwaway server in a temp folder.
 import CryptoKit
 import Foundation
+import Network
 @testable import LeafJuiceCore
 
 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("leafjuice-check-\(UUID().uuidString)", isDirectory: true)
@@ -1480,6 +1484,8 @@ do {
         check(c.playerAccessBlocked != nil, "offline mode can't add players")
         check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp")) != nil, "and refuses")
     }
+    await linksWebChecks()
+    await mapGatewayChecks()
     do { // The audit: paths that delete or move by name.
         let r = folder("audit-names")
         equal(FileOps.child("", of: r), nil, "an empty name isn't the folder itself"); equal(FileOps.child(".", of: r), nil, "nor is a dot")
@@ -2223,12 +2229,183 @@ if CommandLine.arguments.contains("--real-prejoin") {
         print("Skipping --real-prejoin: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
     }
 }
+if let flag = CommandLine.arguments.firstIndex(of: "--links-browser"), flag + 1 < CommandLine.arguments.count {
+    // Serves the players' page with made-up data on localhost for two minutes, to try in a real browser.
+    let root = folder("links-browser"), paths = ServerPaths(root: root)
+    let player = "00000000-0000-4000-8000-00000000000a"
+    write("online-mode=true\n", paths.properties)
+    write(#"[{"uuid":"\#(player)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+    let token = LinksWeb.randomSecret()
+    write(#"{"uuid":"\#(player)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+    let web = LinksWeb(paths: paths, settings: { LinksPageSettings() }, content: {
+        LinksPageContent(serverVersion: "Paper 1.21.11", plugins: [.init(name: "MadeUpWarps", version: "2.4.1", link: "https://docs.example.com/warps"), .init(name: "MadeUpChat", version: nil, link: nil)])
+    })
+    web.testOrigin = "http://localhost:25591"
+    let listener = LinksListener(web: web)
+    try! listener.start(port: 25591)
+    try! FileOps.writeAtomic("http://localhost:25591/signin#\(token)\n", to: URL(fileURLWithPath: CommandLine.arguments[flag + 1]))
+    print("  serving")
+    try? await Task.sleep(for: .seconds(120))
+    print("  log: \(web.log.map(\.kind.rawValue))")
+    listener.stop()
+    exit(0)
+}
+if let flag = CommandLine.arguments.firstIndex(of: "--real-signin"), flag + 1 < CommandLine.arguments.count {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealSignIn(jar: CommandLine.arguments[flag + 1])
+    } else {
+        print("Skipping --real-signin: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
+if CommandLine.arguments.contains("--real-map") {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealMap()
+    } else {
+        print("Skipping --real-map: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
 if CommandLine.arguments.contains("--real-paper") {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         await runRealPaper()
     } else {
         print("Skipping --real-paper: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
     }
+}
+
+/// Real Paper, LuckPerms, Multiverse and BlueMap on a throwaway server, with bots and made-up worlds: the map
+/// through the sign-in page shows each player only the worlds Multiverse lets them enter.
+@MainActor func runRealMap() async {
+    section("REAL MAP BEHIND SIGN-IN (EULA accepted by the person running this)")
+    do {
+        let port = 25593, pagePort = 28795, mapPort = 28100
+        let root = folder("real-map")
+        write("server-port=\(port)\nonline-mode=false\nnetwork-compression-threshold=-1\nview-distance=3\nsimulation-distance=3\nlevel-type=minecraft\\:flat\nspawn-protection=0\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "real-map")
+        try EULA.accept(c.paths)
+        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")!)
+        for source in [PluginSource.modrinth(project: "luckperms", allowBeta: false), Multiverse.source, .modrinth(project: "bluemap", allowBeta: false)] { try await c.addPlugin(source: source) }
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        defer { c.stopLinksPage(); c.forceStop(); c.stopTicker() }
+        await c.start()
+        await checkUntil(240, "up: \(c.state)") { c.state == .running }
+        await c.refreshPlugins()
+        print("    plugins: \(c.plugins.map { "\($0.name) \($0.version)" })")
+        func run(_ command: String, until needle: String) async { _ = await c.ask(command, seconds: 30) { $0.contains { $0.contains(needle) } } }
+        await run("mv create madeup_magic normal -t flat", until: "created")
+        await run("mv create madeup_open normal -t flat", until: "created")
+        await run("mv config enforce-access true", until: "enforce-access")
+        equal(c.multiverseEnforcesAccess, true, "Multiverse's file says it enforces access")
+
+        // BlueMap: its download accepted, its web server on this Mac only, and a map for each made-up world.
+        let bluemap = c.paths.plugins.appendingPathComponent("BlueMap")
+        let core = bluemap.appendingPathComponent("core.conf"), webConf = bluemap.appendingPathComponent("webserver.conf")
+        try FileOps.writeAtomic(try String(contentsOf: core, encoding: .utf8).replacingOccurrences(of: "accept-download: false", with: "accept-download: true"), to: core)
+        try FileOps.writeAtomic(try String(contentsOf: webConf, encoding: .utf8).replacingOccurrences(of: "port: 8100", with: "port: \(mapPort)") + "\nip: \"127.0.0.1\"\n", to: webConf)
+        let template = try String(contentsOf: bluemap.appendingPathComponent("maps/world.conf"), encoding: .utf8)
+        for world in ["madeup_magic", "madeup_open"] {
+            try FileOps.writeAtomic(template.replacingOccurrences(of: "world: \"world\"", with: "world: \"\(world)\"").replacingOccurrences(of: "name: \"World\"", with: "name: \"\(world)\""), to: bluemap.appendingPathComponent("maps/\(world).conf"))
+        }
+        await run("bluemap reload", until: "reloaded")
+        let server = c.blueMapServer
+        check(server.onlyThisMac && server.port == mapPort, "BlueMap's settings read back: \(server)")
+        equal(MapGateway.mapWorlds(in: bluemap.appendingPathComponent("maps"))?["madeup_magic"], "madeup_magic", "each map's world is read")
+
+        let table = try await ProtocolTable.load(mc: "1.21.11", cache: folder("real-map-protocol"), java: c.resolvedJava()?.path ?? "")
+        let viewerBot = try await join("MadeUpViewer", c, table, port: port)
+        let otherBot = try await join("MadeUpOther", c, table, port: port)
+        guard let viewer = c.playerUUIDs["MadeUpViewer"], let other = c.playerUUIDs["MadeUpOther"] else { throw LeafError("no player ids") }
+        write(#"[{"uuid":"\#(viewer)","name":"MadeUpViewer"},{"uuid":"\#(other)","name":"MadeUpOther"}]"#, root.appendingPathComponent("whitelist.json"))
+        await run("lp user \(viewer) permission set multiverse.access.madeup_magic true", until: "Set")
+        // Let BlueMap draw something of the magic world before asking for it.
+        await run("mv tp MadeUpViewer madeup_magic", until: "Teleported")
+        let tiles = c.paths.root.appendingPathComponent("bluemap/web/maps/madeup_magic/tiles")
+        func anyTile() -> String? {
+            FileManager.default.enumerator(at: tiles, includingPropertiesForKeys: nil)?.compactMap { ($0 as? URL)?.path }.first { $0.hasSuffix(".prbm.gz") || $0.hasSuffix(".png") }
+        }
+        await checkUntil(240, "BlueMap drew a tile of the magic world") { anyTile() != nil }
+
+        // The real sign-in page, with only what a test needs loosened: plain http on localhost, and offline bots.
+        var page = c.linksPageSettings
+        page.address = "https://map.example.test"; page.port = pagePort
+        var map = MapGatewaySettings(); map.on = true; page.map = map
+        c.linksPageSettings = page
+        try c.startLinksPage()
+        c.linksWeb?.testOrigin = "http://localhost:\(pagePort)"
+        c.linksWeb?.requireOnlineMode = false
+        try? await Task.sleep(for: .milliseconds(300))
+        func signIn(_ uuid: String) -> String {
+            let token = LinksWeb.randomSecret()
+            write(#"{"uuid":"\#(uuid)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, c.paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+            let response = c.linksWeb!.handle(.init(method: "POST", path: "/signin", headers: ["host": "localhost:\(pagePort)", "origin": "http://localhost:\(pagePort)"], body: Data("token=\(token)".utf8)))
+            return response.headers["Set-Cookie"]?.split(separator: ";").first.map(String.init) ?? ""
+        }
+        func get(_ path: String, _ cookie: String) async -> Data {
+            await rawData(port: pagePort, "GET \(path) HTTP/1.1\r\nHost: localhost:\(pagePort)\r\nCookie: \(cookie)\r\nAccept-Encoding: gzip\r\n\r\n")
+        }
+        func split(_ data: Data) -> (head: String, body: Data) {
+            guard let range = data.range(of: Data("\r\n\r\n".utf8)) else { return (String(decoding: data, as: UTF8.self), Data()) }
+            return (String(decoding: data[..<range.lowerBound], as: UTF8.self), Data(data[range.upperBound...]))
+        }
+        func maps(_ cookie: String) async -> [String]? {
+            ((try? JSONSerialization.jsonObject(with: split(await get("/map/settings.json", cookie)).body)) as? [String: Any])?["maps"] as? [String]
+        }
+        let viewerCookie = signIn(viewer), otherCookie = signIn(other)
+        let viewerMaps = await maps(viewerCookie)
+        equal(viewerMaps, ["madeup_magic"], "the player allowed into one world sees only its map")
+        let otherMaps = await maps(otherCookie)
+        equal(otherMaps, [], "the player allowed into none sees none")
+        let index = split(await get("/map/", viewerCookie))
+        check(index.head.contains("200") && String(decoding: index.body, as: UTF8.self).lowercased().contains("<html"), "BlueMap's own page comes through")
+
+        let webPath = c.paths.root.appendingPathComponent("bluemap/web").resolvingSymlinksInPath().path
+        let tilePath = String(URL(fileURLWithPath: anyTile()!).resolvingSymlinksInPath().path.dropFirst(webPath.count)).replacingOccurrences(of: ".gz", with: "")
+        print("    tile asked for: \(tilePath)")
+        // BlueMap may redraw a tile at any moment, so the gate's copy is compared with BlueMap's own just before and after.
+        var matched = false, tries: [String] = []
+        for _ in 0..<5 where !matched {
+            let before = split(await rawData(port: mapPort, "GET \(tilePath) HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept-Encoding: gzip\r\n\r\n"))
+            let throughGate = split(await get("/map" + tilePath, viewerCookie))
+            let after = split(await rawData(port: mapPort, "GET \(tilePath) HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept-Encoding: gzip\r\n\r\n"))
+            tries.append("\(before.body.count)/\(throughGate.body.count)/\(after.body.count)")
+            if before.body == after.body {
+                check(throughGate.head.contains("200") && throughGate.head.contains("Cache-Control: private") && !throughGate.head.contains("Server: BlueMap"), "a real tile comes through, with its headers made private")
+                equal(throughGate.body, before.body, "byte for byte what BlueMap itself sends (\(before.body.count) bytes)")
+                matched = true
+            }
+            try? await Task.sleep(for: .seconds(2))
+        }
+        check(matched, "BlueMap held the tile still long enough to compare: \(tries)")
+        let refused = split(await get("/map" + tilePath, otherCookie))
+        check(refused.head.contains("404"), "the other player gets nothing for that map")
+        let openTile = split(await get("/map/maps/madeup_open/live/players.json", viewerCookie))
+        check(openTile.head.contains("404"), "and the viewer nothing for a world they can't enter")
+        let live = split(await get("/map/maps/madeup_magic/live/players.json", viewerCookie))
+        print("    live players through the gate: \(live.head.split(separator: "\r\n").first ?? "") \(String(decoding: live.body.prefix(160), as: UTF8.self))")
+        check(live.head.contains("200"), "live data for their own map")
+
+        // Taking access away: once the few minutes' memory is cleared, it's gone.
+        await run("lp user \(viewer) permission unset multiverse.access.madeup_magic", until: "Unset")
+        c.forgetMapAccess()
+        let afterUnset = await maps(viewerCookie)
+        equal(afterUnset, [], "with the permission gone, so is the map")
+
+        // Multiverse not enforcing access: everyone can enter everything, so everyone sees every map.
+        await run("mv config enforce-access false", until: "enforce-access")
+        c.forgetMapAccess()
+        let everything = await maps(otherCookie)
+        equal(Set(everything ?? []), Set(MapGateway.mapWorlds(in: bluemap.appendingPathComponent("maps"))!.keys), "with enforce-access off, every map")
+
+        // Something unreadable: no maps, and a reason in the app.
+        try FileOps.writeAtomic("broken: [\n", to: c.paths.plugins.appendingPathComponent("Multiverse-Core/config.yml"))
+        c.forgetMapAccess()
+        let unreadable = await maps(otherCookie)
+        equal(unreadable, [], "an unreadable Multiverse setting shows nothing")
+        check(c.mapAccessNote?.contains("enforce-access") == true, "and the app says why: \(c.mapAccessNote ?? "")")
+        viewerBot.leave(); otherBot.leave()
+        c.stopLinksPage()
+        c.stop()
+        await checkUntil(90, "stopped") { !c.state.isLive }
+    } catch { failures.append("real map threw: \(error)") }
 }
 
 /// Real Paper and LuckPerms on throwaway servers: an account that has never joined, through to a first join.
@@ -2351,6 +2528,543 @@ if CommandLine.arguments.contains("--real-paper") {
         await c.stop()
         await checkUntil(60, "stopped") { !c.state.isLive }
     } catch { failures.append("real pre-join offline: \(error)") }
+}
+
+/// Stands in for BlueMap's web server: canned answers, and a record of what it was asked.
+final class FakeBlueMap: @unchecked Sendable {
+    let listener: NWListener
+    var seen: [String] = []
+    var answers: [String: (head: String, body: Data)] = [:]
+    let lock = NSLock()
+    init(port: Int) throws {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: UInt16(port))!)
+        parameters.allowLocalEndpointReuse = true
+        listener = try NWListener(using: parameters)
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: .global())
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { data, _, _, _ in
+                let request = String(decoding: data ?? Data(), as: UTF8.self)
+                let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? ""
+                self.lock.lock(); self.seen.append(request); let answer = self.answers[path]; self.lock.unlock()
+                let reply = answer.map { Data("HTTP/1.1 200 OK\r\nContent-Length: \($0.body.count)\r\n\($0.head)\r\n".utf8) + $0.body } ?? Data("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".utf8)
+                connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
+            }
+        }
+        listener.start(queue: .global())
+    }
+    var requests: [String] { lock.lock(); defer { lock.unlock() }; return seen }
+}
+
+@MainActor func mapGatewayChecks() async {
+    print("• Map behind sign-in")
+    // Reading what BlueMap and Multiverse say.
+    let conf = "# The path to the save folder of the world to render.\nworld: \"madeup_magic\"\n# world: \"commented\"\ndimension: \"minecraft:overworld\"\n"
+    equal(MapGateway.setting("world", in: conf), "madeup_magic", "a map's world is read, not its comments")
+    equal(MapGateway.setting("world", in: "world: a\nworld: b\n"), nil, "two answers mean none")
+    let server = MapGateway.blueMapServer(webserverConf: "enabled: true\nwebroot: \"bluemap/web\"\nport: 8100\n")
+    check(!server.onlyThisMac && server.port == 8100, "BlueMap's default is every interface")
+    check(MapGateway.blueMapServer(webserverConf: "port: 28100\nip: \"127.0.0.1\"\n").onlyThisMac, "and ip: 127.0.0.1 is this Mac only")
+    equal(MapGateway.enforcesAccess(multiverseConfig: "world:\n  # the `mv.access.<worldname>` permission.\n  enforce-access: true\n"), true, "enforce-access read as Multiverse 5 writes it")
+    equal(MapGateway.enforcesAccess(multiverseConfig: "  enforce-access: false\n"), false, "off")
+    equal(MapGateway.enforcesAccess(multiverseConfig: "nothing here\n"), nil, "missing is unknown"); equal(MapGateway.enforcesAccess(multiverseConfig: nil), nil, "and so is no file")
+    equal(MapGateway.enforcesAccess(multiverseConfig: "  enforce-access: maybe\n"), nil, "and anything odd")
+    let mapsFolder = folder("map-confs")
+    write("world: \"madeup_magic\"\n", mapsFolder.appendingPathComponent("magic.conf"))
+    write("world: \"../escape\"\n", mapsFolder.appendingPathComponent("odd.conf"))
+    write("dimension: \"x\"\n", mapsFolder.appendingPathComponent("noworld.conf"))
+    equal(MapGateway.mapWorlds(in: mapsFolder), ["magic": "madeup_magic"], "maps whose world can't be read safely are left out")
+    equal(MapGateway.mapWorlds(in: folder("map-confs-none").appendingPathComponent("missing")), nil, "no BlueMap folder is unknown")
+    // Minecraft 26 moves worlds inside the level folder. BlueMap's configs then name the level and a dimension,
+    // as seen on a 26.2 trial with BlueMap 5.29. Before 26, a nether map names its own folder.
+    let old = folder("map-layout-old"), new = folder("map-layout-26")
+    write("x", old.appendingPathComponent("world_nether/DIM-1/region/r.0.0.mca"))
+    write("x", new.appendingPathComponent("survival/dimensions/minecraft/overworld/region/r.0.0.mca"))
+    let oldMaps = old.appendingPathComponent("plugins/BlueMap/maps"), newMaps = new.appendingPathComponent("plugins/BlueMap/maps")
+    write("world: \"world_nether\"\ndimension: \"minecraft:the_nether\"\n", oldMaps.appendingPathComponent("world_nether.conf"))
+    write("world: \"madeup_magic\"\ndimension: \"minecraft:overworld\"\n", oldMaps.appendingPathComponent("madeup_magic.conf"))
+    equal(MapGateway.mapWorlds(in: oldMaps, serverRoot: old), ["world_nether": "world_nether", "madeup_magic": "madeup_magic"], "before 26, the folder is the world")
+    for (id, dimension) in [("survival", "minecraft:overworld"), ("survival_nether", "minecraft:the_nether"), ("survival_the_end", "minecraft:the_end"), ("madeup_magic", "minecraft:madeup_magic"), ("moon", "acme:moon"), ("odd", "minecraft:../x")] {
+        write("world: \"survival\"\ndimension: \"\(dimension)\"\n", newMaps.appendingPathComponent("\(id).conf"))
+    }
+    write("world: \"survival\"\n", newMaps.appendingPathComponent("plain.conf"))
+    equal(MapGateway.mapWorlds(in: newMaps, serverRoot: new), ["survival": "survival", "survival_nether": "survival_nether", "survival_the_end": "survival_the_end", "madeup_magic": "madeup_magic", "plain": "survival"],
+          "from 26, the dimension says which world, and another namespace or an odd name isn't shown")
+
+    // Which paths get through.
+    let allowed: Set<String> = ["world"]
+    equal(MapGateway.route(path: "/map", allowed: allowed), .redirect, "the bare address goes to the folder")
+    equal(MapGateway.route(path: "/map/", allowed: allowed), .forward("/"), "the page")
+    equal(MapGateway.route(path: "/map/assets/index-1.js", allowed: allowed), .forward("/assets/index-1.js"), "its scripts")
+    equal(MapGateway.route(path: "/map/settings.json", allowed: allowed), .settings, "the map list is filtered")
+    equal(MapGateway.route(path: "/map/maps/world/tiles/0/x9/z-8.prbm", allowed: allowed), .forward("/maps/world/tiles/0/x9/z-8.prbm"), "an allowed map's tiles")
+    for blocked in ["/map/maps/hidden/tiles/0/x1/z1.prbm", "/map/maps/hidden/live/players.json", "/map/maps/hidden/settings.json", "/map/maps/world", "/map/maps/world/", "/map/sql.php",
+                    "/map/../whitelist.json", "/map/maps/world/../hidden/live/players.json", "/map//etc", "/map/maps/%2e%2e/x", "/mapx", "/map/assets/../../x", "/map/maps/World/live/players.json"] {
+        equal(MapGateway.route(path: blocked, allowed: allowed), .notFound, "refused: \(blocked)")
+    }
+    let real = Data(#"{"version":"5.16","useCookies":true,"mapDataRoot":"maps","liveDataRoot":"maps","maps":["world_the_end","world","hidden"],"scripts":[],"styles":[]}"#.utf8)
+    let filtered = (try? JSONSerialization.jsonObject(with: MapGateway.filterSettings(real, allowed: ["world", "world_the_end"]) ?? Data())) as? [String: Any]
+    equal(filtered?["maps"] as? [String], ["world_the_end", "world"], "the list keeps its order and loses what's hidden")
+    equal(filtered?["version"] as? String, "5.16", "and keeps everything else")
+    equal(MapGateway.filterSettings(Data(#"{"mapDataRoot":"https://elsewhere.example.test/maps","maps":["world"]}"#.utf8), allowed: allowed), nil, "map data from elsewhere can't be hidden, so nothing is served")
+    equal(MapGateway.filterSettings(Data("nonsense".utf8), allowed: allowed), nil, "an unreadable list isn't served")
+    let head = MapGateway.rewriteHead("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nSet-Cookie: bluemap=1\r\nCache-Control: public, max-age=86400\r\nConnection: keep-alive") ?? ""
+    check(!head.contains("bluemap=1") && !head.contains("public") && head.contains("Cache-Control: private, no-cache") && head.contains("Content-Type: image/png"), "BlueMap's cookies and public caching are dropped")
+    let upstream = String(decoding: MapGateway.upstreamRequest(method: "GET", path: "/x", port: 1, headers: ["cookie": "__Host-leafjuice=secret", "accept-encoding": "gzip", "authorization": "x", "origin": "o"]), as: UTF8.self)
+    check(upstream.contains("accept-encoding: gzip") && !upstream.contains("secret") && !upstream.contains("authorization") && !upstream.contains("origin"), "the sign-in cookie never reaches BlueMap")
+
+    // The whole way through, with a stand-in BlueMap.
+    do {
+        let port = 28790, mapPort = 28791
+        let root = folder("map-gateway")
+        let paths = ServerPaths(root: root)
+        let viewer = "00000000-0000-4000-8000-0000000000a1", nobody = "00000000-0000-4000-8000-0000000000a2"
+        write("online-mode=true\n", paths.properties)
+        write(#"[{"uuid":"\#(viewer)","name":"MadeUpViewer"},{"uuid":"\#(nobody)","name":"MadeUpNobody"}]"#, root.appendingPathComponent("whitelist.json"))
+        write(String(decoding: real, as: UTF8.self), root.appendingPathComponent("web/settings.json"))
+        let fake = try FakeBlueMap(port: mapPort)
+        defer { fake.listener.cancel() }
+        let big = Data((0..<(6 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        fake.answers = [
+            "/": ("Content-Type: text/html\r\nSet-Cookie: bluemap=1\r\n", Data("<html>BlueMap</html>".utf8)),
+            "/maps/world/tiles/0/x1/z1.prbm": ("Content-Type: application/octet-stream\r\n", big),
+            "/maps/hidden/live/players.json": ("Content-Type: application/json\r\n", Data("secret positions".utf8)),
+            "/maps/world/live/players.json": ("Content-Type: application/json\r\n", Data(#"{"players":[]}"#.utf8)),
+        ]
+        var access: [String: MapAccess] = [viewer: .maps(["world"]), nobody: .problem("made up")]
+        var mapOn = true
+        let web = LinksWeb(paths: paths, settings: { LinksPageSettings() }, content: { LinksPageContent(showMap: mapOn) })
+        web.testOrigin = "http://localhost:\(port)"
+        let listener = LinksListener(web: web)
+        listener.map = MapHooks(on: { mapOn }, access: { access[$0] ?? .problem("unknown") }, server: { BlueMapServer(port: mapPort, ip: "127.0.0.1", webroot: "web") }, root: root)
+        try listener.start(port: port)
+        defer { listener.stop() }
+        try? await Task.sleep(for: .milliseconds(200))
+        func signIn(_ uuid: String) -> String {
+            let token = LinksWeb.randomSecret()
+            write(#"{"uuid":"\#(uuid)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+            let response = web.handle(.init(method: "POST", path: "/signin", headers: ["host": "localhost:\(port)", "origin": "http://localhost:\(port)"], body: Data("token=\(token)".utf8)))
+            return response.headers["Set-Cookie"]?.split(separator: ";").first.map(String.init) ?? ""
+        }
+        func get(_ path: String, cookie: String? = nil, method: String = "GET") async -> String {
+            await rawRequest(port: port, "\(method) \(path) HTTP/1.1\r\nHost: localhost:\(port)\r\n\(cookie.map { "Cookie: \($0)\r\n" } ?? "")Accept-Encoding: gzip\r\n\r\n")
+        }
+        func status(_ text: String) -> String { String(text.split(separator: "\r\n").first ?? "") }
+        func body(_ text: String) -> String { text.components(separatedBy: "\r\n\r\n").dropFirst().joined(separator: "\r\n\r\n") }
+
+        // Signed out: nothing from BlueMap.
+        let before = fake.requests.count
+        let signedOut = await get("/map/")
+        check(status(signedOut).contains("200") && signedOut.contains("/signin") && !signedOut.contains("BlueMap"), "signed out, the map page says how to sign in")
+        let v1 = await get("/map/maps/world/tiles/0/x1/z1.prbm")
+        equal(status(v1), "HTTP/1.1 404 Not Found", "and its tiles aren't there")
+        let v2 = await get("/map/settings.json")
+        equal(status(v2), "HTTP/1.1 404 Not Found", "nor its list")
+        equal(fake.requests.count, before, "BlueMap isn't asked anything for someone signed out")
+        let wrongHost = await rawRequest(port: port, "GET /map/ HTTP/1.1\r\nHost: other.example.test\r\n\r\n")
+        equal(status(wrongHost), "HTTP/1.1 421 Misdirected Request", "another host is refused")
+
+        let cookie = signIn(viewer)
+        check(cookie.hasPrefix("__Host-leafjuice="), "signed in")
+        let v3 = await get("/", cookie: cookie)
+        check(body(v3).contains("/map/"), "the plugin page links to the map")
+        let v4 = await get("/map", cookie: cookie)
+        equal(status(v4), "HTTP/1.1 303 See Other", "the bare address goes to the folder")
+        let page = await get("/map/", cookie: cookie)
+        check(body(page) == "<html>BlueMap</html>", "BlueMap's page comes through")
+        check(!page.contains("bluemap=1") && page.contains("Cache-Control: private, no-cache"), "without BlueMap's cookie, and not for shared caches")
+        check(fake.requests.last.map { !$0.contains("leafjuice") && $0.contains("accept-encoding: gzip") } == true, "BlueMap never sees the sign-in cookie")
+        let list = (try? JSONSerialization.jsonObject(with: Data(body(await get("/map/settings.json", cookie: cookie)).utf8))) as? [String: Any]
+        equal(list?["maps"] as? [String], ["world"], "the map list has only their map")
+        let tile = await rawData(port: port, "GET /map/maps/world/tiles/0/x1/z1.prbm HTTP/1.1\r\nHost: localhost:\(port)\r\nCookie: \(cookie)\r\n\r\n")
+        let tileBody = tile.range(of: Data("\r\n\r\n".utf8)).map { tile[$0.upperBound...] }
+        check(tileBody.map { Data($0) == big } == true, "a 6 MB tile comes through unchanged (\(tileBody?.count ?? 0) bytes)")
+        let v5 = await get("/map/maps/world/live/players.json", cookie: cookie)
+        equal(body(v5), #"{"players":[]}"#, "live data for their map")
+        let hidden = await get("/map/maps/hidden/live/players.json", cookie: cookie)
+        check(status(hidden) == "HTTP/1.1 404 Not Found" && !hidden.contains("secret positions"), "a map they can't enter is refused, live data included")
+        check(!fake.requests.contains { $0.contains("/maps/hidden/") }, "and BlueMap is never asked for it")
+        let v6 = await get("/map/sql.php", cookie: cookie)
+        equal(status(v6), "HTTP/1.1 404 Not Found", "paths the map doesn't use are refused")
+        let posted = await rawRequest(port: port, "POST /map/settings.json HTTP/1.1\r\nHost: localhost:\(port)\r\nCookie: \(cookie)\r\nContent-Length: 0\r\n\r\n")
+        equal(status(posted), "HTTP/1.1 405 Method Not Allowed", "only looking")
+        let headOnly = await get("/map/", cookie: cookie, method: "HEAD")
+        check(status(headOnly).contains("200"), "HEAD works too")
+
+        // Losing access: someone off the allowlist, or a world they can no longer enter.
+        access[viewer] = .maps([])
+        let none = await get("/map/", cookie: cookie)
+        check(body(none).contains("no maps for you"), "with no worlds, the page says so rather than showing an empty map")
+        let v7 = await get("/map/maps/world/tiles/0/x1/z1.prbm", cookie: cookie)
+        equal(status(v7), "HTTP/1.1 404 Not Found", "and the tiles they saw before are gone")
+        access[viewer] = .maps(["world"])
+        let nobodyCookie = signIn(nobody)
+        let v8 = await get("/map/", cookie: nobodyCookie)
+        check(body(v8).contains("no maps for you"), "anything unreadable shows no maps")
+        let nobodyList = (try? JSONSerialization.jsonObject(with: Data(body(await get("/map/settings.json", cookie: nobodyCookie)).utf8))) as? [String: Any]
+        equal(nobodyList?["maps"] as? [String], [], "and an empty list")
+        write(#"[{"uuid":"\#(nobody)","name":"MadeUpNobody"}]"#, root.appendingPathComponent("whitelist.json"))
+        let v9 = await get("/map/maps/world/live/players.json", cookie: cookie)
+        equal(status(v9), "HTTP/1.1 404 Not Found", "off the allowlist, the map is gone at once")
+
+        // BlueMap down.
+        fake.listener.cancel()
+        try? await Task.sleep(for: .milliseconds(200))
+        let viewerAgain = { write(#"[{"uuid":"\#(viewer)","name":"MadeUpViewer"}]"#, root.appendingPathComponent("whitelist.json")) }
+        viewerAgain()
+        let down = await get("/map/", cookie: signIn(viewer))
+        equal(status(down), "HTTP/1.1 502 Bad Gateway", "BlueMap not running is said plainly")
+
+        // Off means off.
+        mapOn = false
+        let off = await get("/map/", cookie: signIn(viewer))
+        equal(status(off), "HTTP/1.1 404 Not Found", "with the map switched off, /map/ isn't there")
+        let v10 = await get("/", cookie: signIn(viewer))
+        check(!body(v10).contains("/map/"), "and the plugin page doesn't link to it")
+    } catch { failures.append("map gateway threw: \(error)") }
+}
+
+/// The page for players, without a real server: who gets in, what they see and what's written down.
+@MainActor func linksWebChecks() async {
+    do {
+        let root = folder("links-web")
+        let paths = ServerPaths(root: root)
+        let allowed = "00000000-0000-4000-8000-00000000000a", outsider = "00000000-0000-4000-8000-00000000000b"
+        write("online-mode=true\n", paths.properties)
+        write(#"[{"uuid":"\#(allowed)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+        var settings = LinksPageSettings()
+        settings.address = "https://links.example.test/"
+        var shown = LinksPageContent(serverVersion: "Paper 1.21.11", plugins: [.init(name: "Shared<Plugin>", version: "1.2", link: "https://docs.example.test/a"), .init(name: "NoLink", version: nil, link: nil)])
+        let web = LinksWeb(paths: paths, settings: { settings }, content: { shown })
+        let host = ["host": "links.example.test"]
+        func get(_ path: String, _ extra: [String: String] = [:], now: Date = Date()) -> LinksWeb.Response {
+            web.handle(.init(method: "GET", path: path, headers: host.merging(extra) { $1 }, body: Data()), now: now)
+        }
+        func post(_ path: String, _ body: String, cookie: String? = nil, origin: String? = "https://links.example.test", now: Date = Date()) -> LinksWeb.Response {
+            var headers = host
+            headers["origin"] = origin
+            headers["cookie"] = cookie
+            return web.handle(.init(method: "POST", path: path, headers: headers, body: Data(body.utf8)), now: now)
+        }
+        func issue(_ uuid: String, name: String = "MadeUp", expires: Date = Date().addingTimeInterval(120), token: String = LinksWeb.randomSecret()) -> String {
+            write(#"{"uuid":"\#(uuid)","name":"\#(name)","expires":\#(Int(expires.timeIntervalSince1970))}"#, paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+            return token
+        }
+        func text(_ response: LinksWeb.Response) -> String { String(decoding: response.body, as: UTF8.self) }
+        func cookie(_ response: LinksWeb.Response) -> String? { response.headers["Set-Cookie"]?.split(separator: ";").first.map(String.init) }
+
+        // Addresses.
+        equal(settings.origin, "https://links.example.test", "an address is tidied")
+        for bad in ["", "http://links.example.test", "https://", "https://me@links.example.test", "https://links.example.test/page", "https://links.example.test?a=1", "javascript:alert(1)"] {
+            var other = LinksPageSettings(); other.address = bad
+            equal(other.origin, nil, "not an address for the page: \(bad)")
+        }
+        check(LinksPageSettings().on == false, "the page starts off"); check(LinksPageSettings().shared.isEmpty, "with nothing shared")
+
+        // Before signing in, nothing about the server shows.
+        let outside = text(get("/"))
+        check(outside.contains("/signin") && !outside.contains("Shared") && !outside.contains("Paper"), "signed out, the page says only how to sign in")
+        equal(web.handle(.init(method: "GET", path: "/", headers: ["host": "other.example.test"], body: Data())).status, 421, "another host is refused")
+        equal(web.handle(.init(method: "GET", path: "/", headers: [:], body: Data())).status, 421, "and so is none")
+        equal(get("/.leafjuice/server.json").status, 404, "files can't be asked for"); equal(get("/../whitelist.json").status, 404, "not even by climbing")
+        equal(web.handle(.init(method: "PUT", path: "/", headers: host, body: Data())).status, 405, "only the methods it uses")
+        let security = get("/").headers
+        check(security["Content-Security-Policy"]?.contains("default-src 'none'") == true, "strict content policy"); equal(security["Cache-Control"], "no-store", "never cached"); equal(security["X-Robots-Tag"], "noindex", "not for search engines")
+        equal(security["Referrer-Policy"], "same-origin", "a no-referrer policy would make browsers send Origin: null and refuse sign-in")
+        check(text(get("/signin")).contains("signin.js"), "the sign-in page reads the link in the browser"); equal(get("/signin.js").status, 200, "from its own script")
+
+        // Signing in.
+        let token = issue(allowed)
+        let pending = paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json")
+        equal(post("/signin", "token=\(token)", origin: "https://evil.example.test").status, 403, "another site can't use a link")
+        equal(post("/signin", "token=\(token)", origin: nil).status, 403, "or a request with no origin")
+        check(FileOps.exists(pending), "and that doesn't burn it")
+        equal(post("/signin", "token=short").status, 400, "a malformed link fails"); equal(post("/signin", "token=../../../../whitelist").status, 400, "and can't reach another file")
+        let signedIn = post("/signin", "token=\(token)")
+        equal(signedIn.status, 303, "a good link signs in"); check(!FileOps.exists(pending), "and is used up")
+        let flags = signedIn.headers["Set-Cookie"] ?? ""
+        check(flags.hasPrefix("__Host-leafjuice=") && flags.contains("Secure") && flags.contains("HttpOnly") && flags.contains("SameSite=Strict") && flags.contains("Max-Age=43200"), "the cookie is locked down, for 12 hours: \(flags.prefix(20))")
+        equal(post("/signin", "token=\(token)").status, 400, "a link works once")
+        equal(web.signedIn.map(\.name), ["MadeUp"], "the app knows who's signed in")
+        let session = ["cookie": cookie(signedIn) ?? ""]
+        let inside = text(get("/", session))
+        check(inside.contains("Shared&lt;Plugin&gt;") && !inside.contains("Shared<Plugin>"), "what's shared shows, escaped"); check(inside.contains("Paper 1.21.11"), "with the server's version"); check(inside.contains("docs.example.test"), "and the link"); check(inside.contains("No link yet"), "a plugin without one says so"); check(inside.contains("Signed in as MadeUp"), "and who you are")
+        shown.serverVersion = nil; shown.plugins[0].version = nil
+        check(!text(get("/", session)).contains("Paper") && !text(get("/", session)).contains("1.2"), "versions can be left out")
+        shown.plugins = []
+        check(text(get("/", session)).contains("Nothing has been shared"), "nothing shared, nothing shown")
+        check(text(get("/", ["cookie": "__Host-leafjuice=made-up"])).contains("/signin") , "a made-up cookie is nobody")
+        equal(web.signedIn.count, 1, "and doesn't count")
+
+        // Links that shouldn't work.
+        equal(post("/signin", "token=\(issue(allowed, expires: Date().addingTimeInterval(-1)))").status, 400, "an expired link fails")
+        equal(post("/signin", "token=\(issue(outsider, name: "Outsider"))").status, 403, "someone not on the allowlist is refused")
+        equal(post("/signin", "token=\(issue("not-a-uuid"))").status, 400, "a damaged file is refused")
+        check(!web.signedIn.contains { $0.name == "Outsider" }, "and gets no session")
+
+        // Access ends when it should.
+        let early = Date()
+        let late = post("/signin", "token=\(issue(allowed))", now: early)
+        let later = ["cookie": cookie(late) ?? ""]
+        equal(web.signedIn.count, 1, "signing in again replaces the old session")
+        check(text(get("/", session)).contains("/signin") , "and the old cookie stops working")
+        check(text(get("/", later, now: early.addingTimeInterval(LinksWeb.sessionLength - 60))).contains("Signed in as"), "still in, just under 12 hours")
+        check(!text(get("/", later, now: early.addingTimeInterval(LinksWeb.sessionLength + 1))).contains("Signed in as"), "out after 12 hours")
+        let ban = post("/signin", "token=\(issue(allowed))")
+        let banned = ["cookie": cookie(ban) ?? ""]
+        write(#"[{"uuid":"\#(allowed)","name":"MadeUp"}]"#, root.appendingPathComponent("banned-players.json"))
+        check(!text(get("/", banned)).contains("Signed in as"), "a ban ends it at once")
+        try FileManager.default.removeItem(at: root.appendingPathComponent("banned-players.json"))
+        let removed = ["cookie": cookie(post("/signin", "token=\(issue(allowed))")) ?? ""]
+        write("[]", root.appendingPathComponent("whitelist.json"))
+        check(!text(get("/", removed)).contains("Signed in as"), "leaving the allowlist ends it at once")
+        write("not json", root.appendingPathComponent("whitelist.json"))
+        equal(post("/signin", "token=\(issue(allowed))").status, 403, "an unreadable allowlist is a no")
+        write(#"[{"uuid":"\#(allowed)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+        write("online-mode=false\n", paths.properties)
+        equal(post("/signin", "token=\(issue(allowed))").status, 403, "with online-mode off, nobody gets in")
+        write("online-mode=true\n", paths.properties)
+
+        // Signing out.
+        let leaving = post("/signin", "token=\(issue(allowed))")
+        let leavingHeaders = ["cookie": cookie(leaving) ?? ""]
+        equal(post("/signout", "", cookie: leavingHeaders["cookie"], origin: "https://evil.example.test").status, 403, "another site can't sign you out")
+        equal(post("/signout", "", cookie: leavingHeaders["cookie"]).status, 303, "signing out works")
+        check(!text(get("/", leavingHeaders)).contains("Signed in as"), "and ends it")
+        let kicked = ["cookie": cookie(post("/signin", "token=\(issue(allowed))")) ?? ""]
+        web.signOut(uuid: allowed)
+        check(!text(get("/", kicked)).contains("Signed in as"), "the app can end a session too")
+
+        // The log holds account, time and event, and nothing else.
+        let raw = (try? String(contentsOf: web.logFile, encoding: .utf8)) ?? ""
+        check(web.log.contains { $0.kind == .signedIn } && web.log.contains { $0.kind == .refused } && web.log.contains { $0.kind == .removed } && web.log.contains { $0.kind == .signedOut } && web.log.contains { $0.kind == .expired }, "each kind of event is written")
+        check(!raw.contains(token) && !raw.contains("token") && !raw.contains("address") && !raw.contains("127.0.0.1"), "no secrets or addresses in the log")
+        let keys = Set((try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [[String: Any]] ?? []).flatMap(\.keys))
+        equal(keys, ["date", "uuid", "name", "kind"], "the log's fields")
+        let waiting = post("/signin", "token=\(issue(allowed))")
+        check(cookie(waiting) != nil, "one more session")
+        web.tidy(now: Date().addingTimeInterval(Double(LinksWeb.logDays + 1) * 24 * 60 * 60))
+        equal(web.signedIn.count, 0, "tidying closes what's run out")
+        check(web.log.allSatisfy { $0.kind == .expired }, "and forgets entries past 30 days")
+
+        // Reading requests.
+        func parsed(_ text: String) -> LinksWeb.Parsed { LinksWeb.parse(Data(text.utf8)) }
+        equal(parsed("GET / HTTP/1.1\r\nHost: a\r\n"), .incomplete, "waits for the rest")
+        if case let .ok(request) = parsed("POST /signin?x=1 HTTP/1.1\r\nHost: a\r\nContent-Length: 3\r\n\r\nabc") {
+            equal(request.path, "/signin", "the query is dropped"); equal(request.body, Data("abc".utf8), "the body is read"); equal(request.headers["host"], "a", "headers are read")
+        } else { check(false, "a normal request parses") }
+        equal(parsed("POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\nab"), .incomplete, "waits for the body")
+        for bad in ["GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nab", "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", "POST / HTTP/1.1\r\nContent-Length: 2000\r\n\r\n", "POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n", "GET x HTTP/1.1\r\n\r\n", "NONSENSE\r\n\r\n", "GET / HTTP/1.1\r\nno colon\r\n\r\n", "GET / HTTP/1.1\r\nBad Name: a\r\n\r\n", "GET / HTTP/2\r\n\r\n", "GET /" + String(repeating: "a", count: 9000)] {
+            equal(parsed(bad), .bad, "refused: \(bad.prefix(40).debugDescription)")
+        }
+
+        // Over a real socket, on this Mac only.
+        write(#"[{"uuid":"\#(allowed)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+        let listener = LinksListener(web: web)
+        try listener.start(port: 25597)
+        defer { listener.stop() }
+        await checkUntil(5, "listening") { listener.isListening }
+        let answer = await rawRequest(port: 25597, "GET / HTTP/1.1\r\nHost: links.example.test\r\n\r\n")
+        check(answer.hasPrefix("HTTP/1.1 200") && answer.contains("Connection: close") && answer.contains("/signin"), "a real request gets a real answer: \(answer.prefix(30))")
+        let headOnly = await rawRequest(port: 25597, "HEAD / HTTP/1.1\r\nHost: links.example.test\r\n\r\n")
+        check(headOnly.hasPrefix("HTTP/1.1 200") && !headOnly.contains("<html"), "HEAD has no body")
+        let nonsense = await rawRequest(port: 25597, "NONSENSE\r\n\r\n")
+        check(nonsense.hasPrefix("HTTP/1.1 400"), "nonsense is refused")
+        let realCheck = await rawRequest(port: 25597, "POST /signin HTTP/1.1\r\nHost: links.example.test\r\nOrigin: https://links.example.test\r\nContent-Length: 49\r\n\r\ntoken=\(issue(allowed))")
+        check(realCheck.hasPrefix("HTTP/1.1 303") && realCheck.contains("Set-Cookie: __Host-leafjuice="), "a sign-in works over the socket: \(realCheck.prefix(30))")
+        let reachable = localAddresses().filter { $0 != "127.0.0.1" }
+        for address in reachable.prefix(3) { check(!canConnect(address, port: 25597), "not reachable from \(address)") }
+        print("  checked unreachable from \(reachable.count) other local addresses")
+        listener.stop()
+        try? await Task.sleep(for: .milliseconds(200))
+        check(!canConnect("127.0.0.1", port: 25597), "stopping it closes the port")
+
+        // The switch from Settings stops it too.
+        var closing = true
+        let switched = LinksListener(web: web, allowed: { closing })
+        try switched.start(port: 25595)
+        await checkUntil(5, "listening again") { switched.isListening }
+        closing = false
+        _ = await rawRequest(port: 25595, "GET / HTTP/1.1\r\nHost: links.example.test\r\n\r\n")
+        try? await Task.sleep(for: .milliseconds(200))
+        check(!switched.isListening, "switching the module off stops it")
+        switched.stop()
+
+        // What the controller offers the page.
+        let c = ServerController(root: folder("links-controller"), profile: ServerProfile())
+        defer { c.stopTicker(); c.stopLinksPage() }
+        check(c.linksPageProblem != nil, "no address, no page")
+        do { try c.startLinksPage(); check(false, "starting with no address should fail") } catch { check(c.linksListener == nil, "and doesn't listen") }
+        var saved = c.linksPageSettings
+        saved.address = "https://links.example.test"; saved.port = 80
+        c.linksPageSettings = saved
+        check(c.linksPageProblem?.contains("port") == true, "a privileged port is refused")
+        saved.port = 25594; saved.showPluginVersions = false
+        c.linksPageSettings = saved
+        equal(c.linksPageContent.plugins.count, 0, "nothing's shared until ticked")
+        try c.startLinksPage()
+        await checkUntil(5, "the controller's page is up") { c.linksListener?.isListening == true }
+        c.stopLinksPage()
+        check(c.linksListener == nil, "and stops")
+    } catch { failures.append("links page threw: \(error)") }
+}
+
+func rawData(port: Int, _ text: String) async -> Data {
+    await withCheckedContinuation { (done: CheckedContinuation<Data, Never>) in
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        final class Box: @unchecked Sendable { var data = Data(); var ended = false }
+        let box = Box(), queue = DispatchQueue(label: "raw-data")
+        @Sendable func end() { guard !box.ended else { return }; box.ended = true; connection.cancel(); done.resume(returning: box.data) }
+        @Sendable func pull() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { data, _, finished, error in
+                if let data { box.data.append(data) }
+                if finished || error != nil { end() } else { pull() }
+            }
+        }
+        connection.start(queue: queue)
+        connection.send(content: Data(text.utf8), completion: .idempotent)
+        pull()
+        queue.asyncAfter(deadline: .now() + 30) { end() }
+    }
+}
+
+func rawRequest(port: Int, _ text: String) async -> String {
+    await Task.detached { () -> String in
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(fd) }
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(port).bigEndian; address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let joined = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        guard joined == 0 else { return "" }
+        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        let bytes = Array(text.utf8)
+        _ = bytes.withUnsafeBytes { write(fd, $0.baseAddress, bytes.count) }
+        var out = Data(), chunk = [UInt8](repeating: 0, count: 8192)
+        while true {
+            let n = read(fd, &chunk, chunk.count)
+            if n <= 0 { break }
+            out.append(contentsOf: chunk[0..<n])
+        }
+        return String(decoding: out, as: UTF8.self)
+    }.value
+}
+
+func canConnect(_ host: String, port: Int) -> Bool {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    defer { close(fd) }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = in_port_t(port).bigEndian; address.sin_addr.s_addr = inet_addr(host)
+    return withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } } == 0
+}
+
+func localAddresses() -> [String] {
+    var out: [String] = []
+    var first: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&first) == 0, let start = first else { return out }
+    defer { freeifaddrs(first) }
+    var next: UnsafeMutablePointer<ifaddrs>? = start
+    while let item = next {
+        if let found = item.pointee.ifa_addr, found.pointee.sa_family == sa_family_t(AF_INET) {
+            var name = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(found, socklen_t(found.pointee.sa_len), &name, socklen_t(name.count), nil, 0, NI_NUMERICHOST) == 0 { out.append(String(cString: name)) }
+        }
+        next = item.pointee.ifa_next
+    }
+    return out
+}
+
+/// Real Paper in a temp folder with the real plugin and a bot: `/signin` in game through to a signed-in page.
+@MainActor func runRealSignIn(jar: String) async {
+    section("REAL SIGN-IN (EULA accepted by the person running this)")
+    do {
+        let root = folder("real-signin")
+        write("server-port=25593\nonline-mode=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nmotd=made up message\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "Real sign-in test")
+        defer { c.forceStop(); c.stopTicker(); c.stopLinksPage() }
+        try EULA.accept(c.paths)
+        let build = try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")!
+        try await c.installSoftware(build)
+        try FileOps.ensureDir(c.paths.plugins)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: jar), to: c.paths.plugins.appendingPathComponent("Latchkey.jar"))
+        write("sign-in-page: \"https://links.example.test\"\n", c.paths.plugins.appendingPathComponent("Latchkey/config.yml"))
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        c.profile.launch.extraJVMArgs = "-Dlatchkey.allowOfflineForTesting=true"
+        await c.start()
+        await checkUntil(240, "real server up: \(c.state)") { c.state == .running }
+        check(c.console.contains { $0.text.contains("Enabling Latchkey") }, "the plugin loaded")
+        await c.refreshPlugins()
+        check(c.hasLatchkey, "the app sees it")
+
+        var saved = LinksPageSettings(); saved.address = "https://links.example.test"; saved.port = 25592
+        saved.shared = ["latchkey"]
+        c.linksPageSettings = saved
+        try c.startLinksPage()
+        c.linksWeb?.requireOnlineMode = false
+        await checkUntil(5, "page up") { c.linksListener?.isListening == true }
+
+        let java = c.resolvedJava()?.path ?? ""
+        let table = try await ProtocolTable.load(mc: "1.21.11", cache: folder("signin-protocol"), java: java)
+        let bot = try Bot(name: "MadeUpBot", port: 25593, table: table)
+        defer { bot.leave() }
+        await checkUntil(60, "bot in game: \(bot.disconnectReason ?? "")") { bot.inGame }
+        let tokenPattern = try NSRegularExpression(pattern: #"/signin#([A-Za-z0-9_-]{43})"#)
+        func link() -> String? {
+            for text in bot.privateMessages.reversed() {
+                if let match = tokenPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), let range = Range(match.range(at: 1), in: text) { return String(text[range]) }
+            }
+            return nil
+        }
+        func sent(_ words: String) -> Bool { bot.privateMessages.contains { $0.contains(words) } }
+        func answer(_ cookie: String?) async -> String {
+            await rawRequest(port: 25592, "GET / HTTP/1.1\r\nHost: links.example.test\r\n\(cookie.map { "Cookie: \($0)\r\n" } ?? "")\r\n")
+        }
+        let pending = c.paths.plugins.appendingPathComponent("Latchkey/pending")
+
+        bot.command("signin")
+        try? await Task.sleep(for: .seconds(2))
+        check(link() == nil, "no permission, no link")
+        check(FileOps.children(pending).isEmpty, "and nothing saved")
+        c.send("op MadeUpBot")
+        try? await Task.sleep(for: .seconds(2))
+        bot.command("signin")
+        await checkUntil(10, "told it isn't on the allowlist") { sent("allowlist") }
+        check(link() == nil, "with permission but off the allowlist, no link")
+        c.send("whitelist add MadeUpBot")
+        try? await Task.sleep(for: .seconds(2))
+        bot.command("signin")
+        await checkUntil(10, "a link arrives in game") { link() != nil }
+        guard let token = link() else { throw LeafError("no link arrived") }
+        check(FileOps.children(pending).first?.lastPathComponent == "\(LinksWeb.hash(token)).json", "its hash is what's saved")
+        check(!c.console.contains { $0.text.contains(token) }, "the link isn't in the console")
+        let logs = (try? String(contentsOf: c.paths.root.appendingPathComponent("logs/latest.log"), encoding: .utf8)) ?? ""
+        check(!logs.isEmpty && !logs.contains(token), "or the server's log")
+
+        let form = "token=\(token)"
+        let signIn = await rawRequest(port: 25592, "POST /signin HTTP/1.1\r\nHost: links.example.test\r\nOrigin: https://links.example.test\r\nContent-Length: \(form.utf8.count)\r\n\r\n\(form)")
+        check(signIn.hasPrefix("HTTP/1.1 303"), "the real link signs in: \(signIn.prefix(40))")
+        check(FileOps.children(pending).isEmpty, "and is used up")
+        let again = await rawRequest(port: 25592, "POST /signin HTTP/1.1\r\nHost: links.example.test\r\nOrigin: https://links.example.test\r\nContent-Length: \(form.utf8.count)\r\n\r\n\(form)")
+        check(again.hasPrefix("HTTP/1.1 400"), "a second use fails")
+        let cookie = signIn.components(separatedBy: "\r\n").first { $0.hasPrefix("Set-Cookie: ") }?.dropFirst("Set-Cookie: ".count).split(separator: ";").first.map(String.init)
+        let inside = await answer(cookie)
+        check(inside.contains("Signed in as MadeUpBot"), "the page knows who it is")
+        check(inside.contains("Latchkey"), "and lists what's shared")
+        equal(c.linksWeb?.signedIn.first?.name, "MadeUpBot", "the app shows them signed in")
+        equal(c.linksWeb?.signedIn.first?.uuid, (try JSONSerialization.jsonObject(with: Data(contentsOf: c.paths.root.appendingPathComponent("whitelist.json"))) as? [[String: Any]])?.first?["uuid"] as? String, "by the same account the server knows")
+
+        c.send("whitelist remove MadeUpBot")
+        await checkUntil(10, "removed from the allowlist on disk") { ((try? String(contentsOf: c.paths.root.appendingPathComponent("whitelist.json"), encoding: .utf8)) ?? "").contains("MadeUpBot") == false }
+        let afterRemoval = await answer(cookie)
+        check(!afterRemoval.contains("Signed in as"), "taking them off the allowlist ends it at once")
+        check(c.signInLog.contains { $0.kind == .removed && $0.name == "MadeUpBot" }, "and that's in the log")
+        bot.leave()
+        await c.stop()
+        await checkUntil(60, "real server stopped: \(c.state)") { !c.state.isLive }
+        check(FileOps.children(pending).isEmpty, "no links left waiting after a stop")
+    } catch { failures.append("real sign-in: \(error)") }
 }
 
 @MainActor func runLiveAPIs() async {

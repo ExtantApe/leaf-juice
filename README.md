@@ -131,9 +131,45 @@ Taking someone off the allowlist leaves their groups alone. Changing someone's g
 
 ## Plugin links
 
-One page listing each enabled plugin, its version and a link to its documentation, with the server's version at the top. It only shows in the app for now.
+One page listing each enabled plugin, its version and a link to its documentation, with the server's version at the top.
 
 A link is filled in only when the plugin's source is already known: its jar matched a file on Modrinth, or you set the source yourself. Modrinth's wiki link comes first, then its source code link. A `plugin.yml` website or a match by name stays a suggestion until you press Use, because a name can match the wrong project. Searching by name sends that plugin's name to Hangar and SpigotMC, so it only happens when you ask, one plugin at a time. You can also type your own link.
+
+### A page for people on the server
+
+Off by default. Turn it on and the same list is served as a web page that only people provisioned on your server can read. Each plugin is left off it until you tick it, and server and plugin versions each have a switch, because versions help anyone looking for a server with a known weakness.
+
+**Who gets in:** a player types `/signin` in game and clicks the one-time link they're sent, so there's no password. That takes the Latchkey plugin, the `latchkey.signin` permission (ops have it by default), a place on the allowlist, and `online-mode=true`. A server behind a proxy has `online-mode` off, so it isn't supported yet.
+
+- A session lasts 12 hours and lives in memory, so quitting Leaf Juice signs everyone out. Losing the permission takes effect at the next sign-in. Leaving the allowlist or being banned ends access at once.
+- Nothing has an age or account type of its own: children's accounts follow the same permission.
+- The app shows who's signed in, and can sign anyone out. It keeps the account, the time and what happened for 30 days, in `.leafjuice/sign-in-log.json`, with no addresses, browsers or pages visited.
+- The page only exists while Leaf Juice is open.
+
+**Reaching it from outside:** Leaf Juice only listens on this Mac, over plain HTTP, and only answers to the address you enter. HTTPS has to end on this Mac too, or whoever carries the traffic could read sign-in links and cookies. The plan is [Caddy](https://caddyserver.com) behind a [playit.gg](https://playit.gg) HTTPS tunnel, which playit says needs Premium and which it doesn't decrypt. Any public certificate puts its hostname in public logs, so pick a name that doesn't say who the server is for.
+
+```
+links.example.com {
+    reverse_proxy localhost:8765
+}
+```
+
+**Tested:** a bot typed `/signin` on a throwaway Paper 1.21.11 server, and a real browser signed in and out on localhost with made-up data. **Not tested:** a real tunnel, Caddy, a real game client clicking the link, a permission granted through LuckPerms rather than op, and Bedrock players, who may not be able to click a chat link.
+
+**The map:** the same sign-in can also cover BlueMap's web map, at `/map/` on the same address. Off until you tick it. A player sees a world's map only if Multiverse lets them enter that world:
+
+- With Multiverse's `enforce-access` on, each world is checked with LuckPerms against `multiverse.access.<world>`, every few minutes per person. Only a plain yes counts. That includes the world players spawn in, so give that permission for any world whose map should show.
+- With `enforce-access` off, Multiverse lets everyone into every world, so everyone signed in sees every map. The app says so.
+- No Multiverse, no LuckPerms, a server that's stopped, or any setting that can't be read means no maps, and the app shows why.
+- Hidden maps are refused, not just left off the list: their tiles, live player positions and markers all return "not found", and BlueMap is never asked for them.
+- An op who isn't given the permission through LuckPerms sees fewer maps than they can enter, because op status isn't part of the check.
+- Teleports from the console or by another plugin can move someone into a world they don't have access to. The map follows the permission, not where they happen to be.
+
+BlueMap's own web server must stop answering anyone else, or the sign-in can be skipped. Set `ip: "127.0.0.1"` in `plugins/BlueMap/webserver.conf`. By default it's every network interface, and the app warns until it's changed. Leaf Juice reads BlueMap's port and web folder from the same file.
+
+**Map tested:** real BlueMap 5.16, Multiverse-Core 5.8.2 and LuckPerms 5.5.71 on a throwaway Paper 1.21.11 server with bots and made-up worlds. A real tile came through byte for byte, each player saw only their own worlds, and taking the permission away took the map away. On Minecraft 26, where Paper moves every world inside the level folder, BlueMap's map settings name the level folder and a dimension instead. Leaf Juice reads which world that is from the dimension. That form comes from a 26.2 trial with BlueMap 5.29 and is only covered by tests on made-up files.
+
+**Not tested:** a real browser drawing the map through the gate, a real tunnel, Caddy, or BlueMap's live updates over time.
 
 ## Install
 

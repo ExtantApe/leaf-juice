@@ -175,6 +175,19 @@ Also found while verifying:
 
 Real plugins can have 68 settings files, past an earlier limit of 40. `bStats` and `spark` folders belong to no plugin of that name, so they aren't leftovers. Plugin files that are only comments, such as Magic's templates, give no form fields, which is expected.
 
+## World access and BlueMap
+
+Observed on a throwaway Paper 1.21.11 with Multiverse-Core 5.8.2, LuckPerms 5.5.71 and BlueMap 5.16, with made-up worlds and bots:
+
+- **`enforce-access`** is off by default. `mv config enforce-access true` writes `enforce-access: true` into `plugins/Multiverse-Core/config.yml`.
+- **The permission** is `multiverse.access.<world>`. `lp user <uuid> permission check` gives `Result: true` when set, and `Result: false` for someone without it, through Bukkit's default rather than `undefined`.
+- **Enforced:** with it on, a player without the permission is refused by `mv tp` with "You do not have permissions to access the world". The same command from the console moves them anyway.
+- **BlueMap's maps:** BlueMap writes one `plugins/BlueMap/maps/<id>.conf` per world when it first starts, with `world: "<folder>"`. A world created afterwards gets no map until a file is added.
+- **BlueMap's web server:** it binds to every interface by default. Adding `ip: "127.0.0.1"` to `webserver.conf` binds it to loopback, and BlueMap logs `WebServer bound to: /127.0.0.1:<port>`.
+- **The map list:** `settings.json` in the web root lists map ids under `maps`, with `mapDataRoot` and `liveDataRoot` both `"maps"`.
+- **Tiles and live data:** each map has `textures.json.gz`, `settings.json`, `tiles/`, `live/` and `rstate`. Tiles are served chunked, with `Cache-Control: public, max-age=86400`. Live player positions come from `/maps/<id>/live/players.json` and include names and coordinates.
+- **Downloads:** BlueMap downloads Mojang's client jar once its `accept-download` is set to true.
+
 ## Not known yet
 
 - Anything about plugins beyond Multiverse and LuckPerms, in play.
