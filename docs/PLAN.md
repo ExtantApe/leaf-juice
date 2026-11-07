@@ -245,7 +245,18 @@ Ideas for later modules: scheduled announcements, a player whitelist manager, a 
 
 Most specific wins: My changes, then a pick for one file, then a pack for a category, then rank. Builds fix file times, order and permissions so identical inputs give an identical SHA-1. A git submodule was considered and left out: many packs aren't in git, binaries don't diff, and every user would need git. Lock files give the history that was wanted, and a GitHub source covers packs that are in git.
 
-Zip work uses the system's `unzip` and `zip`, so there are still no dependencies. Hosting is left to the user: a pack needs a public address, and running a web server from a Mac means opening a port.
+Zip work uses the system's `unzip` and `zip`, so there are still no dependencies. 
+Serving is a separate read-only listener on loopback, with settings per server in `.leafjuice/pack-hosting.json`, not in the recipe, so an exported recipe never carries an address. It answers `GET` and `HEAD` for `/<token>/pack.zip` and `/<token>/pack.zip.sha1`, and 404 for everything else. It streams in 256 KiB pieces, allows 32 connections, drops a connection that sends nothing for 10 seconds or stalls for 60, and doesn't log addresses. It works out the build per request: `resource-pack-sha1` if `server.properties` points at this address and Butler isn't installed, otherwise the build chosen with Serve This Build. A tunnel and Caddy aren't part of Leaf Juice and haven't been tested.
+
+### Handoff to Resource Pack Butler
+
+Not built yet, and its config format is undecided. What Leaf Juice offers it:
+
+- One address and SHA-1 per recipe, per world if each world has a recipe, to copy into Butler's config.
+- `<address>.sha1`, a plain text file with the current hash, if Butler would rather read it at startup and on its re-check command.
+- With a plugin named `ResourcePackButler` present, enabled or not, Leaf Juice refuses to write the pack settings, and warns if `server.properties` still sets a pack.
+
+Open problem: Serve This Build switches the file at once. A hash copied by hand is then stale until it's updated, and until then a player's game fails the hash check. Reading the `.sha1` file only narrows that gap to the next re-check. The Butler session should decide between re-reading the hash when a player fails to load a pack, and an address per build, which would never change under a config that has it. Leaf Juice doesn't serve per-build addresses today.
 
 ## Later
 

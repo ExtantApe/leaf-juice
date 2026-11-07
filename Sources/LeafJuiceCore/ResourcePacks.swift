@@ -750,7 +750,8 @@ public enum ResourcePacks {
     // MARK: Building
 
     private static func folder(forBuildsOf recipe: String) -> URL { builds.appendingPathComponent(slug(recipe), isDirectory: true) }
-    public static func buildFile(_ build: PackBuild, recipe: String) -> URL { folder(forBuildsOf: recipe).appendingPathComponent("\(build.sha1).zip") }
+    public static func buildFile(_ build: PackBuild, recipe: String) -> URL { buildFile(sha1: build.sha1, recipe: recipe) }
+    public static func buildFile(sha1: String, recipe: String) -> URL { folder(forBuildsOf: recipe).appendingPathComponent("\(sha1).zip") }
     public static func lockFile(sha1: String, recipe: String) -> URL { folder(forBuildsOf: recipe).appendingPathComponent("\(sha1).lock.json") }
 
     /// Newest first. Kept so going back is only a matter of pointing the server at an older file.

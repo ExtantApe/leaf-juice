@@ -8,11 +8,36 @@
 //   ... --lab --i-accept-the-minecraft-eula
 //   ... --experiments <versions,failures,multiverse,players,renames,restore|all> --i-accept-the-minecraft-eula
 //                                      Tries things and writes down what really happened, in .lab-sandbox/findings/.
+//   ... --real-pack --i-accept-the-minecraft-eula
+//                                      A throwaway Paper server and bots, with made-up packs served by Leaf Juice.
 //   ... --real-paper --i-accept-the-minecraft-eula
 //                                      Boots real Paper. The second flag is your own acceptance of
 //                                      https://aka.ms/MinecraftEULA, for a throwaway server in a temp folder.
 import Foundation
+import Network
 @testable import LeafJuiceCore
+
+// ... --demo-packs <folder> <zip>...  Fills a throwaway folder with these packs and a server, for clicking through the app.
+if let flag = CommandLine.arguments.firstIndex(of: "--demo-packs") {
+    let demo = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+    setenv("LEAFJUICE_HOME", demo.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", demo.appendingPathComponent("servers").path, 1)
+    var added: [LibraryPack] = []
+    for zip in CommandLine.arguments[(flag + 2)...] { added.append(try await ResourcePacks.add(URL(fileURLWithPath: zip))) }
+    var recipe = ResourcePacks.reconcile(PackRecipe(), with: added)
+    recipe.name = "world-one"
+    ResourcePacks.saveRecipe(recipe)
+    _ = try await ResourcePacks.combine(recipe)
+    recipe.name = "world-two"
+    recipe.entries.reverse()
+    ResourcePacks.saveRecipe(recipe)
+    _ = try await ResourcePacks.combine(recipe)
+    let root = demo.appendingPathComponent("servers/demo-server", isDirectory: true)
+    try FileOps.writeAtomic("server-port=25592\nmotd=made up\n", to: root.appendingPathComponent("server.properties"))
+    _ = try await ServerController.adopt(root: root, name: "demo-server")
+    print("Demo folder ready: \(demo.path)")
+    exit(0)
+}
 
 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("leafjuice-check-\(UUID().uuidString)", isDirectory: true)
 try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
@@ -2148,6 +2173,13 @@ if CommandLine.arguments.contains("--sandbox") {
 
 await runLifecycleWithStandIn()
 if CommandLine.arguments.contains("--live") { await runLiveAPIs() }
+if CommandLine.arguments.contains("--real-pack") {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealPack()
+    } else {
+        print("Skipping --real-pack: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
 if CommandLine.arguments.contains("--real-paper") {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         await runRealPaper()
@@ -2264,6 +2296,78 @@ if CommandLine.arguments.contains("--real-paper") {
         } catch { blocked = error.localizedDescription }
         check(blocked.contains("can't go back"), "downgrade refused: \(blocked)")
     } catch { failures.append("live API: \(error)") }
+}
+
+/// Real Paper offering a pack this app serves, through a staged update and a restart. Bots stand in for the game,
+/// so this shows the offer and the download agree. It can't show the game accepting the pack.
+@MainActor func runRealPack() async {
+    section("REAL PACK SERVING (EULA accepted by the person running this)")
+    do {
+        let port = 25591, hostPort = 28770
+        let root = folder("real-pack")
+        write("server-port=\(port)\nonline-mode=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "real-pack")
+        try EULA.accept(c.paths)
+        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")!)
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        defer { c.stopPackHost(); c.forceStop(); c.stopTicker() }
+        let runtimes = await JavaManager.discover()
+        guard let java = JavaManager.best(for: 21, in: runtimes) else { failures.append("no Java 21"); return }
+        let table = try await ProtocolTable.load(mc: "1.21.11", cache: folder("real-pack-protocol"), java: java.path)
+
+        let first = try await ResourcePacks.add(await makePack("Made Up First", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"first"}}"#, "assets/minecraft/textures/block/stone.png": "first"]))
+        let second = try await ResourcePacks.add(await makePack("Made Up Second", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"second"}}"#, "assets/minecraft/textures/block/stone.png": "second"]))
+        var recipe = PackRecipe()
+        recipe.name = "real-one"
+        recipe.entries = [PackRecipe.Entry(pack: first.id, version: first.latest!.sha1)]
+        let oldBuild = try await ResourcePacks.combine(recipe)
+        recipe.entries = [PackRecipe.Entry(pack: second.id, version: second.latest!.sha1)]
+        let newBuild = try await ResourcePacks.combine(recipe)
+
+        try c.setPackHost(address: "http://127.0.0.1:\(hostPort)", port: hostPort)
+        try c.startPackHost()
+        await checkUntil(5, "serving") { c.packHostIsListening }
+        let url = c.packAddress(recipe: recipe.name)!
+        equal(try await c.usePack(url: url, sha1: oldBuild.sha1, required: true, recipe: recipe.name), .saved, "set while stopped")
+
+        // Stopping the host here shows a server start brings it back.
+        c.stopPackHost(remember: false)
+        await c.start()
+        await checkUntil(240, "up: \(c.state)") { c.state == .running }
+        check(c.packHostIsListening, "starting the server starts serving")
+
+        func offered(_ name: String, expect sha1: String, _ label: String) async throws {
+            let bot = try await join(name, c, table, port: port)
+            equal(bot.packOffer?.url, url, "\(label): the server offers this address")
+            equal(bot.packOffer?.hash, sha1, "\(label): with this hash")
+            check(bot.packOffer?.required == true, "\(label): required")
+            let download = await PackHosting.check(url: bot.packOffer?.url ?? "", expected: bot.packOffer?.hash ?? "")
+            check(download.ok, "\(label): what the bot was offered downloads and matches: \(download.summary)")
+            await leave(bot, c)
+        }
+        try await offered("PackBotOne", expect: oldBuild.sha1, "first join")
+
+        // A new build while running: staged, and old file and old hash stay together.
+        await c.refreshPlugins()
+        equal(try await c.usePack(url: url, sha1: newBuild.sha1, required: true, recipe: recipe.name), .staged, "a running server stages it")
+        equal(c.servedPackSHA1(recipe: recipe.name), oldBuild.sha1, "the address still gives the old build")
+        try await offered("PackBotTwo", expect: oldBuild.sha1, "before the restart")
+
+        // Across the restart they switch together.
+        c.stop()
+        await checkUntil(90, "stopped: \(c.state)") { !c.state.isLive }
+        await c.start()
+        await checkUntil(240, "back up: \(c.state)") { c.state == .running }
+        equal(c.servedPackSHA1(recipe: recipe.name), newBuild.sha1, "after the restart the address gives the new build")
+        try await offered("PackBotThree", expect: newBuild.sha1, "after the restart")
+
+        // A declining bot still gets Minecraft's own answer, and nothing here changes it.
+        let decliner = try Bot(name: "PackBotFour", port: port, table: table, packAnswer: 1)
+        await checkUntil(30, "a required pack declined disconnects") { decliner.packOffer != nil && !c.players.contains("PackBotFour") }
+        decliner.leave()
+        c.stop()
+        await checkUntil(90, "stopped at the end: \(c.state)") { !c.state.isLive }
+    } catch { failures.append("real pack serving threw: \(error)") }
 }
 
 @MainActor func runRealPaper() async {
@@ -3252,7 +3356,369 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
             do { _ = try ResourcePacks.applying(url: u, sha1: h, required: false, to: real) } catch { bad += 1 }
         }
         equal(bad, 3, "bad addresses and hashes are refused")
+        await packContributionChecks(recipe: recipe, top: a.id, lower: b.id, stone: stoneA)
     } catch { failures.append("resource packs threw: \(error)") }
+    await packHostingChecks()
+}
+
+@MainActor func packContributionChecks(recipe: PackRecipe, top: String, lower: String, stone: String) async {
+    print("• What each pack contributes")
+    do {
+        var byRank = recipe
+        byRank.winners = [:]; byRank.categoryWinners = [:]
+        let lock = try await ResourcePacks.resolve(byRank)
+        let counts = ResourcePacks.contributions(lock, order: [(top, "Top"), (lower, "Lower")])
+        let topCount = counts.first { $0.pack == top }!, lowerCount = counts.first { $0.pack == lower }!
+        equal(counts.first?.pack, top, "listed in ranking order")
+        equal(topCount.wins + lowerCount.wins + topCount.merged, lock.files.filter { $0.reason != .merged }.count + topCount.merged, "every file not merged has one winner")
+        check(topCount.winsByCategory["Blocks", default: 0] > 0, "wins are counted by kind")
+        equal(lock.files.first { $0.path == stone }?.role(of: top), .wins, "the top pack wins a shared file")
+        equal(lock.files.first { $0.path == stone }?.role(of: lower), .loses, "and the lower one loses it")
+        let lost = ResourcePacks.files(lock, pack: lower, show: .loses)
+        equal(lost.count, lowerCount.loses, "the file list and the count agree on what's lost")
+        check(lost.contains { $0.path == stone }, "and name it")
+        equal(ResourcePacks.files(lock, pack: lower, show: .only).count, lowerCount.only, "and on what only it has")
+        check(ResourcePacks.files(lock, show: .loses).allSatisfy(\.canChoose), "across every pack, 'replaced' only lists real choices")
+        check(ResourcePacks.files(lock, search: "STONE").contains { $0.path == stone }, "search ignores case")
+        check(ResourcePacks.files(lock, imagesOnly: true).allSatisfy(\.isImage), "images only")
+        check(ResourcePacks.files(lock, category: "Blocks").allSatisfy { ResourcePacks.category(of: $0.path) == "Blocks" }, "one kind only")
+        check(lock.files.filter { $0.reason == .merged }.allSatisfy { !$0.canChoose }, "merged files offer no choice")
+
+        // Over the 200 the old list stopped at.
+        var many: [String: String] = ["pack.mcmeta": #"{"pack":{"pack_format":46,"description":"many"}}"#]
+        var alsoMany = many
+        for index in 0..<260 {
+            many["assets/minecraft/textures/block/made_up_\(index).png"] = "one-\(index)"
+            alsoMany["assets/minecraft/textures/block/made_up_\(index).png"] = "two-\(index)"
+        }
+        let first = try await ResourcePacks.add(await makePack("Many One", many))
+        let second = try await ResourcePacks.add(await makePack("Many Two", alsoMany))
+        var big = ResourcePacks.reconcile(PackRecipe(), with: [first, second])
+        big.name = "many-files"
+        big.entries = big.entries.filter { $0.pack == first.id || $0.pack == second.id }
+        let bigLock = try await ResourcePacks.resolve(big)
+        equal(ResourcePacks.files(bigLock, pack: second.id, show: .loses).count, 260, "every differing file is listed, not just 200")
+
+        // A choice in the list changes the count and the build the same way.
+        let pickedPath = "assets/minecraft/textures/block/made_up_7.png"
+        big.winners[pickedPath] = second.id
+        let picked = try await ResourcePacks.resolve(big)
+        let pickedCounts = ResourcePacks.contributions(picked, order: [(first.id, "One"), (second.id, "Two")])
+        equal(pickedCounts.first { $0.pack == second.id }?.wins, 1, "choosing a file counts for that pack")
+        let builtDir = try await ResourcePacks.unpack(ResourcePacks.buildFile(try await ResourcePacks.combine(big), recipe: big.name))
+        equal(try? String(contentsOf: builtDir.appendingPathComponent(pickedPath), encoding: .utf8), "two-7", "and the build agrees")
+        let locator = try await ResourcePacks.locator(big)
+        equal(locator.url(path: pickedPath, pack: first.id).flatMap { try? String(contentsOf: $0, encoding: .utf8) }, "one-7", "each copy can be found to look at")
+        equal(locator.url(path: pickedPath, pack: second.id).flatMap { try? String(contentsOf: $0, encoding: .utf8) }, "two-7", "both of them")
+        try await ResourcePacks.remove(first)
+        try await ResourcePacks.remove(second)
+    } catch { failures.append("pack contributions threw: \(error)") }
+}
+
+/// A raw request, for things a normal web client won't send.
+func rawRequest(port: Int, _ text: String) async -> String {
+    await withCheckedContinuation { (done: CheckedContinuation<String, Never>) in
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        let queue = DispatchQueue(label: "raw")
+        final class Box: @unchecked Sendable { var data = Data(); var ended = false }
+        let box = Box()
+        @Sendable func end() {
+            guard !box.ended else { return }
+            box.ended = true
+            connection.cancel()
+            done.resume(returning: String(decoding: box.data, as: UTF8.self))
+        }
+        @Sendable func pull() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, finished, error in
+                if let data { box.data.append(data) }
+                if finished || error != nil { end() } else { pull() }
+            }
+        }
+        connection.stateUpdateHandler = { state in
+            if case .failed = state { end() }
+        }
+        connection.start(queue: queue)
+        if !text.isEmpty { connection.send(content: Data(text.utf8), completion: .idempotent) }
+        pull()
+        queue.asyncAfter(deadline: .now() + 15) { end() }
+    }
+}
+
+func residentBytes() -> UInt64 {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) { $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count) } }
+    return result == KERN_SUCCESS ? info.resident_size : 0
+}
+
+@MainActor func packHostingChecks() async {
+    print("• Serving packs")
+    // The pure parts.
+    equal(PackHosting.cleanAddress(" https://Packs.Example.net/ "), "https://packs.example.net", "an address is tidied")
+    equal(PackHosting.cleanAddress("http://127.0.0.1:8766"), "http://127.0.0.1:8766", "with its port")
+    for bad in ["packs.example.net", "ftp://x", "https://x/path", "https://x?a=1", "https://u:p@x", "https://x#y"] { equal(PackHosting.cleanAddress(bad), nil, "refused: \(bad)") }
+    check(PackHosting.isOnlyThisMac("http://localhost:1") && PackHosting.isOnlyThisMac("http://127.0.0.1") && !PackHosting.isOnlyThisMac("https://packs.example.net"), "an address only this Mac can use is noticed")
+    let tokens = (0..<20).map { _ in PackHosting.newToken() }
+    equal(Set(tokens).count, 20, "paths differ"); check(tokens.allSatisfy { $0.count == 64 }, "and are long")
+    equal(PackHosting.parse(Data("GET /a HTTP/1.1\r\nHost: x\r\n\r\n".utf8)), .ok(method: "GET", path: "/a"), "a request is read")
+    equal(PackHosting.parse(Data("GET /a HTTP/1.1\r\nHost".utf8)), .incomplete, "a partial one waits")
+    equal(PackHosting.parse(Data("GARBAGE\r\n\r\n".utf8)), .bad, "nonsense is refused")
+    equal(PackHosting.parse(Data(repeating: 65, count: 9000)), .bad, "so is one that never ends")
+    let oneHash = String(repeating: "a", count: 40), twoHash = String(repeating: "b", count: 40), threeHash = String(repeating: "c", count: 40)
+    let route = PackRoute(token: "tok", recipe: "r", url: "https://p/tok/pack.zip", published: oneHash, followsProperties: true)
+    equal(PackHosting.match(path: "/tok/pack.zip", routes: [route])?.asked, .pack, "the pack's path")
+    equal(PackHosting.match(path: "/tok/pack.zip.sha1", routes: [route])?.asked, .hash, "the hash's path")
+    for wrong in ["/", "/tok", "/tok/", "/tok/other.zip", "/nope/pack.zip", "/tok/pack.zip?x=1", "/tok/../tok/pack.zip", "//tok/pack.zip", "/tok/pack.zip/"] { check(PackHosting.match(path: wrong, routes: [route]) == nil, "no match: \(wrong)") }
+    let pointing = "resource-pack=https\\://p/tok/pack.zip\nresource-pack-sha1=\(twoHash)\n"
+    equal(ResourcePacks.current(pointing).url, "https://p/tok/pack.zip", "properties escape their colons")
+    equal(PackHosting.servedSHA1(route, properties: pointing), twoHash, "the server's own hash decides when it points here")
+    equal(PackHosting.servedSHA1(route, properties: "resource-pack=https\\://other/x.zip\nresource-pack-sha1=\(twoHash)\n"), oneHash, "not when it points elsewhere")
+    equal(PackHosting.servedSHA1(route, properties: "resource-pack=https\\://p/tok/pack.zip\nresource-pack-sha1=../../secret\n"), oneHash, "a hash that isn't one is ignored")
+    var butlerRoute = route; butlerRoute.followsProperties = false
+    equal(PackHosting.servedSHA1(butlerRoute, properties: pointing), oneHash, "with Butler, server.properties decides nothing")
+    var unset = butlerRoute; unset.published = nil
+    equal(PackHosting.servedSHA1(unset, properties: pointing), nil, "nothing chosen means nothing served")
+
+    do {
+        let root = folder("pack-hosting")
+        write("server-port=25599\nmotd=keep\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "pack-hosting")
+        defer { c.stopPackHost() }
+        let port = 28766
+
+        // Two recipes, as for two worlds.
+        let oneZip = try await ResourcePacks.add(await makePack("World One", ["pack.mcmeta": #"{"pack":{"pack_format":46,"description":"one"}}"#, "assets/minecraft/textures/block/stone.png": "world-one"]))
+        let twoZip = try await ResourcePacks.add(await makePack("World Two", ["pack.mcmeta": #"{"pack":{"pack_format":46,"description":"two"}}"#, "assets/minecraft/textures/block/stone.png": "world-two"]))
+        func recipe(_ name: String, _ pack: LibraryPack) -> PackRecipe {
+            var out = PackRecipe()
+            out.name = name
+            out.entries = [PackRecipe.Entry(pack: pack.id, version: pack.latest!.sha1)]
+            ResourcePacks.saveRecipe(out)
+            return out
+        }
+        let firstBuild = try await ResourcePacks.combine(recipe("world-one", oneZip))
+        let otherBuild = try await ResourcePacks.combine(recipe("world-two", twoZip))
+        check(firstBuild.sha1 != otherBuild.sha1, "two recipes, two builds")
+
+        // Off by default, and refuses to start without an address.
+        check(!c.packHostSettings.enabled && !c.packHostIsListening, "serving is off by default")
+        var refusedStart = false
+        do { try c.startPackHost() } catch { refusedStart = true }
+        check(refusedStart, "it needs an address first")
+        try c.setPackHost(address: "http://127.0.0.1:\(port)/", port: port)
+        var badPort = false
+        do { try c.setPackHost(address: "http://127.0.0.1", port: 80) } catch { badPort = true }
+        check(badPort, "a low port is refused")
+        try c.startPackHost()
+        await checkUntil(5, "listening") { c.packHostIsListening }
+        check(c.packHostSettings.enabled, "and it's remembered")
+
+        let oneURL = c.packAddress(recipe: "world-one")!, twoURL = c.packAddress(recipe: "world-two")!
+        check(oneURL != twoURL, "each recipe has its own address")
+        check(oneURL.hasPrefix("http://127.0.0.1:\(port)/") && oneURL.hasSuffix("/pack.zip"), "in the right form: \(oneURL)")
+        let token = c.packHostSettings.recipes["world-one"]!.token
+        func status(_ text: String) -> String { String(text.split(separator: "\r\n").first ?? "") }
+
+        // Nothing is served until it's chosen, and the answer gives nothing away.
+        let notYet = await PackHosting.check(url: oneURL, expected: firstBuild.sha1)
+        equal(notYet.outcome, .status(404), "nothing's served until a build is chosen")
+        try c.serveBuild(sha1: firstBuild.sha1, recipe: "world-one")
+        try c.serveBuild(sha1: otherBuild.sha1, recipe: "world-two")
+        var missing = false
+        do { try c.serveBuild(sha1: threeHash, recipe: "world-one") } catch { missing = true }
+        check(missing, "a build that isn't there can't be chosen")
+        try? await Task.sleep(for: .milliseconds(100))
+        let oneCheck = await PackHosting.check(url: oneURL, expected: firstBuild.sha1)
+        check(oneCheck.ok, "the first recipe's address gives its own build: \(oneCheck.summary)")
+        let twoCheck = await PackHosting.check(url: twoURL, expected: otherBuild.sha1)
+        check(twoCheck.ok, "and the second its own: \(twoCheck.summary)")
+        let crossed = await PackHosting.check(url: oneURL, expected: otherBuild.sha1)
+        check({ if case .differs = crossed.outcome { return true } else { return false } }(), "a wrong file is noticed: \(crossed.summary)")
+        let hashText = await rawRequest(port: port, "GET /\(token)/pack.zip.sha1 HTTP/1.1\r\nHost: x\r\n\r\n")
+        check(hashText.hasSuffix("\(firstBuild.sha1)\n"), "the hash can be read for Butler's use")
+
+        // Everything else gets the same nothing.
+        let wrongPath = await rawRequest(port: port, "GET /\(String(repeating: "0", count: 64))/pack.zip HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(wrongPath), "HTTP/1.1 404 Not Found", "a wrong path")
+        let listing = await rawRequest(port: port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(listing), "HTTP/1.1 404 Not Found", "no listing")
+        let climbing = await rawRequest(port: port, "GET /\(token)/../../../server.properties HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(climbing), "HTTP/1.1 404 Not Found", "no climbing out")
+        let posted = await rawRequest(port: port, "POST /\(token)/pack.zip HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+        equal(status(posted), "HTTP/1.1 405 Method Not Allowed", "read only")
+        let nonsense = await rawRequest(port: port, "NOT HTTP\r\n\r\n")
+        equal(status(nonsense), "HTTP/1.1 400 Bad Request", "nonsense is refused")
+        let headOnly = await rawRequest(port: port, "HEAD /\(token)/pack.zip HTTP/1.1\r\nHost: x\r\n\r\n")
+        check(headOnly.contains("Content-Length: \(firstBuild.size)") && headOnly.hasSuffix("\r\n\r\n"), "HEAD gives the size and no file")
+        let getOne = await rawRequest(port: port, "HEAD /\(token)/pack.zip HTTP/1.1\r\nHost: x\r\nCookie: a=b\r\n\r\n")
+        check(!getOne.lowercased().contains("set-cookie"), "no cookies either way")
+        check(getOne.contains("X-Content-Type-Options: nosniff"), "and the browser isn't left to guess")
+
+        // A connection that never asks gets dropped, and doesn't block others.
+        let silent = await rawRequest(port: port, "")
+        equal(silent, "", "a silent connection is closed")
+        let silentThenFine = await PackHosting.check(url: oneURL, expected: firstBuild.sha1)
+        check(silentThenFine.ok, "and others carry on")
+
+        // A large file, several at once, without holding it in memory.
+        let largeSHA: String
+        do {
+            let large = "large-test"
+            let temp = folder("large-pack").appendingPathComponent("large.zip")
+            FileManager.default.createFile(atPath: temp.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: temp)
+            let block = Data((0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+            for _ in 0..<300 { try handle.write(contentsOf: block) }
+            try handle.close()
+            largeSHA = try Hashing.digests(of: temp).sha1
+            let target = ResourcePacks.buildFile(sha1: largeSHA, recipe: large)
+            try FileOps.ensureDir(target.deletingLastPathComponent())
+            try FileOps.move(temp, to: target)
+            try c.serveBuild(sha1: largeSHA, recipe: large)
+            try? await Task.sleep(for: .milliseconds(100))
+            let url = c.packAddress(recipe: large)!
+            // Downloaded by another process, so the memory measured here is only the server's.
+            let before = residentBytes()
+            let peak = Task { @MainActor () -> UInt64 in
+                var most: UInt64 = 0
+                while !Task.isCancelled {
+                    most = max(most, residentBytes())
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                return most
+            }
+            let curls = await withTaskGroup(of: String.self, returning: [String].self) { group in
+                for _ in 0..<4 {
+                    group.addTask {
+                        let out = try? await Tool.run("/bin/sh", ["-c", "/usr/bin/curl -s --fail \"$0\" | /usr/bin/shasum -a 1", url])
+                        return String(out?.out.prefix(40) ?? "")
+                    }
+                }
+                var out: [String] = []
+                for await item in group { out.append(item) }
+                return out
+            }
+            peak.cancel()
+            let most = await peak.value
+            equal(curls, Array(repeating: largeSHA, count: 4), "4 downloads of 300 MB at once all match")
+            print("    memory while serving 4 x 300 MB: \((Int64(most) - Int64(before)) / 1_000_000) MB more at its peak")
+            check(Int64(most) - Int64(before) < 60_000_000, "the file isn't held in memory")
+            let oneLarge = await PackHosting.check(url: url, expected: largeSHA)
+            check(oneLarge.ok && oneLarge.summary.contains("may not accept"), "the check warns about the size: \(oneLarge.summary)")
+            try? FileManager.default.removeItem(at: target)
+            let gone = await PackHosting.check(url: url, expected: largeSHA)
+            equal(gone.outcome, .status(404), "a build that's gone is a 404, not another file")
+        }
+
+        // More connections than allowed: extras are dropped, nothing breaks.
+        var crowd: [NWConnection] = []
+        for _ in 0..<(PackHost.maxConnections + 5) {
+            let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+            connection.start(queue: .global())
+            crowd.append(connection)
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        let crowded = await rawRequest(port: port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(crowded, "", "a full house turns newcomers away")
+        for connection in crowd { connection.cancel() }
+        try? await Task.sleep(for: .milliseconds(300))
+        let cleared = await PackHosting.check(url: oneURL, expected: firstBuild.sha1)
+        check(cleared.ok, "and recovers once they've gone: \(cleared.summary)")
+
+        // The server's own setting decides, so a staged change holds until the restart.
+        await c.refreshPlugins()
+        let required = try await c.usePack(url: oneURL, sha1: firstBuild.sha1, required: true, recipe: "world-one")
+        equal(required, .saved, "a stopped server saves straight away")
+        let onServer = ResourcePacks.current(try String(contentsOf: c.paths.properties, encoding: .utf8))
+        equal(onServer.url, oneURL, "the address is set"); equal(onServer.sha1, firstBuild.sha1, "with its hash"); check(onServer.required, "and required")
+        check((try String(contentsOf: c.paths.properties, encoding: .utf8)).contains("motd=keep"), "other settings stay")
+
+        // A new address means the old one's dead straight away.
+        c.newPackPath(recipe: "world-two")
+        try? await Task.sleep(for: .milliseconds(100))
+        let oldAddress = await PackHosting.check(url: twoURL, expected: otherBuild.sha1)
+        equal(oldAddress.outcome, .status(404), "the old address stops working")
+        let newAddress = await PackHosting.check(url: c.packAddress(recipe: "world-two")!, expected: otherBuild.sha1)
+        check(newAddress.ok, "and the new one gives the same build")
+
+        // Hosted elsewhere: the address is theirs, and nothing's served from here.
+        let elsewhereToken = c.packHostSettings.recipes["world-two"]!.token
+        try c.setPackElsewhere("https://example.invalid/pack.zip", recipe: "world-two")
+        equal(c.packAddress(recipe: "world-two"), "https://example.invalid/pack.zip", "another host's address can be used")
+        try? await Task.sleep(for: .milliseconds(100))
+        let notHere = await rawRequest(port: port, "GET /\(elsewhereToken)/pack.zip HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(notHere), "HTTP/1.1 404 Not Found", "and this Mac stops serving it")
+        var badElsewhere = false
+        do { try c.setPackElsewhere("not an address", recipe: "world-two") } catch { badElsewhere = true }
+        check(badElsewhere, "a bad address is refused")
+        try c.setPackElsewhere("", recipe: "world-two")
+        check(c.packAddress(recipe: "world-two")?.contains("127.0.0.1") == true, "and it can come back")
+
+        // Butler on the server: Leaf Juice keeps its hands off.
+        let before = try String(contentsOf: c.paths.properties, encoding: .utf8)
+        try FileOps.ensureDir(c.paths.plugins)
+        makeJar(c.paths.plugins.appendingPathComponent("ResourcePackButler.jar"), yaml: "name: ResourcePackButler\nversion: 0.0.1\nmain: x.Y\napi-version: '1.21'\n")
+        await c.refreshPlugins()
+        check(c.hasPackButler, "Butler is noticed")
+        var butlerRefused = ""
+        do { _ = try await c.usePack(url: oneURL, sha1: otherBuild.sha1, required: true, recipe: "world-one") } catch { butlerRefused = error.localizedDescription }
+        check(butlerRefused.contains("Butler"), "with Butler, the pack settings can't be written: \(butlerRefused)")
+        equal(try String(contentsOf: c.paths.properties, encoding: .utf8), before, "and aren't")
+        _ = try await ResourcePacks.combine(recipe("world-one", twoZip))
+        try c.serveBuild(sha1: otherBuild.sha1, recipe: "world-one")
+        try? await Task.sleep(for: .milliseconds(100))
+        equal(c.servedPackSHA1(recipe: "world-one"), otherBuild.sha1, "with Butler, the chosen build is served even though server.properties says otherwise")
+        let butlerServed = await PackHosting.check(url: oneURL, expected: otherBuild.sha1)
+        check(butlerServed.ok, "and that's what the address gives")
+        try FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("ResourcePackButler.jar"))
+        await c.refreshPlugins()
+        try? await Task.sleep(for: .milliseconds(100))
+        equal(c.servedPackSHA1(recipe: "world-one"), firstBuild.sha1, "without it, server.properties decides again")
+
+        // Stopping stops, the module switch stops, and a new start comes back by itself.
+        Modules.shared.set(.resourcePacks, on: false)
+        var moduleRefused = false
+        do { try c.startPackHost() } catch { moduleRefused = true }
+        check(moduleRefused, "with the module off it won't start")
+        Modules.shared.set(.resourcePacks, on: true)
+        try c.startPackHost()
+        await checkUntil(5, "listening again") { c.packHostIsListening }
+        Modules.shared.set(.resourcePacks, on: false)
+        _ = await rawRequest(port: port, "GET /\(token)/pack.zip.sha1 HTTP/1.1\r\nHost: x\r\n\r\n")
+        Modules.shared.set(.resourcePacks, on: true)
+        await checkUntil(5, "module switch stops it") { c.packHost?.isListening != true }
+        c.stopPackHost()
+        check(!c.packHostSettings.enabled, "stopping is remembered")
+        let afterStop = await PackHosting.check(url: oneURL, expected: firstBuild.sha1)
+        check(!afterStop.ok, "and nothing answers")
+        var servingOff = ""
+        do { _ = try await c.usePack(url: oneURL, sha1: firstBuild.sha1, required: true, recipe: "world-one") } catch { servingOff = error.localizedDescription }
+        check(servingOff.contains("serving is off"), "a required pack can't be pointed at a stopped address: \(servingOff)")
+        var wanted = c.packHostSettings
+        wanted.enabled = true
+        c.packHostSettings = wanted
+        c.startPackHostIfWanted()
+        await checkUntil(5, "comes back") { c.packHostIsListening }
+        let trial = try await ServerController.adopt(root: folder("pack-hosting-trial"), name: "trial")
+        var trialSettings = trial.packHostSettings
+        trialSettings.enabled = true; trialSettings.address = "http://127.0.0.1"; trialSettings.port = port + 1
+        trial.packHostSettings = trialSettings
+        trial.isTrialCopy = true
+        trial.startPackHostIfWanted()
+        check(!trial.packHostIsListening && trial.packHost == nil, "a test copy never serves")
+
+        // A port in use is reported rather than silent.
+        let rival = try await ServerController.adopt(root: folder("pack-hosting-rival"), name: "rival")
+        try rival.setPackHost(address: "http://127.0.0.1", port: port)
+        try rival.startPackHost()
+        await checkUntil(5, "a taken port is reported") { rival.packHostError != nil || rival.packHostIsListening }
+        check(rival.packHostError?.contains("\(port)") == true, "and says which: \(rival.packHostError ?? "listening anyway")")
+        rival.stopPackHost()
+
+        // Addresses and paths never travel with a shared recipe.
+        let exported = String(decoding: try ResourcePacks.exportRecipe(recipe("world-one", oneZip)), as: UTF8.self)
+        check(!exported.contains(token) && !exported.contains("127.0.0.1"), "an exported recipe holds no address")
+    } catch { failures.append("serving packs threw: \(error)") }
 }
 
 /// A hang should fail a check, not stop the suite forever.
