@@ -245,7 +245,18 @@ Ideas for later modules: scheduled announcements, a player whitelist manager, a 
 
 Most specific wins: My changes, then a pick for one file, then a pack for a category, then rank. Builds fix file times, order and permissions so identical inputs give an identical SHA-1. A git submodule was considered and left out: many packs aren't in git, binaries don't diff, and every user would need git. Lock files give the history that was wanted, and a GitHub source covers packs that are in git.
 
-Zip work uses the system's `unzip` and `zip`, so there are still no dependencies. Hosting is left to the user: a pack needs a public address, and running a web server from a Mac means opening a port.
+Zip work uses the system's `unzip` and `zip`, so there are still no dependencies. 
+Serving is a separate read-only listener on loopback, with settings per server in `.leafjuice/pack-hosting.json`, not in the recipe, so an exported recipe never carries an address. It answers `GET` and `HEAD` for `/<token>/pack.zip` and `/<token>/pack.zip.sha1`, and 404 for everything else. It streams in 256 KiB pieces, allows 32 connections, drops a connection that sends nothing for 10 seconds or stalls for 60, and doesn't log addresses. It works out the build per request: `resource-pack-sha1` if `server.properties` points at this address and Butler isn't installed, otherwise the build chosen with Serve This Build. A tunnel and Caddy aren't part of Leaf Juice and haven't been tested.
+
+### Handoff to per-world pack plugins
+
+Resource Pack Butler isn't built yet, and its config format is undecided. WorldResourcepacks is treated the same way. What Leaf Juice offers either one:
+
+- **An address per build,** `/<token>/<sha1>.zip`, which only ever gives that build. A config holding that address and its SHA-1 can't fall out of step, because publishing a new build doesn't change what the old address gives. Old builds stay reachable while their file is kept. This is what the Hosting card shows when one of these plugins is installed.
+- **A stable address,** `/<token>/pack.zip`, plus `pack.zip.sha1`, a plain text file with the current hash. This one switches when you press Serve This Build, so a plugin using it has to re-read the hash.
+- With a plugin named `ResourcePackButler` or `WorldResourcepacks` present, enabled or not, Leaf Juice refuses to write the pack settings, and warns if `server.properties` still sets a pack.
+
+For the Butler session: per-build addresses are the suggested format. A new build then means changing the address and the hash in Butler's config together.
 
 ## Later
 

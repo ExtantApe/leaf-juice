@@ -107,6 +107,8 @@ public final class ServerController: Identifiable {
     public var runtimes: [JavaRuntime] = []
 
     var process: ServerProcess?
+    var packHost: PackHost?
+    public internal(set) var packHostError: String?
     private let sampler = MetricsSampler()
     private let analyzer = IssueAnalyzer()
     private var lineBuffer: [String] = []
@@ -324,6 +326,7 @@ public final class ServerController: Identifiable {
         blockers = await preflight()
         guard blockers.isEmpty else { return }
         await applyPending()
+        startPackHostIfWanted()
         launch()
     }
 
@@ -1044,6 +1047,7 @@ public final class ServerController: Identifiable {
         plugins = await PluginScanner.scan(paths)
         analyzer.setPlugins(plugins)
         refreshConfigs()
+        syncPackRoutes()
         await identifySources()
     }
 

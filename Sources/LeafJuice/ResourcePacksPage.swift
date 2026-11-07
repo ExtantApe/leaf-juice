@@ -25,6 +25,10 @@ struct ResourcePacksPage: View {
     @State private var newRecipe = false
     @State private var newName = ""
     @State private var fit: PackCoverage?
+    @State private var locator: PackFileLocator?
+    @State private var confirmServe: PackBuild?
+    @State private var checkFailed: PackURLCheck?
+    @State private var hostingRefresh = 0
 
     struct PendingUpdate: Identifiable {
         var id: String { pack.id }
@@ -46,6 +50,9 @@ struct ResourcePacksPage: View {
             libraryCard
             if !packs.isEmpty { recipeCard }
             if !history.isEmpty { buildsCard }
+            if !packs.isEmpty {
+                PackHostingCard(server: server, recipeNames: recipeNames, live: live) { hostingRefresh += 1 }
+            }
             if let browsing { PackBrowser(pack: browsing) { self.browsing = nil } }
         }
         .task { await start() }
@@ -60,6 +67,11 @@ struct ResourcePacksPage: View {
             Button("Remove", role: .destructive) { if let pack = confirmRemove { remove(pack) } }
         } message: {
             Text("All its versions go. Packs you've already built aren't affected, but recipes won't be able to rebuild with it.")
+        }
+        .confirmationDialog("Serve this build to players?", isPresented: Binding(get: { confirmServe != nil }, set: { if !$0 { confirmServe = nil } })) {
+            Button("Serve It") { if let build = confirmServe { serve(build) } }
+        } message: {
+            Text(serveWarning)
         }
         .alert("New recipe", isPresented: $newRecipe) {
             TextField("Name", text: $newName)
@@ -170,7 +182,12 @@ struct ResourcePacksPage: View {
             fitSection
             categorySection
             leaveOutSection
-            conflictSection
+            if let lock {
+                PackContributionsView(lock: lock, recipe: recipe, packs: packs, locator: locator) { path, pack in
+                    recipe.winners[path] = pack
+                    saved()
+                }
+            }
             mineSection
             if let lastChanges, !lastChanges.isEmpty { changesSection(lastChanges) }
             HStack {
@@ -245,35 +262,6 @@ struct ResourcePacksPage: View {
         .foregroundStyle(Juice.ink)
     }
 
-    @ViewBuilder private var conflictSection: some View {
-        let conflicts = lock.map(ResourcePacks.conflicts) ?? []
-        if !conflicts.isEmpty {
-            DisclosureGroup("\(conflicts.count) file\(conflicts.count == 1 ? "" : "s") differ between packs") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Hint("Every copy is kept in the library, and the winner goes in the build. Languages, sounds, fonts, atlases and item model overrides merge, so they aren't listed.")
-                    ForEach(conflicts.prefix(200)) { file in
-                        HStack {
-                            Text(file.path).font(.callout).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.head)
-                            Spacer()
-                            Picker("Winner for \(file.path)", selection: Binding(get: { file.winner }, set: { value in
-                                recipe.winners[file.path] = value
-                                saved()
-                            })) {
-                                ForEach(file.copies, id: \.pack) { copy in
-                                    Text(packs.first { $0.id == copy.pack }?.title ?? copy.pack).tag(copy.pack)
-                                }
-                            }
-                            .labelsHidden().frame(maxWidth: 220)
-                        }
-                    }
-                    if conflicts.count > 200 { Hint("And \(conflicts.count - 200) more.") }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .foregroundStyle(Juice.ink)
-        }
-    }
-
     private var mineSection: some View {
         HStack {
             Text("My changes").foregroundStyle(Juice.ink)
@@ -304,6 +292,11 @@ struct ResourcePacksPage: View {
                     }
                     Spacer()
                     if live.sha1 == item.sha1 { Badge(text: "On this server", tone: .good) }
+                    if servedSHA1 == item.sha1 {
+                        Badge(text: "At its address", tone: .good)
+                    } else if !hostedElsewhere, !server.hasPerWorldPacks {
+                        Button("Serve This Build") { askToServe(item) }.buttonStyle(.juice)
+                    }
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([ResourcePacks.buildFile(item, recipe: recipe.name)]) }.buttonStyle(.juice)
                     Button("Copy SHA-1") {
                         NSPasteboard.general.clearContents()
@@ -312,19 +305,42 @@ struct ResourcePacksPage: View {
                     .buttonStyle(.juice)
                 }
             }
-            if let newest = history.first {
+            if let newest = history.first, !server.hasPerWorldPacks {
                 Divider()
-                Hint("Players' games download a pack from the web, so upload it first. mc-packs.net is free and made for this, and gives you an address with its SHA-1 in it.")
+                Hint("Players' games download a pack from the web. Serve it from Hosting below, or upload it somewhere such as mc-packs.net. Leaf Juice downloads it from the address first to check it's the same file.")
                 HStack {
                     Link("Open mc-packs.net", destination: URL(string: "https://mc-packs.net")!).buttonStyle(.juice)
-                    TextField("Address", text: $url, prompt: Text("https://download.mc-packs.net/pack/\(newest.sha1).zip"))
-                        .accessibilityLabel("Web address of the uploaded pack")
+                    TextField("Address", text: $url, prompt: Text(server.packAddress(recipe: recipe.name) ?? "https://download.mc-packs.net/pack/\(newest.sha1).zip"))
+                        .accessibilityLabel("Web address of the pack")
                     Toggle("Required", isOn: $required).toggleStyle(.checkbox).fixedSize()
                         .help("Players who decline are disconnected.")
-                    Button(server.state.canStart ? "Use on This Server" : "Use at Next Restart") { apply(newest) }.buttonStyle(.juicePrimary).disabled(url.isEmpty)
+                    Button(server.state.canStart ? "Use on This Server" : "Use at Next Restart") { apply(newest) }.buttonStyle(.juicePrimary).disabled(working != nil || chosenURL.isEmpty)
+                }
+                if let checkFailed {
+                    Callout(tone: .danger, title: "That address didn't give this build", detail: checkFailed.summary)
+                    HStack {
+                        Button("Use It Anyway") { write(newest) }.buttonStyle(.juice)
+                        Button("Cancel") { self.checkFailed = nil }.buttonStyle(.juice)
+                    }
                 }
             }
         }
+    }
+
+    private var chosenURL: String { url.isEmpty ? (server.packAddress(recipe: recipe.name) ?? "") : url }
+    private var servedSHA1: String? { _ = hostingRefresh; return server.servedPackSHA1(recipe: recipe.name) }
+    private var hostedElsewhere: Bool { _ = hostingRefresh; return server.packHostSettings.recipes[ResourcePacks.slug(recipe.name)]?.elsewhere != nil }
+
+    private var serveWarning: String {
+        var lines = ["This gives every player a copy of these packs, so check their terms first. A guide, not legal advice."]
+        for item in ResourcePacks.licenseReview(recipe) {
+            switch item.sharing {
+            case .allowed: break
+            case let .conditions(text), let .ask(text): lines.append("\(item.pack.title): \(text)")
+            }
+        }
+        if let plugin = server.perWorldPackPlugin { lines.append("\(plugin) doesn't use this address. Give it the build's own address and SHA-1 from Hosting.") }
+        return lines.joined(separator: "\n\n")
     }
 
     // MARK: Actions
@@ -337,6 +353,8 @@ struct ResourcePacksPage: View {
         }
         recipe = ResourcePacks.loadRecipe(recipeNames.first ?? "combined")
         required = live.required
+        await server.refreshPlugins()
+        server.startPackHostIfWanted()
         await reload()
         #if DEBUG
         if ProcessInfo.processInfo.environment["LEAFJUICE_SNAPSHOT"] != nil { browsing = packs.first }
@@ -354,6 +372,7 @@ struct ResourcePacksPage: View {
 
     private func refreshLock() async {
         lock = try? await ResourcePacks.resolve(recipe)
+        locator = try? await ResourcePacks.locator(recipe)
         // Measuring needs one download of Mojang's file list per version, and works without it otherwise.
         if let mc, !enabled.isEmpty { fit = try? await ResourcePacks.coverage(recipe, mc: mc) } else { fit = nil }
         if let now = lock, let newest = history.first, let then = ResourcePacks.loadLock(sha1: newest.sha1, recipe: recipe.name) {
@@ -498,13 +517,40 @@ struct ResourcePacksPage: View {
         }
     }
 
-    private func apply(_ build: PackBuild) {
+    private func askToServe(_ item: PackBuild) { confirmServe = item }
+
+    private func serve(_ item: PackBuild) {
         do {
-            guard let file = server.configs.first(where: { $0.path == "server.properties" }) else { throw LeafError("This server has no server.properties yet. Start it once first.") }
-            let text = try ResourcePacks.applying(url: url, sha1: build.sha1, required: required, to: server.configText(file))
-            let outcome = try server.saveConfig(file, text: text)
-            server.notice = outcome == .staged ? "The resource pack applies at the next restart." : "The resource pack is set, and players get it the next time they join."
+            try server.serveBuild(sha1: item.sha1, recipe: recipe.name)
+            hostingRefresh += 1
         } catch { self.error = error.localizedDescription }
+    }
+
+    /// An address served from here always has the file, and a staged change only switches at the restart.
+    /// Anywhere else is checked first, and the person can still go ahead, say if they haven't uploaded it yet.
+    private func apply(_ build: PackBuild) {
+        checkFailed = nil
+        let address = chosenURL
+        if server.isServedFromHere(address: address, recipe: recipe.name) {
+            write(build)
+            return
+        }
+        perform("Checking the address…") {
+            let result = await PackHosting.check(url: address, expected: build.sha1)
+            if result.ok { write(build) } else { checkFailed = result }
+        }
+    }
+
+    private func write(_ build: PackBuild) {
+        checkFailed = nil
+        let address = chosenURL
+        Task {
+            do {
+                let outcome = try await server.usePack(url: address, sha1: build.sha1, required: required, recipe: recipe.name)
+                server.notice = outcome == .staged ? "The resource pack applies at the next restart." : "The resource pack is set, and players get it the next time they join."
+                hostingRefresh += 1
+            } catch { self.error = error.localizedDescription }
+        }
     }
 }
 

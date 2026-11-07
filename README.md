@@ -111,7 +111,18 @@ Each build keeps a lock file of every copy of every file, so an update can show 
 
 **Sharing:** a recipe exports as a small JSON file that holds no pack contents, and others download the packs from their authors. A combined pack exports with credits and each pack's license, after a review that flags any license worth checking. That review is a guide, not legal advice.
 
-Players' games download a pack from the web, so upload the build somewhere, for example mc-packs.net, and Leaf Juice sets the address on your server through the usual Change Queue.
+**What each pack contributes:** for each pack in a recipe, how many files it supplies, how many another pack replaces, and which only it has, by kind of file. The list below shows every copy of a file side by side, marks the one used, and lets you choose another. These counts come from the same lock file the build uses.
+
+**Getting a pack to players:** their games download it from the web, so a build needs an address. There are two ways:
+
+- **Serve it from Leaf Juice.** Off until you start it. Each recipe gets its own address with a long random path, so different worlds can have different packs. Leaf Juice only listens on this Mac, so something like Caddy has to carry it through your tunnel, on a different hostname from any sign-in page. The game can't sign in, so that random path is all that hides a pack, and every player's game is given it. It runs only while Leaf Juice is open, uses your upload speed, and keeps no record of who downloads. Serving a combined pack gives players a copy of other people's work, so Leaf Juice shows each pack's license first.
+- **Host it elsewhere,** such as mc-packs.net, and enter the address.
+
+**Check** downloads from the address as a game would and compares the SHA-1. Setting another host's address on a server runs this first, and you can still go ahead if it fails, say if you haven't uploaded yet.
+
+Leaf Juice sets the address on your server through the usual Change Queue. A change staged for the next restart keeps the running server's file and hash together until that restart, then switches both. If Resource Pack Butler or WorldResourcepacks is on the server, Leaf Juice won't write its pack settings. You copy each build's own address and SHA-1 into that plugin's config instead. That address only ever gives that build, so the hash can't go stale. This has only been tested with stand-in jars of those names.
+
+A real game client hasn't loaded a served pack yet. Bots have shown a real Paper server offering the address and hash, and that a download from it matches. The 250 MB warning hasn't been checked against a real client either.
 
 ## Staying safe when you're not looking
 

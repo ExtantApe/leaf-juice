@@ -114,6 +114,16 @@ Tested with real Modrinth packs, including the official TARDIS packs, and a real
 - **An optional pack:** declining gets in, but saying nothing still never finishes joining.
 - **A malformed SHA-1:** it doesn't stop the server. It only logs `Invalid sha1 for resource-pack-sha1`.
 
+## Serving packs
+
+Tested with made-up packs, on throwaway servers with a real Paper 1.21.11 and bots. **No real game client has downloaded a served pack, and no real tunnel or Caddy has carried one.**
+
+- **Memory:** 4 downloads of a 300 MB file at once, by another process, added about 2 MB at the peak, and all 4 matched.
+- **A staged update:** with a required pack on a running server, a new build stays staged, and new joiners are still offered the old hash and get the old file. After a restart they're offered the new hash and get the new file. The bot's offered address and hash matched the download each time.
+- **Starting a server** starts serving if it was left on, so a required pack doesn't point at nothing after the app reopens.
+- **Clicked through in the built app,** on a throwaway folder: the contributions list with both copies side by side, starting serving, Serve This Build with its license warning, Check, and Use on This Server. Choosing a winner from the list's menu is only covered by tests on the core, because the menu can't be opened from the background.
+- **Size limit:** the app warns at 250,000,000 bytes, a number not confirmed against a real client.
+
 ## How much of a pack a version uses
 
 Mojang's client jar lists every texture a version uses, so fit can be measured rather than guessed. Measured on 1.21.11 (format 75, 3,682 textures) and 26.3 (format 97, 4,182 textures):
