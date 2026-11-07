@@ -2361,6 +2361,23 @@ if CommandLine.arguments.contains("--real-paper") {
         equal(c.servedPackSHA1(recipe: recipe.name), newBuild.sha1, "after the restart the address gives the new build")
         try await offered("PackBotThree", expect: newBuild.sha1, "after the restart")
 
+        // An exact pack, as a plugin exports it, set by its own address and hash.
+        let exportZip = await makePack("Made Up Export", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"export"}}"#, "assets/madeup/font/hud.json": "{}"])
+        let exact = try await ResourcePacks.addExact(exportZip, name: "real-export")
+        let exactURL = c.packBuildAddress(recipe: "real-export", sha1: exact.sha1)!
+        equal(exact.sha1, Hashing.sha1(try Data(contentsOf: exportZip)), "the exact pack keeps the export's own SHA-1")
+        equal(try await c.usePack(url: exactURL, sha1: exact.sha1, required: true, recipe: "real-export"), .staged, "set on the running server")
+        c.stop()
+        await checkUntil(90, "stopped for the exact pack: \(c.state)") { !c.state.isLive }
+        await c.start()
+        await checkUntil(240, "up with the exact pack: \(c.state)") { c.state == .running }
+        let exactBot = try await join("PackBotExact", c, table, port: port)
+        equal(exactBot.packOffer?.url, exactURL, "the server offers the exact pack's own address")
+        equal(exactBot.packOffer?.hash, exact.sha1, "with the export's hash")
+        let exactDownload = await PackHosting.check(url: exactBot.packOffer?.url ?? "", expected: exactBot.packOffer?.hash ?? "")
+        check(exactDownload.ok, "and the download matches it: \(exactDownload.summary)")
+        await leave(exactBot, c)
+
         // A declining bot still gets Minecraft's own answer, and nothing here changes it.
         let decliner = try Bot(name: "PackBotFour", port: port, table: table, packAnswer: 1)
         await checkUntil(30, "a required pack declined disconnects") { decliner.packOffer != nil && !c.players.contains("PackBotFour") }
@@ -3359,6 +3376,74 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
         await packContributionChecks(recipe: recipe, top: a.id, lower: b.id, stone: stoneA)
     } catch { failures.append("resource packs threw: \(error)") }
     await packHostingChecks()
+    await exactPackChecks()
+}
+
+@MainActor func exactPackChecks() async {
+    print("• Exact packs")
+    do {
+        let root = folder("exact-packs")
+        write("server-port=25598\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "exact-packs")
+        defer { c.stopPackHost() }
+        let port = 28767
+        // A plugin's own export, zipped its way: odd order, extra fields, a comment. Leaf Juice mustn't touch it.
+        let made = await makePack("Plugin Export", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"export"}}"#, "assets/madeup/font/hud.json": "{}"])
+        _ = try? await Tool.run("/usr/bin/zip", ["-q", "-z", made.path], cwd: nil)
+        let original = try Data(contentsOf: made)
+        let ownSHA = Hashing.sha1(original)
+        let build = try await ResourcePacks.addExact(made, name: "madeup-hud")
+        equal(build.sha1, ownSHA, "stored under the file's own SHA-1")
+        check(ResourcePacks.isExact("madeup-hud") && ResourcePacks.exactNames() == ["madeup-hud"], "and listed as exact")
+        equal(try Data(contentsOf: ResourcePacks.buildFile(build, recipe: "madeup-hud")), original, "byte for byte")
+        check(build.warnings.isEmpty, "a real pack raises no warning: \(build.warnings)")
+        let again = try await ResourcePacks.addExact(made, name: "madeup-hud")
+        equal(again.sha1, build.sha1, "adding the same file again changes nothing"); equal(ResourcePacks.history("madeup-hud").count, 1, "and adds nothing")
+        var refusals = 0
+        let notZip = folder("exact-bad").appendingPathComponent("x.zip"); write("not a zip", notZip)
+        do { _ = try await ResourcePacks.addExact(notZip, name: "bad") } catch { refusals += 1 }
+        ResourcePacks.saveRecipe({ var r = PackRecipe(); r.name = "taken"; return r }())
+        do { _ = try await ResourcePacks.addExact(made, name: "taken") } catch { refusals += 1 }
+        do { _ = try await ResourcePacks.addExact(made, name: "  ") } catch { refusals += 1 }
+        equal(refusals, 3, "not a zip, a recipe's name, or no name are refused")
+        ResourcePacks.deleteRecipe("taken")
+        let loose = folder("exact-loose")
+        write("hello", loose.appendingPathComponent("readme.txt"))
+        _ = try await Tool.run("/usr/bin/zip", ["-q", loose.appendingPathComponent("loose.zip").path, "readme.txt"], cwd: loose)
+        let odd = try await ResourcePacks.addExact(loose.appendingPathComponent("loose.zip"), name: "not-a-pack")
+        check(odd.warnings.contains { $0.contains("pack.mcmeta") }, "a zip that isn't a pack is still served, with a warning")
+
+        try c.setPackHost(address: "http://127.0.0.1:\(port)", port: port)
+        try c.startPackHost()
+        await checkUntil(5, "listening") { c.packHostIsListening }
+        let template = c.packAddressTemplate(recipe: "madeup-hud")!
+        check(template.hasSuffix("/{sha1}.zip"), "an address a plugin can fill in: \(template)")
+        let address = template.replacingOccurrences(of: "{sha1}", with: build.sha1)
+        equal(address, c.packBuildAddress(recipe: "madeup-hud", sha1: build.sha1), "filled in, it's the build's own address")
+        try? await Task.sleep(for: .milliseconds(100))
+        let served = await PackHosting.check(url: address, expected: ownSHA)
+        check(served.ok, "served with the file's own SHA-1: \(served.summary)")
+
+        // A new export: its own address, and the old one keeps giving the old file.
+        let newer = await makePack("Plugin Export Two", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"export two"}}"#, "assets/madeup/font/hud.json": "{\"v\":2}"])
+        let second = try await ResourcePacks.addExact(newer, name: "madeup-hud")
+        check(second.sha1 != build.sha1, "a new version gets its own hash")
+        try? await Task.sleep(for: .milliseconds(100))
+        let newServed = await PackHosting.check(url: template.replacingOccurrences(of: "{sha1}", with: second.sha1), expected: second.sha1)
+        check(newServed.ok, "at its own address")
+        let oldServed = await PackHosting.check(url: address, expected: ownSHA)
+        check(oldServed.ok, "and the old address still gives the old file")
+
+        // New Address breaks every old one, which the app warns about.
+        c.newPackPath(recipe: "madeup-hud")
+        try? await Task.sleep(for: .milliseconds(100))
+        let afterNew = await PackHosting.check(url: address, expected: ownSHA)
+        equal(afterNew.outcome, .status(404), "after New Address, a plugin still using the old one gets nothing")
+        // Closing Leaf Juice: nothing answers.
+        c.stopPackHost()
+        let closed = await PackHosting.check(url: c.packAddressTemplate(recipe: "madeup-hud")!.replacingOccurrences(of: "{sha1}", with: second.sha1), expected: second.sha1)
+        check(!closed.ok, "with serving stopped, nothing answers")
+    } catch { failures.append("exact packs threw: \(error)") }
 }
 
 @MainActor func packContributionChecks(recipe: PackRecipe, top: String, lower: String, stone: String) async {

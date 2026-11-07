@@ -122,6 +122,7 @@ Tested with made-up packs, on throwaway servers with a real Paper 1.21.11 and bo
 - **A staged update:** with a required pack on a running server, a new build stays staged, and new joiners are still offered the old hash and get the old file. After a restart they're offered the new hash and get the new file. The bot's offered address and hash matched the download each time.
 - **Starting a server** starts serving if it was left on, so a required pack doesn't point at nothing after the app reopens.
 - **Clicked through in the built app,** on a throwaway folder: the contributions list with both copies side by side, starting serving, Serve This Build with its license warning, Check, and Use on This Server. Choosing a winner from the list's menu is only covered by tests on the core, because the menu can't be opened from the background.
+- **Exact packs:** a made-up plugin export, with a zip comment Leaf Juice would never write, was stored and served byte for byte under its own SHA-1. On a throwaway Paper 1.21.11, a bot was offered its own address and hash, and the download matched. BlueMapHUD itself hasn't been tried with it.
 - **Size limit:** the app warns at 250,000,000 bytes, a number not confirmed against a real client.
 
 ## How much of a pack a version uses
