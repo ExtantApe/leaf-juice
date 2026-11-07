@@ -134,8 +134,9 @@ A link is filled in only when the plugin's source is already known: its jar matc
    xattr -dr com.apple.quarantine "/Applications/Leaf Juice.app"
    ```
 
-   **Or System Settings:** open the app and dismiss the warning, then go to **System Settings → Privacy &
-   Security**, scroll down, and choose **Open Anyway**.
+   **Or System Settings:** try to open the app once, then go to **System Settings → Privacy &
+   Security**, scroll down, click **Open Anyway**, and click **Open** when the warning comes back. Apple
+   says to do this only for an app you trust.
 
 You only need to do this once per download. Requires macOS 14 or later, on Apple silicon or Intel.
 
