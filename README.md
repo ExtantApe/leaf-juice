@@ -119,9 +119,30 @@ Every backup can also be copied to a **second location**, ideally another drive,
 
 ## Plugin links
 
-One page listing each enabled plugin, its version and a link to its documentation, with the server's version at the top. It only shows in the app for now.
+One page listing each enabled plugin, its version and a link to its documentation, with the server's version at the top.
 
 A link is filled in only when the plugin's source is already known: its jar matched a file on Modrinth, or you set the source yourself. Modrinth's wiki link comes first, then its source code link. A `plugin.yml` website or a match by name stays a suggestion until you press Use, because a name can match the wrong project. Searching by name sends that plugin's name to Hangar and SpigotMC, so it only happens when you ask, one plugin at a time. You can also type your own link.
+
+### A page for people on the server
+
+Off by default. Turn it on and the same list is served as a web page that only people provisioned on your server can read. Each plugin is left off it until you tick it, and server and plugin versions each have a switch, because versions help anyone looking for a server with a known weakness.
+
+**Who gets in:** a player types `/signin` in game and clicks the one-time link they're sent, so there's no password. That takes the Latchkey plugin, the `latchkey.signin` permission (ops have it by default), a place on the allowlist, and `online-mode=true`. A server behind a proxy has `online-mode` off, so it isn't supported yet.
+
+- A session lasts 12 hours and lives in memory, so quitting Leaf Juice signs everyone out. Losing the permission takes effect at the next sign-in. Leaving the allowlist or being banned ends access at once.
+- Nothing has an age or account type of its own: children's accounts follow the same permission.
+- The app shows who's signed in, and can sign anyone out. It keeps the account, the time and what happened for 30 days, in `.leafjuice/sign-in-log.json`, with no addresses, browsers or pages visited.
+- The page only exists while Leaf Juice is open.
+
+**Reaching it from outside:** Leaf Juice only listens on this Mac, over plain HTTP, and only answers to the address you enter. HTTPS has to end on this Mac too, or whoever carries the traffic could read sign-in links and cookies. The plan is [Caddy](https://caddyserver.com) behind a [playit.gg](https://playit.gg) HTTPS tunnel, which playit says needs Premium and which it doesn't decrypt. Any public certificate puts its hostname in public logs, so pick a name that doesn't say who the server is for.
+
+```
+links.example.com {
+    reverse_proxy localhost:8765
+}
+```
+
+**Tested:** a bot typed `/signin` on a throwaway Paper 1.21.11 server, and a real browser signed in and out on localhost with made-up data. **Not tested:** a real tunnel, Caddy, a real game client clicking the link, a permission granted through LuckPerms rather than op, and Bedrock players, who may not be able to click a chat link.
 
 ## Install
 

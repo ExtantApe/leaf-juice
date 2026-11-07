@@ -102,6 +102,13 @@ final class AppModel {
         for server in servers where server.profile.launch.startWithApp {
             Task { await server.start() }
         }
+        // Its own switch, off until someone turns it on. A snapshot only draws screens.
+        if ProcessInfo.processInfo.environment["LEAFJUICE_SNAPSHOT"] == nil {
+            servers.forEach { $0.tidySignInLog() }
+            for server in servers where server.linksPageSettings.on && !server.isLab {
+                do { try server.startLinksPage() } catch { server.linksPageError = error.localizedDescription }
+            }
+        }
         servers.forEach(Alerts.connect)
         Alerts.ask()
         if checkAppUpdates { Task { await lookForAppUpdate() } }

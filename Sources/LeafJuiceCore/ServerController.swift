@@ -21,6 +21,11 @@ public struct ReadinessRow: Identifiable, Equatable, Sendable {
 /// One server: its process, settings and everything that happens to it. All state lives on the main actor.
 @MainActor @Observable
 public final class ServerController: Identifiable {
+    /// The plugin links page, when it's being served. Sessions live here and nowhere else.
+    @ObservationIgnored var linksTidying: Task<Void, Never>?
+    public internal(set) var linksWeb: LinksWeb?
+    public internal(set) var linksListener: LinksListener?
+    public var linksPageError: String?
     public nonisolated let id: UUID
     public private(set) var paths: ServerPaths
     public var profile: ServerProfile { didSet { if profile != oldValue { saveProfile() } } }
