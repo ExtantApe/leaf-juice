@@ -120,7 +120,7 @@ Each build keeps a lock file of every copy of every file, so an update can show 
 
 **Check** downloads from the address as a game would and compares the SHA-1. Setting another host's address on a server runs this first, and you can still go ahead if it fails, say if you haven't uploaded yet.
 
-Leaf Juice sets the address on your server through the usual Change Queue. A change staged for the next restart keeps the running server's file and hash together until that restart, then switches both. If Resource Pack Butler is on the server, Leaf Juice won't write its pack settings, and you copy each recipe's address and SHA-1 into Butler. Butler doesn't exist yet, so this has only been tested with a stand-in jar of that name.
+Leaf Juice sets the address on your server through the usual Change Queue. A change staged for the next restart keeps the running server's file and hash together until that restart, then switches both. If Resource Pack Butler or WorldResourcepacks is on the server, Leaf Juice won't write its pack settings. You copy each build's own address and SHA-1 into that plugin's config instead. That address only ever gives that build, so the hash can't go stale. This has only been tested with stand-in jars of those names.
 
 A real game client hasn't loaded a served pack yet. Bots have shown a real Paper server offering the address and hash, and that a download from it matches. The 250 MB warning hasn't been checked against a real client either.
 

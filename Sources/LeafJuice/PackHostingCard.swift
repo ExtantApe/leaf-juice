@@ -26,9 +26,9 @@ struct PackHostingCard: View {
         Card(title: "Hosting", systemImage: "antenna.radiowaves.left.and.right") {
             if let error { Callout(tone: .danger, title: error) }
             if let problem = server.packHostError { Callout(tone: .danger, title: "Serving stopped", detail: problem) }
-            if server.hasPackButler {
-                Callout(tone: .info, title: "Resource Pack Butler is on this server", detail: "It sends the pack for each world, so Leaf Juice won't change this server's pack settings. Give Butler each recipe's address and SHA-1 from here.")
-                if live.isSet { Callout(tone: .warning, title: "server.properties still sets a pack", detail: "Butler's brief says this should be empty. Clear it on the Configs page if Butler is meant to send every pack.") }
+            if let plugin = server.perWorldPackPlugin {
+                Callout(tone: .info, title: "\(plugin) is on this server", detail: "It sends the pack for each world, so Leaf Juice won't change this server's pack settings. Give it each build's own address and SHA-1 from here. That address only ever gives that build, so the two can't fall out of step.")
+                if live.isSet { Callout(tone: .warning, title: "server.properties still sets a pack", detail: "With \(plugin) sending the packs, this should usually be empty. Clear it on the Configs page if \(plugin) is meant to send every pack.") }
             }
             serving
             if built.isEmpty {
@@ -81,17 +81,18 @@ struct PackHostingCard: View {
     }
 
     private func row(_ name: String) -> some View {
-        let url = server.packAddress(recipe: name)
         let isElsewhere = settings.recipes[ResourcePacks.slug(name)]?.elsewhere != nil
         let newest = ResourcePacks.history(name).first?.sha1
-        let sha1 = isElsewhere ? newest : server.servedPackSHA1(recipe: name)
+        let perWorld = server.hasPerWorldPacks && !isElsewhere
+        let sha1 = isElsewhere || perWorld ? newest : server.servedPackSHA1(recipe: name)
+        let url = perWorld ? newest.flatMap { server.packBuildAddress(recipe: name, sha1: $0) } : server.packAddress(recipe: name)
         return VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Text(name).font(.body.weight(.semibold)).foregroundStyle(Juice.ink)
                 if isElsewhere { Badge(text: "Hosted elsewhere", tone: .info) }
                 Spacer()
             }
-            Fact(label: "Address", value: url ?? "Enter an address above")
+            Fact(label: perWorld ? "Newest build's address" : "Address", value: url ?? "Enter an address above")
             Fact(label: "SHA-1", value: sha1 ?? (isElsewhere ? "Build it first" : "Nothing served yet"))
             if let result = results[name] { Callout(tone: result.ok ? .good : .danger, title: result.summary) }
             HStack {

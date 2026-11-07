@@ -294,7 +294,7 @@ struct ResourcePacksPage: View {
                     if live.sha1 == item.sha1 { Badge(text: "On this server", tone: .good) }
                     if servedSHA1 == item.sha1 {
                         Badge(text: "At its address", tone: .good)
-                    } else if !hostedElsewhere {
+                    } else if !hostedElsewhere, !server.hasPerWorldPacks {
                         Button("Serve This Build") { askToServe(item) }.buttonStyle(.juice)
                     }
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([ResourcePacks.buildFile(item, recipe: recipe.name)]) }.buttonStyle(.juice)
@@ -305,7 +305,7 @@ struct ResourcePacksPage: View {
                     .buttonStyle(.juice)
                 }
             }
-            if let newest = history.first, !server.hasPackButler {
+            if let newest = history.first, !server.hasPerWorldPacks {
                 Divider()
                 Hint("Players' games download a pack from the web. Serve it from Hosting below, or upload it somewhere such as mc-packs.net. Leaf Juice downloads it from the address first to check it's the same file.")
                 HStack {
@@ -339,7 +339,7 @@ struct ResourcePacksPage: View {
             case let .conditions(text), let .ask(text): lines.append("\(item.pack.title): \(text)")
             }
         }
-        if server.hasPackButler { lines.append("The address switches to this build now, so give Butler its new SHA-1 straight away. Until then, players can't load this pack.") }
+        if let plugin = server.perWorldPackPlugin { lines.append("\(plugin) doesn't use this address. Give it the build's own address and SHA-1 from Hosting.") }
         return lines.joined(separator: "\n\n")
     }
 

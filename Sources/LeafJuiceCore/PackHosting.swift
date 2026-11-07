@@ -68,7 +68,8 @@ public struct PackURLCheck: Equatable, Sendable {
 }
 
 public enum PackHosting {
-    public static let butlerPluginKey = "resourcepackbutler"
+    /// Plugins that send packs per world. With one present, server.properties isn't how packs reach players.
+    public static let perWorldPlugins: [String: String] = ["resourcepackbutler": "Resource Pack Butler", "worldresourcepacks": "WorldResourcepacks"]
     public static let fileName = "pack.zip"
     static let tokenBytes = 32
 
@@ -101,6 +102,9 @@ public enum PackHosting {
 
     public static func playerURL(address: String, token: String) -> String { "\(address)/\(token)/\(fileName)" }
 
+    /// An address that only ever gives one build, so a hash copied into a plugin's config can't go stale.
+    public static func buildURL(address: String, token: String, sha1: String) -> String { "\(address)/\(token)/\(sha1).zip" }
+
     /// True for an address only this Mac can reach, which no player could download from.
     public static func isOnlyThisMac(_ address: String) -> Bool {
         guard let host = URLComponents(string: address)?.host?.lowercased() else { return false }
@@ -118,7 +122,7 @@ public enum PackHosting {
         return route.published.flatMap { isSHA1($0) ? $0 : nil }
     }
 
-    public enum Asked: Equatable, Sendable { case pack, hash }
+    public enum Asked: Equatable, Sendable { case pack, hash, build(String) }
 
     /// Exact matches only: there's no listing, and every other path gets the same answer.
     public static func match(path: String, routes: [PackRoute]) -> (route: PackRoute, asked: Asked)? {
@@ -128,7 +132,10 @@ public enum PackHosting {
         switch parts[2] {
         case fileName: asked = .pack
         case "\(fileName).sha1": asked = .hash
-        default: return nil
+        default:
+            let name = String(parts[2])
+            guard name.hasSuffix(".zip"), isSHA1(String(name.dropLast(4))) else { return nil }
+            asked = .build(String(name.dropLast(4)))
         }
         let given = Array(parts[1].utf8)
         var found: PackRoute?
@@ -308,8 +315,13 @@ public final class PackHost: @unchecked Sendable {
         }
         let head = method == "HEAD"
         let text = try? String(contentsOf: properties, encoding: .utf8)
-        guard let (route, asked) = PackHosting.match(path: path, routes: routes),
-              let sha1 = PackHosting.servedSHA1(route, properties: text) else {
+        guard let (route, asked) = PackHosting.match(path: path, routes: routes) else {
+            finish(status: 404, reason: "Not Found", head: head, connection)
+            return
+        }
+        let chosen: String?
+        if case let .build(fixed) = asked { chosen = fixed } else { chosen = PackHosting.servedSHA1(route, properties: text) }
+        guard let sha1 = chosen else {
             finish(status: 404, reason: "Not Found", head: head, connection)
             return
         }
@@ -317,7 +329,7 @@ public final class PackHost: @unchecked Sendable {
         case .hash:
             let body = Data("\(sha1)\n".utf8)
             connection.send(content: Self.header(length: Int64(body.count), type: "text/plain; charset=utf-8") + (head ? Data() : body), completion: .contentProcessed { _ in connection.cancel() })
-        case .pack:
+        case .pack, .build:
             let url = ResourcePacks.buildFile(sha1: sha1, recipe: route.recipe)
             guard let file = try? FileHandle(forReadingFrom: url), let size = try? file.seekToEnd(), (try? file.seek(toOffset: 0)) != nil else {
                 finish(status: 404, reason: "Not Found", head: head, connection)
@@ -373,7 +385,16 @@ extension ServerController {
     }
 
     /// Counted even if switched off, because if that can't be told apart this stays out of its way.
-    public var hasPackButler: Bool { plugins.contains { $0.key == PackHosting.butlerPluginKey } }
+    public var perWorldPackPlugin: String? { plugins.lazy.compactMap { PackHosting.perWorldPlugins[$0.key] }.first }
+    public var hasPerWorldPacks: Bool { perWorldPackPlugin != nil }
+
+    /// The address for one build, which never changes what it gives. nil when this recipe is hosted elsewhere.
+    public func packBuildAddress(recipe name: String, sha1: String) -> String? {
+        let settings = packHostSettings
+        let hosted = settings.recipes[ResourcePacks.slug(name)] ?? hostedRecipe(name)
+        guard hosted.elsewhere == nil, !settings.address.isEmpty else { return nil }
+        return PackHosting.buildURL(address: settings.address, token: hosted.token, sha1: sha1)
+    }
 
     public var packHostIsListening: Bool { packHost?.isListening == true }
 
@@ -395,6 +416,11 @@ extension ServerController {
         let hosted = settings.recipes[ResourcePacks.slug(name)] ?? hostedRecipe(name)
         if let elsewhere = hosted.elsewhere { return elsewhere }
         return settings.address.isEmpty ? nil : PackHosting.playerURL(address: settings.address, token: hosted.token)
+    }
+
+    func isBuildAddress(_ address: String, recipe name: String) -> Bool {
+        guard let hosted = packHostSettings.recipes[ResourcePacks.slug(name)], hosted.elsewhere == nil else { return false }
+        return address.contains("/\(hosted.token)/")
     }
 
     public func isServedFromHere(address: String, recipe name: String) -> Bool {
@@ -451,7 +477,7 @@ extension ServerController {
         let key = ResourcePacks.slug(name)
         guard let hosted = settings.recipes[key], hosted.elsewhere == nil else { return nil }
         let url = settings.address.isEmpty ? nil : PackHosting.playerURL(address: settings.address, token: hosted.token)
-        return PackRoute(token: hosted.token, recipe: key, url: url, published: hosted.published, followsProperties: !hasPackButler)
+        return PackRoute(token: hosted.token, recipe: key, url: url, published: hosted.published, followsProperties: !hasPerWorldPacks)
     }
 
     func syncPackRoutes() {
@@ -499,11 +525,11 @@ extension ServerController {
         do { try startPackHost() } catch { packHostError = error.localizedDescription }
     }
 
-    /// Writes the pack into server.properties. With Butler on the server this refuses, because the pack is Butler's to send.
+    /// Writes the pack into server.properties. With a per-world pack plugin this refuses, because the packs are its to send.
     public func usePack(url: String, sha1: String, required: Bool, recipe: String) async throws -> SaveOutcome {
         await refreshPlugins()
-        if hasPackButler { throw LeafError("Resource Pack Butler is on this server, so Leaf Juice leaves its pack settings alone. Give Butler the address and SHA-1 instead.") }
-        if isServedFromHere(address: url, recipe: recipe), !packHostIsListening {
+        if let plugin = perWorldPackPlugin { throw LeafError("\(plugin) is on this server, so Leaf Juice leaves its pack settings alone. Give \(plugin) the build's address and SHA-1 instead.") }
+        if isServedFromHere(address: url, recipe: recipe) || isBuildAddress(url, recipe: recipe), !packHostIsListening {
             throw LeafError("That address is served by this app, and serving is off. Start it first, or players couldn't download the pack.")
         }
         guard let file = configs.first(where: { $0.path == "server.properties" }) else { throw LeafError("This server has no server.properties yet. Start it once first.") }

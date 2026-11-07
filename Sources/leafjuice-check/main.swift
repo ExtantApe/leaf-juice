@@ -3468,7 +3468,8 @@ func residentBytes() -> UInt64 {
     let route = PackRoute(token: "tok", recipe: "r", url: "https://p/tok/pack.zip", published: oneHash, followsProperties: true)
     equal(PackHosting.match(path: "/tok/pack.zip", routes: [route])?.asked, .pack, "the pack's path")
     equal(PackHosting.match(path: "/tok/pack.zip.sha1", routes: [route])?.asked, .hash, "the hash's path")
-    for wrong in ["/", "/tok", "/tok/", "/tok/other.zip", "/nope/pack.zip", "/tok/pack.zip?x=1", "/tok/../tok/pack.zip", "//tok/pack.zip", "/tok/pack.zip/"] { check(PackHosting.match(path: wrong, routes: [route]) == nil, "no match: \(wrong)") }
+    equal(PackHosting.match(path: "/tok/\(oneHash).zip", routes: [route])?.asked, .build(oneHash), "a build's own path")
+    for wrong in ["/", "/tok", "/tok/", "/tok/other.zip", "/tok/\(oneHash.uppercased()).zip", "/tok/\(oneHash).zip.sha1", "/tok/../\(oneHash).zip", "/nope/pack.zip", "/tok/pack.zip?x=1", "/tok/../tok/pack.zip", "//tok/pack.zip", "/tok/pack.zip/"] { check(PackHosting.match(path: wrong, routes: [route]) == nil, "no match: \(wrong)") }
     let pointing = "resource-pack=https\\://p/tok/pack.zip\nresource-pack-sha1=\(twoHash)\n"
     equal(ResourcePacks.current(pointing).url, "https://p/tok/pack.zip", "properties escape their colons")
     equal(PackHosting.servedSHA1(route, properties: pointing), twoHash, "the server's own hash decides when it points here")
@@ -3659,7 +3660,7 @@ func residentBytes() -> UInt64 {
         try FileOps.ensureDir(c.paths.plugins)
         makeJar(c.paths.plugins.appendingPathComponent("ResourcePackButler.jar"), yaml: "name: ResourcePackButler\nversion: 0.0.1\nmain: x.Y\napi-version: '1.21'\n")
         await c.refreshPlugins()
-        check(c.hasPackButler, "Butler is noticed")
+        equal(c.perWorldPackPlugin, "Resource Pack Butler", "Butler is noticed")
         var butlerRefused = ""
         do { _ = try await c.usePack(url: oneURL, sha1: otherBuild.sha1, required: true, recipe: "world-one") } catch { butlerRefused = error.localizedDescription }
         check(butlerRefused.contains("Butler"), "with Butler, the pack settings can't be written: \(butlerRefused)")
@@ -3674,6 +3675,33 @@ func residentBytes() -> UInt64 {
         await c.refreshPlugins()
         try? await Task.sleep(for: .milliseconds(100))
         equal(c.servedPackSHA1(recipe: "world-one"), firstBuild.sha1, "without it, server.properties decides again")
+
+        // WorldResourcepacks, installed on real servers today, gets the same treatment.
+        makeJar(c.paths.plugins.appendingPathComponent("WorldResourcepacks.jar"), yaml: "name: WorldResourcepacks\nversion: 2.0\nmain: x.Y\napi-version: '1.21'\n")
+        await c.refreshPlugins()
+        equal(c.perWorldPackPlugin, "WorldResourcepacks", "WorldResourcepacks is noticed")
+        var worldPacksRefused = ""
+        do { _ = try await c.usePack(url: oneURL, sha1: otherBuild.sha1, required: true, recipe: "world-one") } catch { worldPacksRefused = error.localizedDescription }
+        check(worldPacksRefused.contains("WorldResourcepacks"), "and the pack settings are left alone: \(worldPacksRefused)")
+        equal(try String(contentsOf: c.paths.properties, encoding: .utf8), before, "unchanged")
+
+        // Each build has its own address, which keeps giving that build whatever else changes.
+        let oldPinned = c.packBuildAddress(recipe: "world-one", sha1: firstBuild.sha1)!
+        let newPinned = c.packBuildAddress(recipe: "world-one", sha1: otherBuild.sha1)!
+        check(oldPinned.hasSuffix("/\(firstBuild.sha1).zip") && oldPinned != newPinned, "a build's address names its hash: \(oldPinned)")
+        try c.serveBuild(sha1: otherBuild.sha1, recipe: "world-one")
+        try? await Task.sleep(for: .milliseconds(100))
+        let stillOld = await PackHosting.check(url: oldPinned, expected: firstBuild.sha1)
+        check(stillOld.ok, "the old build's address still gives the old build after a switch: \(stillOld.summary)")
+        let pinnedNew = await PackHosting.check(url: newPinned, expected: otherBuild.sha1)
+        check(pinnedNew.ok, "and the new one's the new: \(pinnedNew.summary)")
+        let otherRecipe = await rawRequest(port: port, "GET /\(token)/\(String(repeating: "f", count: 40)).zip HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(otherRecipe), "HTTP/1.1 404 Not Found", "a hash that isn't this recipe's build is a 404")
+        let crossRecipe = await rawRequest(port: port, "GET /\(c.packHostSettings.recipes["world-two"]!.token)/\(firstBuild.sha1).zip HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(crossRecipe), "HTTP/1.1 404 Not Found", "and one recipe's path can't reach another's builds")
+        try FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("WorldResourcepacks.jar"))
+        await c.refreshPlugins()
+        try c.serveBuild(sha1: firstBuild.sha1, recipe: "world-one")
 
         // Stopping stops, the module switch stops, and a new start comes back by itself.
         Modules.shared.set(.resourcePacks, on: false)
