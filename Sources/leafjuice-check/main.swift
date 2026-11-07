@@ -2575,6 +2575,21 @@ final class FakeBlueMap: @unchecked Sendable {
     write("dimension: \"x\"\n", mapsFolder.appendingPathComponent("noworld.conf"))
     equal(MapGateway.mapWorlds(in: mapsFolder), ["magic": "madeup_magic"], "maps whose world can't be read safely are left out")
     equal(MapGateway.mapWorlds(in: folder("map-confs-none").appendingPathComponent("missing")), nil, "no BlueMap folder is unknown")
+    // Minecraft 26 moves worlds inside the level folder. BlueMap's configs then name the level and a dimension,
+    // as seen on a 26.2 trial with BlueMap 5.29. Before 26, a nether map names its own folder.
+    let old = folder("map-layout-old"), new = folder("map-layout-26")
+    write("x", old.appendingPathComponent("world_nether/DIM-1/region/r.0.0.mca"))
+    write("x", new.appendingPathComponent("survival/dimensions/minecraft/overworld/region/r.0.0.mca"))
+    let oldMaps = old.appendingPathComponent("plugins/BlueMap/maps"), newMaps = new.appendingPathComponent("plugins/BlueMap/maps")
+    write("world: \"world_nether\"\ndimension: \"minecraft:the_nether\"\n", oldMaps.appendingPathComponent("world_nether.conf"))
+    write("world: \"madeup_magic\"\ndimension: \"minecraft:overworld\"\n", oldMaps.appendingPathComponent("madeup_magic.conf"))
+    equal(MapGateway.mapWorlds(in: oldMaps, serverRoot: old), ["world_nether": "world_nether", "madeup_magic": "madeup_magic"], "before 26, the folder is the world")
+    for (id, dimension) in [("survival", "minecraft:overworld"), ("survival_nether", "minecraft:the_nether"), ("survival_the_end", "minecraft:the_end"), ("madeup_magic", "minecraft:madeup_magic"), ("moon", "acme:moon"), ("odd", "minecraft:../x")] {
+        write("world: \"survival\"\ndimension: \"\(dimension)\"\n", newMaps.appendingPathComponent("\(id).conf"))
+    }
+    write("world: \"survival\"\n", newMaps.appendingPathComponent("plain.conf"))
+    equal(MapGateway.mapWorlds(in: newMaps, serverRoot: new), ["survival": "survival", "survival_nether": "survival_nether", "survival_the_end": "survival_the_end", "madeup_magic": "madeup_magic", "plain": "survival"],
+          "from 26, the dimension says which world, and another namespace or an odd name isn't shown")
 
     // Which paths get through.
     let allowed: Set<String> = ["world"]

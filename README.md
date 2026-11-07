@@ -167,7 +167,9 @@ links.example.com {
 
 BlueMap's own web server must stop answering anyone else, or the sign-in can be skipped. Set `ip: "127.0.0.1"` in `plugins/BlueMap/webserver.conf`. By default it's every network interface, and the app warns until it's changed. Leaf Juice reads BlueMap's port and web folder from the same file.
 
-**Map tested:** real BlueMap 5.16, Multiverse-Core 5.8.2 and LuckPerms 5.5.71 on a throwaway Paper 1.21.11 server with bots and made-up worlds. A real tile came through byte for byte, each player saw only their own worlds, and taking the permission away took the map away. **Not tested:** a real browser drawing the map through the gate, a real tunnel, Caddy, or BlueMap's live updates over time.
+**Map tested:** real BlueMap 5.16, Multiverse-Core 5.8.2 and LuckPerms 5.5.71 on a throwaway Paper 1.21.11 server with bots and made-up worlds. A real tile came through byte for byte, each player saw only their own worlds, and taking the permission away took the map away. On Minecraft 26, where Paper moves every world inside the level folder, BlueMap's map settings name the level folder and a dimension instead. Leaf Juice reads which world that is from the dimension. That form comes from a 26.2 trial with BlueMap 5.29 and is only covered by tests on made-up files.
+
+**Not tested:** a real browser drawing the map through the gate, a real tunnel, Caddy, or BlueMap's live updates over time.
 
 ## Install
 

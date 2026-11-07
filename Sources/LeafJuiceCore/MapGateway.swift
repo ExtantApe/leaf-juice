@@ -95,16 +95,33 @@ public enum MapGateway {
         !name.isEmpty && name.count <= 64 && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "_-.".contains($0)) } && !name.hasPrefix(".")
     }
 
-    /// Map id to the world it shows, from BlueMap's one file per map. nil when there's no BlueMap config to read.
-    /// A map whose world can't be read is left out, so it's never shown.
-    public static func mapWorlds(in folder: URL) -> [String: String]? {
+    /// Map id to the Bukkit world it shows, from BlueMap's one file per map. nil when there's no BlueMap config to read.
+    /// A map whose world can't be worked out is left out, so it's never shown.
+    ///
+    /// Before Minecraft 26, `world:` is the world's own folder. From 26, Paper moves every world inside the level
+    /// folder, so `world:` is the level and `dimension:` says which world: the three built-in dimensions are the
+    /// level's main worlds, and `minecraft:<name>` is the world `<name>`. Which applies is read from the folders.
+    public static func mapWorlds(in folder: URL, serverRoot: URL? = nil) -> [String: String]? {
         guard FileOps.exists(folder) else { return nil }
         var out: [String: String] = [:]
         for file in FileOps.children(folder) where file.pathExtension == "conf" {
             let id = file.deletingPathExtension().lastPathComponent
             guard isWorldName(id), let text = try? String(contentsOf: file, encoding: .utf8),
                   let world = setting("world", in: text), isWorldName(world) else { continue }
-            out[id] = world
+            let moved = serverRoot.map { FileOps.isDirectory($0.appendingPathComponent(world).appendingPathComponent("dimensions")) } ?? false
+            guard moved else {
+                out[id] = world
+                continue
+            }
+            switch setting("dimension", in: text) ?? "minecraft:overworld" {
+            case "minecraft:overworld": out[id] = world
+            case "minecraft:the_nether": out[id] = "\(world)_nether"
+            case "minecraft:the_end": out[id] = "\(world)_the_end"
+            case let other where other.hasPrefix("minecraft:"):
+                let name = String(other.dropFirst("minecraft:".count))
+                if isWorldName(name) { out[id] = name }
+            default: continue   // Another namespace: which world it is can't be told, so it isn't shown.
+            }
         }
         return out
     }
@@ -179,7 +196,7 @@ extension ServerController {
     private func workOutMapAccess(uuid: String) async -> MapAccess {
         guard state == .running else { return .problem("The server isn't running, so who can enter each world can't be asked.") }
         guard AccountLookup.dashed(uuid) != nil else { return .problem("That account's ID isn't valid.") }
-        guard let worlds = MapGateway.mapWorlds(in: paths.plugins.appendingPathComponent("BlueMap/maps")) else { return .problem("BlueMap's map settings can't be read.") }
+        guard let worlds = MapGateway.mapWorlds(in: paths.plugins.appendingPathComponent("BlueMap/maps"), serverRoot: paths.root) else { return .problem("BlueMap's map settings can't be read.") }
         guard plugins.contains(where: { $0.enabled && $0.key == Multiverse.pluginKey }) else {
             return .problem("Multiverse isn't on this server, so who can enter each world can't be read.")
         }
