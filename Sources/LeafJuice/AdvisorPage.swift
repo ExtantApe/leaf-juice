@@ -20,7 +20,15 @@ final class AdvisorCenter {
         let rawTitle: String
     }
 
+    struct Notice: Equatable {
+        let tone: Tone
+        let title: String
+        let detail: String?
+    }
+
     private(set) var phases: [String: Phase] = [:]
+    private(set) var notices: [String: Notice] = [:]
+    private(set) var stopping: Set<String> = []
     private(set) var items: [String: [Item]] = [:]
     private(set) var previews: [String: String] = [:]
     private(set) var claudePath: String?
@@ -32,11 +40,18 @@ final class AdvisorCenter {
 
     // MARK: Choices, which all default to off
 
-    private func set(_ key: String) -> Set<String> { Set(defaults.stringArray(forKey: key) ?? []) }
+    /// UserDefaults can't tell SwiftUI that a value changed, so a page reading only a choice would never redraw.
+    /// Every read of a saved choice reads this as well, and every write changes it.
+    private var savedChoices = 0
+    private func set(_ key: String) -> Set<String> {
+        _ = savedChoices
+        return Set(defaults.stringArray(forKey: key) ?? [])
+    }
     private func write(_ value: Bool, _ path: String, _ key: String) {
         var current = set(key)
         if value { current.insert(path) } else { current.remove(path) }
         defaults.set(Array(current), forKey: key)
+        savedChoices += 1
     }
     /// This server in this folder. Moving it, or putting a different server there, needs a new yes.
     private func consent(_ server: ServerController) -> String { "\(server.id.uuidString)|\(server.paths.root.path)" }
@@ -51,7 +66,68 @@ final class AdvisorCenter {
     }
     func isAutomatic(_ server: ServerController) -> Bool { set("advisorAutomatic").contains(consent(server)) }
     func setAutomatic(_ server: ServerController, _ on: Bool) { write(on, consent(server), "advisorAutomatic") }
-    func lastCheck(_ server: ServerController) -> Date? { defaults.object(forKey: "advisorLast:\(server.paths.root.path)") as? Date }
+    func lastCheck(_ server: ServerController) -> Date? {
+        _ = savedChoices
+        return defaults.object(forKey: "advisorLast:\(server.paths.root.path)") as? Date
+    }
+
+    // MARK: Saying what a click did
+
+    func notice(_ server: ServerController) -> Notice? { notices[server.paths.root.path] }
+    func say(_ server: ServerController, _ tone: Tone, _ title: String, _ detail: String? = nil) {
+        notices[server.paths.root.path] = Notice(tone: tone, title: title, detail: detail)
+    }
+    private func fail(_ server: ServerController, _ message: String) {
+        notices[server.paths.root.path] = nil
+        phases[server.paths.root.path] = .failed(message)
+    }
+
+    /// The button on the page. `share` alone says nothing, because removing a server and forgetting everything use it too.
+    func startSharing(_ server: ServerController) {
+        let root = server.paths.root
+        phases[root.path] = .idle
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            fail(server, "\(server.profile.name) isn't in \(Self.shown(root)) any more, so it wasn't shared.")
+            return
+        }
+        guard !AdvisorPaths.homeIsInside(server: root) else {
+            fail(server, "The Advisor's private folder is inside this server's folder, so it wasn't shared.")
+            return
+        }
+        share(server, true)
+        guard isShared(server) else {
+            fail(server, "Leaf Juice couldn't save that choice, so this server isn't shared.")
+            return
+        }
+        say(server, .good, "Sharing is on for \(server.profile.name)", "That's the folder \(Self.shown(root)). Nothing has been sent. A check only runs when you press Check Now.")
+    }
+
+    func stopSharing(_ server: ServerController) {
+        phases[server.paths.root.path] = .idle
+        share(server, false)
+        guard !isShared(server) else {
+            fail(server, "Leaf Juice couldn't save that choice, so this server is still shared.")
+            return
+        }
+        say(server, .info, "Stopped sharing \(server.profile.name)", "Nothing more will be sent unless you share it again.")
+    }
+
+    func lookForClaude(_ server: ServerController) {
+        findClaude()
+        if claudePath == nil { say(server, .warning, "Still can't find Claude Code", "Install it, then press Check Again.") }
+        else { say(server, .good, "Found Claude Code") }
+    }
+
+    /// In your home folder as ~, for showing on this Mac only.
+    static func shown(_ folder: URL) -> String { (folder.path as NSString).abbreviatingWithTildeInPath }
+
+    /// When the server last wrote its log. This looks at the file's date only, and none of it is shared.
+    static func lastRan(_ server: ServerController) -> String {
+        guard FileManager.default.fileExists(atPath: server.paths.root.path) else { return "Folder not found" }
+        let log = server.paths.root.appendingPathComponent("logs/latest.log")
+        guard let date = (try? FileManager.default.attributesOfItem(atPath: log.path))?[.modificationDate] as? Date else { return "No log yet" }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
     private func signature(_ server: ServerController) -> String {
         server.issues.filter { $0.status == .open && $0.severity >= .warning }.map(\.id).sorted().joined(separator: "|")
     }
@@ -97,10 +173,21 @@ final class AdvisorCenter {
     func phase(_ server: ServerController) -> Phase { phases[server.paths.root.path] ?? .idle }
 
     func dismiss(_ item: Item, server: ServerController, forGood: Bool) {
-        guard let inbox = try? SuggestionInbox(sanitizer: nil) else { return }
+        let path = server.paths.root.path
+        phases[path] = .idle
+        guard let inbox = try? SuggestionInbox(sanitizer: nil) else {
+            fail(server, "The Advisor's private folder couldn't be read, so that suggestion is still here.")
+            return
+        }
         inbox.remove(id: item.id)
-        if forGood { inbox.neverRaiseAgain(item.rawTitle, server: server.paths.root.path) }
+        if forGood { inbox.neverRaiseAgain(item.rawTitle, server: path) }
         refresh(server)
+        guard phase(server) == .idle else { return }
+        if items[path]?.contains(where: { $0.id == item.id }) == true {
+            fail(server, "That suggestion couldn't be removed.")
+        } else {
+            say(server, .good, forGood ? "Removed. Future checks will be told to leave it out." : "Removed. A later check may raise it again if it's still a problem.")
+        }
     }
 
     /// Runs here, and sends nothing: this is the same text a check would give the AI, from the same functions at their largest limits.
@@ -130,23 +217,34 @@ final class AdvisorCenter {
             defaults.removeObject(forKey: "advisorLast:\(server.paths.root.path)")
             items[server.paths.root.path] = []
             phases[server.paths.root.path] = forgotten ? .idle : .failed("Some of what the Advisor stored couldn't be deleted. Sharing is off.")
+            notices[server.paths.root.path] = forgotten ? Notice(tone: .good, title: "The Advisor's suggestions and code names are deleted", detail: "Sharing is off for every server. Your servers weren't touched.") : nil
         }
+        savedChoices += 1
     }
 
     // MARK: Checking
 
     func cancel(_ server: ServerController) {
-        running[server.paths.root.path]?.terminate()
+        let path = server.paths.root.path
+        guard let process = running[path] else { return }
+        stopping.insert(path)
+        process.terminate()
     }
 
     func check(_ server: ServerController) async {
         let path = server.paths.root.path
-        guard Modules.shared.isOn(.advisor), isShared(server), phase(server) != .checking else { return }
+        guard phase(server) != .checking else { return }
+        notices[path] = nil
+        guard Modules.shared.isOn(.advisor) else { fail(server, "The Advisor is turned off, so nothing was sent."); return }
+        guard isShared(server) else { fail(server, "This server isn't shared any more, so nothing was sent."); return }
+        guard FileManager.default.fileExists(atPath: path) else { fail(server, "\(server.profile.name) isn't in \(Self.shown(server.paths.root)) any more, so nothing was sent."); return }
         findClaude()
         guard let claude = claudePath else { phases[path] = .failed("Claude Code isn't installed on this Mac."); return }
         guard let program = advisorProgram else { phases[path] = .failed("This build of Leaf Juice is missing its Advisor program."); return }
         guard !AdvisorPaths.homeIsInside(server: server.paths.root) else { phases[path] = .failed("The Advisor's private folder is inside this server's folder, so nothing was shared."); return }
         phases[path] = .checking
+        defer { stopping.remove(path) }
+        var finished = false
         do {
             let inbox = try SuggestionInbox(sanitizer: nil)
             let key = try PrivacyKey()
@@ -179,9 +277,13 @@ final class AdvisorCenter {
                 earlier.forEach { inbox.remove(id: $0) }
                 defaults.set(Date(), forKey: "advisorLast:\(path)")
                 defaults.set(signature(server), forKey: "advisorSeen:\(path)")
+                savedChoices += 1
                 phases[path] = .idle
+                finished = true
             case .cancelled:
                 phases[path] = .idle
+                // Stop Sharing also ends a check, and it has already said so.
+                if isShared(server) { say(server, .info, "Check stopped", "Your earlier advice has been kept.") }
             case let .failed(message):
                 phases[path] = .failed(message)
             }
@@ -190,6 +292,10 @@ final class AdvisorCenter {
             phases[path] = .failed((error as? AdvisorError)?.description ?? "The check couldn't start.")
         }
         refresh(server)
+        if finished, phase(server) == .idle {
+            let found = count(server)
+            say(server, .good, "Check finished", found == 0 ? "It found nothing worth raising." : found == 1 ? "It left 1 suggestion." : "It left \(found) suggestions.")
+        }
     }
 
     /// While the app is open. Only checks when a new warning or error has appeared, at most once every six hours,
@@ -273,6 +379,17 @@ private extension Suggestion.Severity {
 /// All the trial app shows: the Advisor page, with nothing that could start or change a server.
 struct AdvisorTrialView: View {
     @Bindable var model: AppModel
+    /// By folder, not id: a copied folder keeps the id of the server it was copied from, and the two must not look like one.
+    @State private var chosenFolder: String?
+
+    private var selected: ServerController? {
+        model.listed.first { $0.paths.root.path == chosenFolder } ?? model.selected
+    }
+
+    private func label(_ server: ServerController) -> String {
+        let folder = server.paths.root.lastPathComponent
+        return folder == server.profile.name ? folder : "\(server.profile.name) (\(folder))"
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -280,16 +397,16 @@ struct AdvisorTrialView: View {
                 Text("Advisor trial. This app can't start or change your servers.").foregroundStyle(Juice.muted)
                 Spacer()
                 if model.listed.count > 1 {
-                    Picker("Server", selection: Binding(get: { model.selected?.id }, set: { model.selectedID = $0 })) {
-                        ForEach(model.listed) { Text(verbatim: $0.profile.name).tag(Optional($0.id)) }
+                    Picker("Server", selection: Binding(get: { selected?.paths.root.path }, set: { chosenFolder = $0 })) {
+                        ForEach(model.listed, id: \.paths.root.path) { Text(verbatim: label($0)).tag(Optional($0.paths.root.path)) }
                     }
                     .fixedSize()
                 }
             }
             .padding(12)
             Divider()
-            if let server = model.selected {
-                AdvisorPage(model: model, server: server).id(server.id)
+            if let server = selected {
+                AdvisorPage(model: model, server: server).id(server.paths.root.path)
             } else {
                 Text("Leaf Juice doesn't list any servers yet.").foregroundStyle(Juice.muted).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -304,18 +421,60 @@ struct AdvisorPage: View {
     private var center: AdvisorCenter { AdvisorCenter.shared }
     @State private var showingPreview = false
     @State private var confirmingForget = false
+    @State private var confirmingFirstCheck = false
 
     var body: some View {
         Page(title: "Advisor", subtitle: "Looks over \(server.profile.name) with AI and suggests what to do. It can't change anything.") {
+            whichServer
             if center.isShared(server) { working } else { introduction }
         }
+        // Outside the scrolling, so it's in view wherever the button you pressed was.
+        .safeAreaInset(edge: .top, spacing: 0) { feedback }
         .onAppear { center.findClaude(); center.refresh(server); center.watch(model) }
         .onChange(of: server.id) { center.refresh(server) }
         .sheet(isPresented: $showingPreview) { AdvisorPreview(server: server) }
+        .confirmationDialog("Send \(server.profile.name) to the Advisor?", isPresented: $confirmingFirstCheck, titleVisibility: .visible) {
+            Button("Send to Anthropic") { Task { await center.check(server) } }
+        } message: {
+            Text("This is the first check of the folder \(AdvisorCenter.shown(server.paths.root)), which last ran \(AdvisorCenter.lastRan(server)). Its filtered information goes to Anthropic through your Claude account. See What's Shared shows exactly what.")
+        }
         .confirmationDialog("Forget everything the Advisor has stored?", isPresented: $confirmingForget, titleVisibility: .visible) {
             Button("Forget Everything", role: .destructive) { center.forgetEverything(servers: model.servers) }
         } message: {
             Text("This deletes its suggestions and its list of who each code name stands for, and stops sharing every server. Your servers aren't touched.")
+        }
+    }
+
+    // MARK: What just happened, and to which server
+
+    /// Above everything else, so it shows whichever way the page changes. A failure stays until the next try.
+    private var feedback: some View {
+        VStack(spacing: 8) {
+            if case let .failed(message) = center.phase(server) {
+                Callout(tone: .warning, title: "That didn't work", detail: message)
+            }
+            if let notice = center.notice(server) {
+                Callout(tone: notice.tone, title: notice.title, detail: notice.detail)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, center.notice(server) == nil && !isFailed ? 0 : 8)
+        .frame(maxWidth: .infinity)
+        .background(Juice.background)
+    }
+
+    private var isFailed: Bool {
+        if case .failed = center.phase(server) { return true }
+        return false
+    }
+
+    /// Two servers can have nearly the same name, so this always shows the folder as well.
+    private var whichServer: some View {
+        Card(title: "Which server", systemImage: "folder") {
+            Fact(label: "Server", value: server.profile.name)
+            Fact(label: "Folder", value: AdvisorCenter.shown(server.paths.root))
+            Fact(label: "Last ran", value: AdvisorCenter.lastRan(server))
+            Fact(label: "Shared with the Advisor", value: center.isShared(server) ? "Yes" : "No")
         }
     }
 
@@ -346,7 +505,7 @@ struct AdvisorPage: View {
             Callout(tone: .info, title: "This needs Claude Code", detail: "The Advisor uses your own Claude account through Claude Code, a free program from Anthropic. Leaf Juice stays free, and has no AI of its own.") {
                 HStack {
                     Link("Get Claude Code", destination: URL(string: "https://claude.com/claude-code")!).buttonStyle(.juice)
-                    Button("Check Again") { center.findClaude() }.buttonStyle(.juice)
+                    Button("Check Again") { center.lookForClaude(server) }.buttonStyle(.juice)
                 }
             }
         } else {
@@ -354,7 +513,7 @@ struct AdvisorPage: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("What's shared goes to Anthropic through your own Claude account. Each check takes about half a minute. If you pay per use, each cost about 8 cents in testing.")
                         .foregroundStyle(Juice.ink).fixedSize(horizontal: false, vertical: true)
-                    Button("Share \(server.profile.name) with the Advisor") { center.share(server, true) }.buttonStyle(.juicePrimary)
+                    Button("Share \(server.profile.name) with the Advisor") { center.startSharing(server) }.buttonStyle(.juicePrimary)
                     Hint("Nothing is sent until you press Check Now. You can stop sharing at any time.")
                 }
             }
@@ -365,9 +524,6 @@ struct AdvisorPage: View {
 
     @ViewBuilder private var working: some View {
         statusRow
-        if case let .failed(message) = center.phase(server) {
-            Callout(tone: .warning, title: "That didn't work", detail: message)
-        }
         let items = center.items[server.paths.root.path] ?? []
         if center.phase(server) == .checking, items.isEmpty {
             EmptyMessage(icon: "sparkle.magnifyingglass", title: "Looking things over", detail: "This usually takes about half a minute.")
@@ -375,7 +531,7 @@ struct AdvisorPage: View {
             if center.lastCheck(server) == nil {
                 EmptyMessage(icon: "sparkle.magnifyingglass", title: "No checks yet", detail: "Press Check Now, and suggestions will appear here.")
             } else {
-                EmptyMessage(icon: "leaf", title: "Nothing to raise", detail: "The last check found nothing worth your time.")
+                EmptyMessage(icon: "leaf", title: "Nothing waiting", detail: "There are no suggestions to read right now.")
             }
         } else {
             ForEach(items) { item in AdvisorCard(item: item, server: server) }
@@ -387,11 +543,16 @@ struct AdvisorPage: View {
     private var statusRow: some View {
         HStack(spacing: 10) {
             if center.phase(server) == .checking {
-                Button("Stop") { center.cancel(server) }.buttonStyle(.juice)
-                ProgressView().controlSize(.small).accessibilityLabel("Checking")
-                Text("Checking…").foregroundStyle(Juice.muted)
+                let isStopping = center.stopping.contains(server.paths.root.path)
+                Button("Stop") { center.cancel(server) }.buttonStyle(.juice).disabled(isStopping)
+                ProgressView().controlSize(.small).accessibilityLabel(isStopping ? "Stopping" : "Checking")
+                Text(isStopping ? "Stopping…" : "Checking…").foregroundStyle(Juice.muted)
             } else {
-                Button("Check Now") { Task { await center.check(server) } }.buttonStyle(.juicePrimary)
+                // The first check of a folder names it, so the wrong server can't be sent by a slip.
+                Button("Check Now") {
+                    if center.lastCheck(server) == nil { confirmingFirstCheck = true } else { Task { await center.check(server) } }
+                }
+                .buttonStyle(.juicePrimary)
                 if let last = center.lastCheck(server) {
                     Text("Last checked \(last.formatted(.relative(presentation: .named)))").foregroundStyle(Juice.muted)
                 }
@@ -412,7 +573,7 @@ struct AdvisorPage: View {
             }
             HStack {
                 Button("See What's Shared") { showingPreview = true }.buttonStyle(.juice)
-                Button("Stop Sharing This Server") { center.share(server, false) }.buttonStyle(.juice)
+                Button("Stop Sharing This Server") { center.stopSharing(server) }.buttonStyle(.juice)
                 Spacer()
                 Button("Forget Everything…") { confirmingForget = true }.buttonStyle(.juiceDanger)
             }
@@ -457,6 +618,7 @@ private struct AdvisorCard: View {
                     Button("Copy") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString("Written by AI from filtered logs, so check it before acting on it.\n\n\(item.title)\n\n\(item.details)", forType: .string)
+                        AdvisorCenter.shared.say(server, .good, "Copied")
                     }
                     .buttonStyle(.juice)
                     Spacer()
