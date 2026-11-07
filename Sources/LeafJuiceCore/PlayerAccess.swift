@@ -201,7 +201,7 @@ extension ServerController {
     }
 
     /// Runs a console command and collects what comes back, until something does or it's clear nothing will.
-    private func ask(_ command: String, seconds: Double = 8, until done: ([String]) -> Bool) async -> [String] {
+    func ask(_ command: String, seconds: Double = 8, until done: ([String]) -> Bool) async -> [String] {
         let mark = console.last?.id ?? -1
         func answer() -> [String] { console.filter { $0.id > mark && $0.origin == .server }.map(\.text) }
         send(command)

@@ -156,6 +156,19 @@ links.example.com {
 
 **Tested:** a bot typed `/signin` on a throwaway Paper 1.21.11 server, and a real browser signed in and out on localhost with made-up data. **Not tested:** a real tunnel, Caddy, a real game client clicking the link, a permission granted through LuckPerms rather than op, and Bedrock players, who may not be able to click a chat link.
 
+**The map:** the same sign-in can also cover BlueMap's web map, at `/map/` on the same address. Off until you tick it. A player sees a world's map only if Multiverse lets them enter that world:
+
+- With Multiverse's `enforce-access` on, each world is checked with LuckPerms against `multiverse.access.<world>`, every few minutes per person. Only a plain yes counts. That includes the world players spawn in, so give that permission for any world whose map should show.
+- With `enforce-access` off, Multiverse lets everyone into every world, so everyone signed in sees every map. The app says so.
+- No Multiverse, no LuckPerms, a server that's stopped, or any setting that can't be read means no maps, and the app shows why.
+- Hidden maps are refused, not just left off the list: their tiles, live player positions and markers all return "not found", and BlueMap is never asked for them.
+- An op who isn't given the permission through LuckPerms sees fewer maps than they can enter, because op status isn't part of the check.
+- Teleports from the console or by another plugin can move someone into a world they don't have access to. The map follows the permission, not where they happen to be.
+
+BlueMap's own web server must stop answering anyone else, or the sign-in can be skipped. Set `ip: "127.0.0.1"` in `plugins/BlueMap/webserver.conf`. By default it's every network interface, and the app warns until it's changed. Leaf Juice reads BlueMap's port and web folder from the same file.
+
+**Map tested:** real BlueMap 5.16, Multiverse-Core 5.8.2 and LuckPerms 5.5.71 on a throwaway Paper 1.21.11 server with bots and made-up worlds. A real tile came through byte for byte, each player saw only their own worlds, and taking the permission away took the map away. **Not tested:** a real browser drawing the map through the gate, a real tunnel, Caddy, or BlueMap's live updates over time.
+
 ## Install
 
 1. Download the `.dmg` from [Releases](https://github.com/mgilardi/leaf-juice/releases) and drag Leaf Juice to Applications.

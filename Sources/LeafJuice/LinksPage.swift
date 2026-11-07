@@ -139,6 +139,7 @@ struct LinksPage: View {
                 Spacer()
             }
             Hint("Leaf Juice only listens on this Mac. Getting it to players needs HTTPS that ends on this Mac, set up in Caddy with a tunnel. See the README.")
+            mapSection
             if let web = server.linksWeb, !web.signedIn.isEmpty {
                 Text("Signed in now").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
                 ForEach(web.signedIn) { session in
@@ -162,6 +163,33 @@ struct LinksPage: View {
                 }
                 Hint("Keeps the account, the time and what happened, for 30 days. No addresses or browsing.")
             }
+        }
+    }
+
+    @ViewBuilder private var mapSection: some View {
+        let hasBlueMap = server.plugins.contains { $0.key == "bluemap" }
+        Divider()
+        Toggle("Put BlueMap's web map behind this sign-in, at /map/", isOn: Binding(get: { pageSettings.map?.on == true }, set: { on in
+            var map = pageSettings.map ?? MapGatewaySettings()
+            map.on = on
+            pageSettings.map = map
+            server.forgetMapAccess()
+            savePage()
+        }))
+        .disabled(!hasBlueMap)
+        if !hasBlueMap { Hint("BlueMap isn't on this server.") }
+        if hasBlueMap {
+            let blueMap = server.blueMapServer
+            Hint("A player sees a world's map only if Multiverse lets them enter that world. Checked every few minutes, and anything that can't be read shows no maps.")
+            switch server.multiverseEnforcesAccess {
+            case .some(true): Hint("Multiverse enforces world access, so each world is checked against multiverse.access.<world>.")
+            case .some(false): Callout(tone: .warning, title: "Multiverse lets everyone into every world", detail: "enforce-access is off, so everyone signed in sees every map.")
+            case .none: Callout(tone: .warning, title: "Multiverse's enforce-access can't be read", detail: "Until it can, nobody sees any maps.")
+            }
+            if pageSettings.map?.on == true, !blueMap.onlyThisMac {
+                Callout(tone: .warning, title: "The map is still open directly", detail: "BlueMap listens on \(blueMap.ip), port \(blueMap.port), so anyone who can reach that port skips the sign-in. Set ip: \"127.0.0.1\" in BlueMap's webserver.conf to close it.")
+            }
+            if let note = server.mapAccessNote { Hint("Last time someone saw no maps: \(note)") }
         }
     }
 

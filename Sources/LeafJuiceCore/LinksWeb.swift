@@ -15,6 +15,8 @@ public struct LinksPageSettings: Codable, Equatable, Sendable {
     public var shared: Set<String> = []
     public var showPluginVersions = true
     public var showServerVersion = true
+    /// Optional, so settings saved before the map existed still read.
+    public var map: MapGatewaySettings?
     public init() {}
 
     /// The address only counts if it's plain https, since the sign-in cookie can't travel any other way.
@@ -58,6 +60,7 @@ public struct LinksPageContent: Equatable, Sendable {
     }
     public var serverVersion: String?
     public var plugins: [Plugin] = []
+    public var showMap = false
 }
 
 @MainActor
@@ -169,6 +172,34 @@ public final class LinksWeb {
         default:
             return page(404, "Not found", "<p>There's nothing here. <a href=\"/\">Go to the plugin list</a>.</p>")
         }
+    }
+
+    public enum MapEntry: Equatable, Sendable {
+        case viewer(Session)
+        case answer(Response)
+    }
+
+    /// The same checks as the plugin page: the right address, a live session, and still allowed on the server.
+    public func mapEntry(_ request: Request, now: Date = Date()) -> MapEntry {
+        let origin = testOrigin ?? settings().origin
+        guard let origin, let separator = origin.range(of: "://"), request.headers["host"]?.lowercased() == String(origin[separator.upperBound...]) else {
+            return .answer(page(421, "Wrong address", "<p>This page isn't served at that address.</p>"))
+        }
+        guard request.method == "GET" || request.method == "HEAD" else {
+            var response = page(405, "Not allowed", "<p>The map can only be looked at.</p>")
+            response.headers["Allow"] = "GET, HEAD"
+            return .answer(response)
+        }
+        guard let session = session(for: request, now: now) else {
+            return .answer(["/map", "/map/", "/map/index.html"].contains(request.path) ? signInHelp() : page(404, "Not found", "<p>Sign in to see the map.</p>"))
+        }
+        return .viewer(session)
+    }
+
+    func mapNotFound() -> Response { page(404, "Not found", "<p>There's nothing here. <a href=\"/map/\">Go to the map</a>.</p>") }
+
+    func noMaps(for session: Session) -> Response {
+        page(200, "No maps", "<p>Signed in as \(Self.escape(session.name)). There are no maps for you yet. You see a world's map once you can enter that world in game.</p><p><a href=\"/\">Go to the plugin list</a></p>")
     }
 
     private func session(for request: Request, now: Date) -> Session? {
@@ -349,6 +380,7 @@ public final class LinksWeb {
         let shown = content()
         var html = "<form class=\"who\" method=\"post\" action=\"/signout\"><span>Signed in as \(Self.escape(session.name))</span><button type=\"submit\">Sign out</button></form>"
         if let version = shown.serverVersion { html += "<p>This server runs \(Self.escape(version)).</p>" }
+        if shown.showMap { html += "<p><a href=\"/map/\">Open the map</a></p>" }
         if shown.plugins.isEmpty {
             html += "<p>Nothing has been shared here yet.</p>"
         } else {
@@ -376,6 +408,14 @@ public final class LinksWeb {
     """
 }
 
+/// What the listener needs from the server to put BlueMap behind sign-in.
+struct MapHooks {
+    var on: @MainActor () -> Bool
+    var access: @MainActor (String) async -> MapAccess
+    var server: @MainActor () -> BlueMapServer
+    var root: URL
+}
+
 /// Listens on this Mac only. Each connection gets one answer and is closed.
 @MainActor
 public final class LinksListener {
@@ -384,7 +424,12 @@ public final class LinksListener {
     private let web: LinksWeb
     private let allowed: () -> Bool
     private let queue = DispatchQueue(label: "leafjuice.links")
-    private static let maxConnections = 32
+    /// A map loads many pieces at once, each on its own connection.
+    private static let maxConnections = 96
+    /// Set when the map is on. Nothing under /map/ is answered otherwise.
+    var map: MapHooks?
+
+    private final class Answered: @unchecked Sendable { var yes = false }
     public private(set) var isListening = false
     public var onFailure: ((String) -> Void)?
 
@@ -438,24 +483,30 @@ public final class LinksListener {
             }
         }
         connection.start(queue: queue)
-        // A connection that says nothing doesn't get to sit here.
-        queue.asyncAfter(deadline: .now() + 10) { connection.cancel() }
-        read(connection, Data())
+        // A connection that says nothing doesn't get to sit here. Once answered, a map download may take longer.
+        let answered = Answered()
+        queue.asyncAfter(deadline: .now() + 10) { if !answered.yes { connection.cancel() } }
+        read(connection, Data(), answered)
     }
 
-    private nonisolated func read(_ connection: NWConnection, _ soFar: Data) {
+    private nonisolated func read(_ connection: NWConnection, _ soFar: Data, _ answered: Answered) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, finished, error in
             guard let self, error == nil else { connection.cancel(); return }
             let all = soFar + (data ?? Data())
             switch LinksWeb.parse(all) {
             case .incomplete:
-                if finished || all.count > 16384 { connection.cancel() } else { self.read(connection, all) }
+                if finished || all.count > 16384 { connection.cancel() } else { self.read(connection, all, answered) }
             case .bad:
                 self.send(LinksWeb.Response(status: 400), head: false, connection)
             case let .ok(request):
                 Task { @MainActor [weak self] in
                     guard let self else { connection.cancel(); return }
                     guard self.allowed() else { self.stop(); connection.cancel(); return }
+                    if let map = self.map, map.on(), request.path == MapGateway.prefix || request.path.hasPrefix(MapGateway.prefix + "/") {
+                        self.queue.async { answered.yes = true }
+                        await self.serveMap(request, connection, map)
+                        return
+                    }
                     let response = self.web.handle(request)
                     self.send(response, head: request.method == "HEAD", connection)
                 }
@@ -463,8 +514,44 @@ public final class LinksListener {
         }
     }
 
+    private func serveMap(_ request: LinksWeb.Request, _ connection: NWConnection, _ map: MapHooks) async {
+        let head = request.method == "HEAD"
+        guard case let .viewer(session) = web.mapEntry(request) else {
+            if case let .answer(response) = web.mapEntry(request) { send(response, head: head, connection) }
+            return
+        }
+        let allowed = await map.access(session.uuid).allowed
+        switch MapGateway.route(path: request.path, allowed: allowed) {
+        case .redirect:
+            send(LinksWeb.Response(status: 303, headers: ["Location": "/map/", "Cache-Control": "no-store"]), head: head, connection)
+        case .notFound:
+            send(web.mapNotFound(), head: head, connection)
+        case .settings:
+            let server = map.server()
+            let root = server.webroot.hasPrefix("/") ? URL(fileURLWithPath: server.webroot) : map.root.appendingPathComponent(server.webroot)
+            guard let data = try? Data(contentsOf: root.appendingPathComponent("settings.json")), let filtered = MapGateway.filterSettings(data, allowed: allowed) else {
+                send(web.mapNotFound(), head: head, connection)
+                return
+            }
+            send(LinksWeb.Response(status: 200, headers: ["Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"], body: filtered), head: head, connection)
+        case let .forward(path):
+            if allowed.isEmpty, path == "/" || path == "/index.html" {
+                send(web.noMaps(for: session), head: head, connection)
+                return
+            }
+            let web = self.web
+            let pipe = MapPipe(client: connection, port: map.server().port, queue: queue) {
+                guard case let .viewer(still) = web.mapEntry(request), still.uuid == session.uuid else { return false }
+                return MapGateway.route(path: request.path, allowed: await map.access(still.uuid).allowed) != .notFound
+            }
+            pipe.run(request: MapGateway.upstreamRequest(method: request.method, path: path, port: map.server().port, headers: request.headers)) { [weak self] in
+                self?.send(LinksWeb.Response(status: 502, headers: ["Content-Type": "text/plain; charset=utf-8"], body: Data("The map isn't running right now.\n".utf8)), head: head, connection)
+            }
+        }
+    }
+
     private nonisolated func send(_ response: LinksWeb.Response, head: Bool, _ connection: NWConnection) {
-        let reason = [200: "OK", 303: "See Other", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 421: "Misdirected Request"][response.status] ?? "Error"
+        let reason = [200: "OK", 303: "See Other", 400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed", 421: "Misdirected Request", 502: "Bad Gateway"][response.status] ?? "Error"
         var text = "HTTP/1.1 \(response.status) \(reason)\r\nConnection: close\r\nContent-Length: \(response.body.count)\r\n"
         for (name, value) in response.headers.sorted(by: { $0.key < $1.key }) { text += "\(name): \(value)\r\n" }
         text += "\r\n"
@@ -485,6 +572,7 @@ extension ServerController {
     public var linksPageContent: LinksPageContent {
         let current = linksPageSettings
         var out = LinksPageContent(serverVersion: current.showServerVersion ? profile.software.label : nil)
+        out.showMap = current.map?.on == true
         out.plugins = pluginLinkRows.filter { current.shared.contains($0.key) }.map {
             .init(name: $0.name, version: current.showPluginVersions && !$0.version.isEmpty ? $0.version : nil, link: $0.link?.url)
         }
@@ -520,6 +608,11 @@ extension ServerController {
         let web = linksWeb ?? LinksWeb(paths: paths, settings: { [weak self] in self?.linksPageSettings ?? LinksPageSettings() }, content: { [weak self] in self?.linksPageContent ?? LinksPageContent() })
         web.tidy()
         let listener = LinksListener(web: web, allowed: { Modules.shared.isOn(.links) })
+        listener.map = MapHooks(
+            on: { [weak self] in self?.linksPageSettings.map?.on == true },
+            access: { [weak self] uuid in await self?.mapAccess(uuid: uuid) ?? .problem("The server is gone.") },
+            server: { [weak self] in self?.blueMapServer ?? BlueMapServer() },
+            root: paths.root)
         listener.onFailure = { [weak self] message in
             self?.linksPageError = message
             self?.linksListener = nil

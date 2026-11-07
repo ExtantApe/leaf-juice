@@ -29,6 +29,9 @@ public final class ServerController: Identifiable {
     public internal(set) var linksWeb: LinksWeb?
     public internal(set) var linksListener: LinksListener?
     public var linksPageError: String?
+    @ObservationIgnored var mapAccessCache: [String: (date: Date, task: Task<MapAccess, Never>)] = [:]
+    /// The last reason someone was shown no maps, for the app to explain.
+    public internal(set) var mapAccessNote: String?
     public nonisolated let id: UUID
     public private(set) var paths: ServerPaths
     public var profile: ServerProfile { didSet { if profile != oldValue { saveProfile() } } }
