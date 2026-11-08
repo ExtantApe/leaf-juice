@@ -29,6 +29,8 @@ struct ResourcePacksPage: View {
     @State private var confirmServe: PackBuild?
     @State private var checkFailed: PackURLCheck?
     @State private var hostingRefresh = 0
+    /// Each included pack's songs.json, by pack id.
+    @State private var songLists: [String: PackSongList] = [:]
 
     struct PendingUpdate: Identifiable {
         var id: String { pack.id }
@@ -182,6 +184,7 @@ struct ResourcePacksPage: View {
             fitSection
             categorySection
             leaveOutSection
+            if enabled.contains(where: { songLists[$0.pack] != nil }) { songsSection }
             if let lock {
                 PackContributionsView(lock: lock, recipe: recipe, packs: packs, locator: locator) { path, pack in
                     recipe.winners[path] = pack
@@ -260,6 +263,59 @@ struct ResourcePacksPage: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .foregroundStyle(Juice.ink)
+    }
+
+    private var songsSection: some View {
+        DisclosureGroup("Songs") {
+            VStack(alignment: .leading, spacing: 12) {
+                Hint("Untick a song to leave it out of this recipe's pack, so Minecraft's own track plays in its place. Each change makes a new build with its own SHA-1, so build again and update the server.")
+                ForEach(enabled.filter { songLists[$0.pack] != nil }, id: \.pack) { entry in
+                    songs(for: entry, list: songLists[entry.pack]!)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .foregroundStyle(Juice.ink)
+    }
+
+    private func songs(for entry: PackRecipe.Entry, list: PackSongList) -> some View {
+        let off = entry.songsOff ?? []
+        let missing = off.subtracting(list.songs.map(\.id)).sorted()
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(packs.first { $0.id == entry.pack }?.title ?? entry.pack).font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
+            ForEach(list.problems, id: \.self) { Callout(tone: .warning, title: "Songs can't be switched off one by one", detail: $0) }
+            ForEach(list.songs) { song in
+                Toggle(isOn: Binding(get: { !off.contains(song.id) }, set: { keep in
+                    change(entry) { e in
+                        var set = e.songsOff ?? []
+                        if keep { set.remove(song.id) } else { set.insert(song.id) }
+                        e.songsOff = set.isEmpty ? nil : set
+                    }
+                })) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(song.title).foregroundStyle(Juice.ink)
+                        Hint(songDetail(song, size: list.sizes[song.id]))
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .accessibilityHint(off.contains(song.id) ? "Left out. Minecraft's own tracks play instead." : "Included.")
+            }
+            ForEach(list.notes, id: \.self) { Hint($0) }
+            if !missing.isEmpty {
+                HStack {
+                    Hint("Switched off, but no longer in this pack: \(missing.joined(separator: ", ")).")
+                    Button("Forget") { change(entry) { e in e.songsOff = (e.songsOff ?? []).subtracting(missing); if e.songsOff?.isEmpty == true { e.songsOff = nil } } }
+                        .buttonStyle(.juice)
+                }
+            }
+        }
+    }
+
+    private func songDetail(_ song: PackSong, size: Int64?) -> String {
+        var parts = ["Stands in for " + song.standsInFor.joined(separator: ", ")]
+        if let size { parts.append(Format.bytes(size)) }
+        if let credit = song.credit, !credit.isEmpty { parts.append(credit) }
+        return parts.joined(separator: " · ")
     }
 
     private var mineSection: some View {
@@ -371,6 +427,11 @@ struct ResourcePacksPage: View {
     }
 
     private func refreshLock() async {
+        var lists: [String: PackSongList] = [:]
+        for entry in recipe.entries where entry.enabled {
+            if let list = await ResourcePacks.songList(for: entry) { lists[entry.pack] = list }
+        }
+        songLists = lists
         lock = try? await ResourcePacks.resolve(recipe)
         locator = try? await ResourcePacks.locator(recipe)
         // Measuring needs one download of Mojang's file list per version, and works without it otherwise.

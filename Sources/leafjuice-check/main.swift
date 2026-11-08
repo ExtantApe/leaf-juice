@@ -45,6 +45,29 @@ if let flag = CommandLine.arguments.firstIndex(of: "--demo-packs") {
     exit(0)
 }
 
+// ... --songs <folder> <zip>  Reads a pack's songs.json in a throwaway folder, then builds it with each song off in turn.
+if let flag = CommandLine.arguments.firstIndex(of: "--songs") {
+    let scratch = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+    setenv("LEAFJUICE_HOME", scratch.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", scratch.appendingPathComponent("servers").path, 1)
+    let pack = try await ResourcePacks.add(URL(fileURLWithPath: CommandLine.arguments[flag + 2]))
+    var recipe = ResourcePacks.reconcile(PackRecipe(), with: [pack])
+    recipe.name = "songs"
+    guard let list = await ResourcePacks.songList(for: recipe.entries[0]) else { print("No songs.json."); exit(1) }
+    print("Usable: \(list.usable). Problems: \(list.problems). Notes: \(list.notes)")
+    for song in list.songs { print("  \(song.id): \(song.title), \(song.files.count) files, \(Format.bytes(list.sizes[song.id] ?? 0)), stands in for \(song.standsInFor.joined(separator: ", "))") }
+    let all = try await ResourcePacks.combine(recipe)
+    print("All on: \(all.sha1), \(Format.bytes(all.size)), warnings \(all.warnings)")
+    for song in list.songs {
+        recipe.entries[0].songsOff = [song.id]
+        let build = try await ResourcePacks.combine(recipe)
+        let kept = ResourcePacks.loadLock(sha1: build.sha1, recipe: recipe.name)?.files.filter { f in song.files.contains { $0.path == f.path } }.count ?? -1
+        print("  \(song.id) off: \(build.sha1), \(Format.bytes(build.size)), its files left in: \(kept), warnings \(build.warnings)")
+        try? FileManager.default.removeItem(at: ResourcePacks.buildFile(build, recipe: recipe.name))
+    }
+    exit(0)
+}
+
 /// The Minecraft version the real map, pre-join, sign-in and pack tests boot: `--mc <version>`, 26.3 by default.
 /// Plugins now target 26.1 and later, so 1.21.11 is only used by tests that upgrade from it.
 let realMC: String = {
@@ -4309,6 +4332,113 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     } catch { failures.append("resource packs threw: \(error)") }
     await packHostingChecks()
     await exactPackChecks()
+    await packSongChecks()
+}
+
+@MainActor func packSongChecks() async {
+    print("• Songs in a pack")
+    do {
+        let meta = #"{"pack":{"pack_format":75,"description":"songs"}}"#
+        let calm = "assets/minecraft/sounds/music/game/calm1.ogg", calm2 = "assets/minecraft/sounds/music/game/calm2.ogg"
+        let hal = "assets/minecraft/sounds/music/game/hal1.ogg", stone = "assets/minecraft/textures/block/stone.png"
+        func songsJSON(_ songs: String, format: Int = 1) -> String { #"{"format":\#(format),"songs":[\#(songs)]}"# }
+        let good = songsJSON(#"""
+            {"id":"made-up-calm","title":"Made Up Calm","credit":"Nobody, made up for tests","files":[
+              {"path":"\#(calm)","replaces":"music/game/calm1","bytes":8},
+              {"path":"\#(calm2)","replaces":"music/game/calm2"}]},
+            {"id":"made-up-hal","title":"Made Up Hal","files":[{"path":"\#(hal)","replaces":"music/game/hal1","bytes":999}]}
+            """#)
+        let zip = await makePack("Made Up Songs", ["pack.mcmeta": meta, "songs.json": good, calm: "calm-one", calm2: "calm-two", hal: "hal-one", stone: "stone"])
+        let pack = try await ResourcePacks.add(zip)
+        var recipe = PackRecipe()
+        recipe.name = "made-up-songs"
+        recipe.entries = [PackRecipe.Entry(pack: pack.id, version: pack.latest!.sha1)]
+        defer { ResourcePacks.deleteRecipe(recipe.name) }
+
+        let list = await ResourcePacks.songList(for: recipe.entries[0])
+        check(list?.usable == true, "a good songs.json is usable: \(list?.problems ?? [])")
+        equal(list?.songs.map(\.id), ["made-up-calm", "made-up-hal"], "both songs, in order")
+        equal(list?.songs.first?.standsInFor, ["calm1", "calm2"], "and which vanilla tracks each stands in for")
+        equal(list?.sizes["made-up-calm"], Int64("calm-one".utf8.count + "calm-two".utf8.count), "sizes are measured from the pack")
+        check(list?.notes.contains { $0.contains(hal) && $0.contains("999") } == true, "a wrong size is noted: \(list?.notes ?? [])")
+        check(list?.notes.contains { $0.contains(calm) } == false, "a right size isn't")
+
+        let all = try await ResourcePacks.combine(recipe)
+        let allLock = ResourcePacks.loadLock(sha1: all.sha1, recipe: recipe.name)
+        check(allLock?.files.contains { $0.path == calm } == true && allLock?.files.contains { $0.path == hal } == true, "with every song on, every song is in the build")
+        check(allLock?.files.contains { $0.path == "songs.json" } == false, "the song list itself isn't a ranked file")
+        let allZip = ResourcePacks.buildFile(all, recipe: recipe.name)
+        let names = (try? await Tool.run("/usr/bin/unzip", ["-Z1", allZip.path]))?.out ?? ""
+        check(!names.contains("songs.json"), "and it isn't copied into the build")
+        let credits = (try? await Tool.run("/usr/bin/unzip", ["-p", allZip.path, "CREDITS.txt"]))?.out ?? ""
+        check(credits.contains("Made Up Calm: Nobody, made up for tests") && credits.contains("Made Up Hal"), "included songs are credited")
+
+        recipe.entries[0].songsOff = ["made-up-calm"]
+        ResourcePacks.saveRecipe(recipe)
+        equal(ResourcePacks.loadRecipe(recipe.name).entries.first?.songsOff, ["made-up-calm"], "the choice is saved with the recipe")
+        let less = try await ResourcePacks.combine(recipe)
+        check(less.sha1 != all.sha1, "switching a song off makes a different build, with its own SHA-1")
+        let lessLock = ResourcePacks.loadLock(sha1: less.sha1, recipe: recipe.name)
+        check(lessLock?.files.contains { $0.path == calm || $0.path == calm2 } == false, "every file of the song is left out, so vanilla plays")
+        check(lessLock?.files.contains { $0.path == hal } == true && lessLock?.files.contains { $0.path == stone } == true, "and nothing else is")
+        let lessCredits = (try? await Tool.run("/usr/bin/unzip", ["-p", ResourcePacks.buildFile(less, recipe: recipe.name).path, "CREDITS.txt"]))?.out ?? ""
+        check(!lessCredits.contains("Made Up Calm") && lessCredits.contains("Made Up Hal"), "and only songs still in are credited")
+        check(less.warnings.isEmpty, "no warning for a clean choice: \(less.warnings)")
+        let again = try await ResourcePacks.combine(recipe)
+        equal(again.sha1, less.sha1, "the same choice gives the same SHA-1")
+
+        // The per-build address follows the build.
+        let root = folder("pack-songs-server")
+        write("server-port=25599\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "pack-songs")
+        try c.setPackHost(address: "http://127.0.0.1:28769", port: 28769)
+        let before = c.packBuildAddress(recipe: recipe.name, sha1: all.sha1)!, after = c.packBuildAddress(recipe: recipe.name, sha1: less.sha1)!
+        check(before != after && after.hasSuffix("/\(less.sha1).zip"), "the per-build address changes with the choice")
+
+        // A recipe saved before songs existed still loads.
+        let old = #"{"name":"made-up-old","entries":[{"pack":"\#(pack.id)","version":"\#(pack.latest!.sha1)","enabled":true,"excluded":[]}],"categoryWinners":{},"winners":{}}"#
+        write(old, ResourcePacks.recipes.appendingPathComponent("made-up-old.json"))
+        let loaded = ResourcePacks.loadRecipe("made-up-old")
+        check(loaded.entries.count == 1 && loaded.entries[0].songsOff == nil, "an older recipe loads with every song on")
+        ResourcePacks.deleteRecipe("made-up-old")
+
+        // A song the pack no longer lists is reported, not ignored.
+        recipe.entries[0].songsOff = ["made-up-calm", "made-up-gone"]
+        let gone = try await ResourcePacks.combine(recipe)
+        check(gone.warnings.contains { $0.contains("made-up-gone") }, "a switched-off song the pack no longer lists is warned about: \(gone.warnings)")
+        equal(gone.sha1, less.sha1, "and changes nothing else")
+
+        // A broken list: no toggles, every song stays in, and the build says why.
+        func problems(_ text: String, files: [String: String] = [calm: "calm-one"]) -> [String] {
+            let work = folder("songs-\(UUID().uuidString.prefix(8))")
+            write(text, work.appendingPathComponent("songs.json"))
+            for (path, body) in files { write(body, work.appendingPathComponent(path)) }
+            return ResourcePacks.songList(root: work)?.problems ?? ["no list"]
+        }
+        let one = #"{"id":"a","title":"A","files":[{"path":"\#(calm)","replaces":"music/game/calm1"}]}"#
+        check(!problems(songsJSON(one + "," + one)).isEmpty, "two songs with one id are refused")
+        check(!problems(songsJSON(one + "," + #"{"id":"b","title":"B","files":[{"path":"\#(calm)","replaces":"x"}]}"#)).isEmpty, "a file claimed twice is refused")
+        check(!problems(songsJSON(#"{"id":"a","title":"A","files":[{"path":"assets/minecraft/sounds/none.ogg","replaces":"x"}]}"#)).isEmpty, "a file the pack doesn't have is refused")
+        check(!problems(songsJSON(#"{"id":"a","title":"A","files":[{"path":"assets/../pack.mcmeta","replaces":"x"}]}"#)).isEmpty, "a path that climbs out is refused")
+        check(!problems(songsJSON(#"{"id":"a","title":"A","files":[{"path":"pack.mcmeta","replaces":"x"}]}"#)).isEmpty, "a path outside assets/ is refused")
+        check(!problems(songsJSON(#"{"id":"Not OK","title":"A","files":[{"path":"\#(calm)","replaces":"x"}]}"#)).isEmpty, "an id that isn't lowercase with hyphens is refused")
+        check(problems(songsJSON(one, format: 2)).first?.contains("format 2") == true, "a newer format says so")
+        check(!problems("not json").isEmpty, "unreadable JSON is refused")
+        check(problems(songsJSON(one)).isEmpty, "while a good one passes")
+
+        let brokenZip = await makePack("Made Up Broken Songs", ["pack.mcmeta": meta, "songs.json": songsJSON(one + "," + one), calm: "calm-one", stone: "stone"])
+        let broken = try await ResourcePacks.add(brokenZip)
+        var b = PackRecipe()
+        b.name = "made-up-broken-songs"
+        b.entries = [PackRecipe.Entry(pack: broken.id, version: broken.latest!.sha1)]
+        b.entries[0].songsOff = ["a"]
+        defer { ResourcePacks.deleteRecipe(b.name) }
+        let brokenBuild = try await ResourcePacks.combine(b)
+        check(ResourcePacks.loadLock(sha1: brokenBuild.sha1, recipe: b.name)?.files.contains { $0.path == calm } == true, "with a broken list, nothing is left out on a guess")
+        check(brokenBuild.warnings.contains { $0.contains("every song is included") }, "and the build says so: \(brokenBuild.warnings)")
+        try await ResourcePacks.remove(broken)
+        try await ResourcePacks.remove(pack)
+    } catch { failures.append("songs in a pack threw: \(error)") }
 }
 
 @MainActor func exactPackChecks() async {
