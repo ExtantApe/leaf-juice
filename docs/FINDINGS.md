@@ -199,6 +199,12 @@ Observed on a throwaway Paper 1.21.11 with Multiverse-Core 5.8.2, LuckPerms 5.5.
 - **Tiles and live data:** each map has `textures.json.gz`, `settings.json`, `tiles/`, `live/` and `rstate`. Tiles are served chunked, with `Cache-Control: public, max-age=86400`. Live player positions come from `/maps/<id>/live/players.json` and include names and coordinates.
 - **Downloads:** BlueMap downloads Mojang's client jar once its `accept-download` is set to true.
 
+## Paper 26.x for the real tests
+
+- **The allowlist:** with no `white-list` line in `server.properties`, Paper 26.3 refused a bot that wasn't on the allowlist ("You are not whitelisted on this server!"). On 1.21.11 the same file let it in. The real tests now set `white-list=false` themselves. Not checked: whether 26.1.2 and 26.2 do the same, or what 26.3 wrote into the file.
+- **Latchkey on 26.x:** the `--real-signin` test passed on Paper 26.1.2, 26.2 and 26.3 with Latchkey built for 26.1, with `paper-plugin.yml` and a Brigadier `/signin`. `/execute as` from the console or an op made no link for another player.
+- **Restarting the pack server:** a restart on the same port sometimes found the old socket still open, and failed in 3 of 6 test runs. It now tries again every 0.2 s for up to 2 s. It passed 6 of 6 runs after that.
+
 ## Not known yet
 
 - Anything about plugins beyond Multiverse and LuckPerms, in play.

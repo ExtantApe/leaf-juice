@@ -232,15 +232,28 @@ public final class PackHost: @unchecked Sendable {
 
     public func start(port: Int) throws {
         guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(clamping: port)) else { throw LeafError("\(port) isn't a usable port.") }
+        try listen(on: endpointPort, port: port, triesLeft: 10)
+    }
+
+    /// A host that was just stopped closes its socket a moment later, so a restart on the same port can find it
+    /// still taken. Observed in tests: tries again every 0.2 s, for up to 2 s, before reporting the port as unusable.
+    private func listen(on endpointPort: NWEndpoint.Port, port: Int, triesLeft: Int) throws {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: endpointPort)
         parameters.acceptLocalOnly = true
         parameters.allowLocalEndpointReuse = true
         let created = try NWListener(using: parameters)
-        created.stateUpdateHandler = { [weak self] state in
+        created.stateUpdateHandler = { [weak self, weak created] state in
             guard let self else { return }
             switch state {
             case .ready: self.setListening(true)
+            case let .failed(error) where error == .posix(.EADDRINUSE) && triesLeft > 0:
+                created?.cancel()
+                self.queue.asyncAfter(deadline: .now() + 0.2) {
+                    // stop() clears the listener, and then there's nothing to retry.
+                    guard let created, self.listener === created else { return }
+                    do { try self.listen(on: endpointPort, port: port, triesLeft: triesLeft - 1) } catch { self.stop() }
+                }
             case let .failed(error):
                 self.stop()
                 let message = "Port \(port) couldn't be used: \(error.localizedDescription)"

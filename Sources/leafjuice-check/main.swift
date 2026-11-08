@@ -14,6 +14,7 @@
 //                                      Real BlueMap, Multiverse and LuckPerms behind the sign-in page, on a throwaway server.
 //   ... --real-pack --i-accept-the-minecraft-eula
 //                                      A throwaway Paper server and bots, with made-up packs served by Leaf Juice.
+//   ... --mc <version>                 The version --real-map, --real-prejoin, --real-signin and --real-pack boot. 26.3 by default.
 //   ... --real-paper --i-accept-the-minecraft-eula
 //                                      Boots real Paper. The second flag is your own acceptance of
 //                                      https://aka.ms/MinecraftEULA, for a throwaway server in a temp folder.
@@ -44,8 +45,31 @@ if let flag = CommandLine.arguments.firstIndex(of: "--demo-packs") {
     exit(0)
 }
 
+/// The Minecraft version the real map, pre-join, sign-in and pack tests boot: `--mc <version>`, 26.3 by default.
+/// Plugins now target 26.1 and later, so 1.21.11 is only used by tests that upgrade from it.
+let realMC: String = {
+    guard let flag = CommandLine.arguments.firstIndex(of: "--mc"), flag + 1 < CommandLine.arguments.count else { return "26.3" }
+    return CommandLine.arguments[flag + 1]
+}()
+
 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("leafjuice-check-\(UUID().uuidString)", isDirectory: true)
 try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+// Real-server runs leave hundreds of MB here, so every exit deletes it, and says so if it can't.
+atexit { cleanUpScratch() }
+
+func cleanUpScratch() {
+    guard FileManager.default.fileExists(atPath: scratch.path) else { return }
+    do { try FileManager.default.removeItem(at: scratch) } catch {
+        // A jar or a server can leave read-only files behind.
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = ["-R", "u+w", scratch.path]
+        try? chmod.run(); chmod.waitUntilExit()
+        do { try FileManager.default.removeItem(at: scratch) } catch {
+            print("Couldn't delete the test folder \(scratch.path): \(error.localizedDescription)")
+        }
+    }
+}
 setenv("LEAFJUICE_HOME", scratch.appendingPathComponent("home").path, 1)
 setenv("LEAFJUICE_SERVERS", scratch.appendingPathComponent("servers").path, 1)
 defer { try? FileManager.default.removeItem(at: scratch) }
@@ -2124,7 +2148,7 @@ if let flag = CommandLine.arguments.firstIndex(of: "--experiments") {
         exit(2)
     }
     await runExperiments(CommandLine.arguments[flag + 1].components(separatedBy: ","))
-    try? FileManager.default.removeItem(at: scratch)
+    cleanUpScratch()
     exit(0)
 }
 
@@ -2238,7 +2262,7 @@ if CommandLine.arguments.contains("--sandbox") {
         exit(2)
     }
     await runSandbox()
-    try? FileManager.default.removeItem(at: scratch)
+    cleanUpScratch()
     print("\n\(passed) passed, \(failures.count) failed")
     for failure in failures { print("  - \(failure)") }
     exit(failures.isEmpty ? 0 : 1)
@@ -2310,10 +2334,10 @@ if CommandLine.arguments.contains("--real-paper") {
     do {
         let port = 25593, pagePort = 28795, mapPort = 28100
         let root = folder("real-map")
-        write("server-port=\(port)\nonline-mode=false\nnetwork-compression-threshold=-1\nview-distance=3\nsimulation-distance=3\nlevel-type=minecraft\\:flat\nspawn-protection=0\n", root.appendingPathComponent("server.properties"))
+        write("server-port=\(port)\nonline-mode=false\nwhite-list=false\nnetwork-compression-threshold=-1\nview-distance=3\nsimulation-distance=3\nlevel-type=minecraft\\:flat\nspawn-protection=0\n", root.appendingPathComponent("server.properties"))
         let c = try await ServerController.adopt(root: root, name: "real-map")
         try EULA.accept(c.paths)
-        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")!)
+        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!)
         for source in [PluginSource.modrinth(project: "luckperms", allowBeta: false), Multiverse.source, .modrinth(project: "bluemap", allowBeta: false)] { try await c.addPlugin(source: source) }
         c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
         defer { c.stopLinksPage(); c.forceStop(); c.stopTicker() }
@@ -2341,7 +2365,7 @@ if CommandLine.arguments.contains("--real-paper") {
         check(server.onlyThisMac && server.port == mapPort, "BlueMap's settings read back: \(server)")
         equal(MapGateway.mapWorlds(in: bluemap.appendingPathComponent("maps"))?["madeup_magic"], "madeup_magic", "each map's world is read")
 
-        let table = try await ProtocolTable.load(mc: "1.21.11", cache: folder("real-map-protocol"), java: c.resolvedJava()?.path ?? "")
+        let table = try await ProtocolTable.load(mc: realMC, cache: folder("real-map-protocol"), java: c.resolvedJava()?.path ?? "")
         let viewerBot = try await join("MadeUpViewer", c, table, port: port)
         let otherBot = try await join("MadeUpOther", c, table, port: port)
         guard let viewer = c.playerUUIDs["MadeUpViewer"], let other = c.playerUUIDs["MadeUpOther"] else { throw LeafError("no player ids") }
@@ -2447,7 +2471,7 @@ if CommandLine.arguments.contains("--real-paper") {
         write("server-port=\(port)\nonline-mode=\(online)\nnetwork-compression-threshold=-1\nwhite-list=true\nenforce-whitelist=true\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
         let c = try await ServerController.adopt(root: root, name: name)
         try EULA.accept(c.paths)
-        let build = try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")!
+        let build = try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!
         try await c.installSoftware(build)
         try await c.addPlugin(source: .modrinth(project: "luckperms", allowBeta: false))
         c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
@@ -2542,7 +2566,7 @@ if CommandLine.arguments.contains("--real-paper") {
         var settings = c.playerAccessSettings
         settings.grantable = ["madeup-one"]
         c.playerAccessSettings = settings
-        let table = try await ProtocolTable.load(mc: "1.21.11", cache: folder("prejoin-protocol"), java: c.resolvedJava()?.path ?? "")
+        let table = try await ProtocolTable.load(mc: realMC, cache: folder("prejoin-protocol"), java: c.resolvedJava()?.path ?? "")
         let early = try Bot(name: name, port: 25589, table: table)
         try? await Task.sleep(for: .seconds(4))
         check(!early.inGame, "before being added, the allowlist keeps them out")
@@ -2989,11 +3013,11 @@ func localAddresses() -> [String] {
     section("REAL SIGN-IN (EULA accepted by the person running this)")
     do {
         let root = folder("real-signin")
-        write("server-port=25593\nonline-mode=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nmotd=made up message\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        write("server-port=25593\nonline-mode=false\nwhite-list=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nmotd=made up message\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
         let c = try await ServerController.adopt(root: root, name: "Real sign-in test")
         defer { c.forceStop(); c.stopTicker(); c.stopLinksPage() }
         try EULA.accept(c.paths)
-        let build = try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")!
+        let build = try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!
         try await c.installSoftware(build)
         try FileOps.ensureDir(c.paths.plugins)
         try FileManager.default.copyItem(at: URL(fileURLWithPath: jar), to: c.paths.plugins.appendingPathComponent("Latchkey.jar"))
@@ -3014,7 +3038,7 @@ func localAddresses() -> [String] {
         await checkUntil(5, "page up") { c.linksListener?.isListening == true }
 
         let java = c.resolvedJava()?.path ?? ""
-        let table = try await ProtocolTable.load(mc: "1.21.11", cache: folder("signin-protocol"), java: java)
+        let table = try await ProtocolTable.load(mc: realMC, cache: folder("signin-protocol"), java: java)
         let bot = try Bot(name: "MadeUpBot", port: 25593, table: table)
         defer { bot.leave() }
         await checkUntil(60, "bot in game: \(bot.disconnectReason ?? "")") { bot.inGame }
@@ -3062,6 +3086,27 @@ func localAddresses() -> [String] {
         check(inside.contains("Latchkey"), "and lists what's shared")
         equal(c.linksWeb?.signedIn.first?.name, "MadeUpBot", "the app shows them signed in")
         equal(c.linksWeb?.signedIn.first?.uuid, (try JSONSerialization.jsonObject(with: Data(contentsOf: c.paths.root.appendingPathComponent("whitelist.json"))) as? [[String: Any]])?.first?["uuid"] as? String, "by the same account the server knows")
+
+        // /execute as changes who runs a command, never who asked: nobody gets a link made for someone else.
+        let other = try Bot(name: "OtherBot", port: 25593, table: table)
+        defer { other.leave() }
+        await checkUntil(60, "second bot in game: \(other.disconnectReason ?? "")") { other.inGame }
+        c.send("whitelist add OtherBot")
+        try? await Task.sleep(for: .seconds(2))
+        func linkFor(_ name: String) -> Bool {
+            FileOps.children(pending).contains { ((try? String(contentsOf: $0, encoding: .utf8)) ?? "").contains("\"\(name)\"") }
+        }
+        c.send("execute as OtherBot run signin")
+        try? await Task.sleep(for: .seconds(3))
+        check(!linkFor("OtherBot"), "the console can't make a link for a player with execute as")
+        bot.command("execute as OtherBot run signin")
+        try? await Task.sleep(for: .seconds(3))
+        check(!linkFor("OtherBot"), "an op can't make one for a player without the permission")
+        check(!other.privateMessages.contains { $0.contains("/signin#") }, "and that player is never sent a link")
+        other.command("signin")
+        try? await Task.sleep(for: .seconds(2))
+        check(!linkFor("OtherBot") && !other.privateMessages.contains { $0.contains("/signin#") }, "nor can they ask themselves")
+        other.leave()
 
         c.send("whitelist remove MadeUpBot")
         await checkUntil(10, "removed from the allowlist on disk") { ((try? String(contentsOf: c.paths.root.appendingPathComponent("whitelist.json"), encoding: .utf8)) ?? "").contains("MadeUpBot") == false }
@@ -3192,15 +3237,15 @@ func localAddresses() -> [String] {
     do {
         let port = 25591, hostPort = 28770
         let root = folder("real-pack")
-        write("server-port=\(port)\nonline-mode=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        write("server-port=\(port)\nonline-mode=false\nwhite-list=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
         let c = try await ServerController.adopt(root: root, name: "real-pack")
         try EULA.accept(c.paths)
-        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")!)
+        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!)
         c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
         defer { c.stopPackHost(); c.forceStop(); c.stopTicker() }
         let runtimes = await JavaManager.discover()
         guard let java = JavaManager.best(for: 21, in: runtimes) else { failures.append("no Java 21"); return }
-        let table = try await ProtocolTable.load(mc: "1.21.11", cache: folder("real-pack-protocol"), java: java.path)
+        let table = try await ProtocolTable.load(mc: realMC, cache: folder("real-pack-protocol"), java: java.path)
 
         let first = try await ResourcePacks.add(await makePack("Made Up First", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"first"}}"#, "assets/minecraft/textures/block/stone.png": "first"]))
         let second = try await ResourcePacks.add(await makePack("Made Up Second", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"second"}}"#, "assets/minecraft/textures/block/stone.png": "second"]))
@@ -4682,7 +4727,7 @@ func residentBytes() -> UInt64 {
         check(moduleRefused, "with the module off it won't start")
         Modules.shared.set(.resourcePacks, on: true)
         try c.startPackHost()
-        await checkUntil(5, "listening again") { c.packHostIsListening }
+        await checkUntil(5, "listening again: \(c.packHostError ?? "no error")") { c.packHostIsListening }
         Modules.shared.set(.resourcePacks, on: false)
         _ = await rawRequest(port: port, "GET /\(token)/pack.zip.sha1 HTTP/1.1\r\nHost: x\r\n\r\n")
         Modules.shared.set(.resourcePacks, on: true)
@@ -5217,7 +5262,7 @@ func residentBytes() -> UInt64 {
 }
 
 try? await Task.sleep(for: .seconds(1))
-try? FileManager.default.removeItem(at: scratch)
+cleanUpScratch()
 print("\n\(passed) passed, \(failures.count) failed")
 for failure in failures { print("  - \(failure)") }
 exit(failures.isEmpty ? 0 : 1)

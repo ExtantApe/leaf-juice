@@ -285,7 +285,7 @@ struct IdentifyCard: View {
                         }
                         ForEach(jars, id: \.self) { Text($0).tag($0) }
                     }
-                    TextField("Minecraft version", text: $server.profile.software.mcVersion, prompt: Text("1.21.11"))
+                    TextField("Minecraft version", text: $server.profile.software.mcVersion, prompt: Text("26.3"))
                     TextField("Build", value: $server.profile.software.build, format: .number.grouping(.never), prompt: Text("Optional"))
                     Hint("This only changes what Leaf Juice believes is installed. Plugin compatibility and updates rely on it.")
                 }
