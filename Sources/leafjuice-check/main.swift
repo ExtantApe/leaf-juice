@@ -4371,9 +4371,24 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
         try? await Task.sleep(for: .milliseconds(100))
         let afterNew = await PackHosting.check(url: address, expected: ownSHA)
         equal(afterNew.outcome, .status(404), "after New Address, a plugin still using the old one gets nothing")
-        // Closing Leaf Juice: nothing answers.
-        c.stopPackHost()
-        let closed = await PackHosting.check(url: c.packAddressTemplate(recipe: "madeup-hud")!.replacingOccurrences(of: "{sha1}", with: second.sha1), expected: second.sha1)
+        // Quitting, renaming the server's folder and opening it again, as the app does at launch: the same address answers.
+        let kept = c.packAddressTemplate(recipe: "madeup-hud")!.replacingOccurrences(of: "{sha1}", with: second.sha1)
+        c.stopPackHost(remember: false)
+        let quit = await PackHosting.check(url: kept, expected: second.sha1)
+        check(!quit.ok, "with the app closed, nothing answers")
+        let renamed = root.deletingLastPathComponent().appendingPathComponent("exact-packs-renamed", isDirectory: true)
+        try FileManager.default.moveItem(at: root, to: renamed)
+        guard let reopened = ServerController.open(root: renamed) else { failures.append("the renamed folder didn't open"); return }
+        defer { reopened.stopPackHost(); reopened.stopTicker() }
+        reopened.startPackHostIfWanted()
+        await checkUntil(5, "serving again after the rename: \(reopened.packHostError ?? "no error")") { reopened.packHostIsListening }
+        equal(reopened.packAddressTemplate(recipe: "madeup-hud")!.replacingOccurrences(of: "{sha1}", with: second.sha1), kept, "the address is the same after the rename")
+        try? await Task.sleep(for: .milliseconds(100))
+        let back = await PackHosting.check(url: kept, expected: second.sha1)
+        check(back.ok, "and it gives the same file: \(back.summary)")
+        // Stopping serving: nothing answers.
+        reopened.stopPackHost()
+        let closed = await PackHosting.check(url: kept, expected: second.sha1)
         check(!closed.ok, "with serving stopped, nothing answers")
     } catch { failures.append("exact packs threw: \(error)") }
 }

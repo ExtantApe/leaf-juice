@@ -110,6 +110,8 @@ final class AppModel {
             for server in servers where server.linksPageSettings.on && !server.isLab {
                 do { try server.startLinksPage() } catch { server.linksPageError = error.localizedDescription }
             }
+            // A server can be running when the app opens, and its players still need the pack's address to answer.
+            servers.forEach { $0.startPackHostIfWanted() }
         }
         servers.forEach(Alerts.connect)
         Alerts.ask()
