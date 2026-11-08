@@ -4394,6 +4394,9 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     bad = props; bad["plugin.BrokenThing.files"] = "../outside.jar"
     let sneaky = PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x")
     check(sneaky.blocked.contains { $0.name == "BrokenThing" } && !sneaky.canApply, "a file outside plugins/ is never touched")
+    bad = props; bad["preflight.on-failure"] = "LOCKDOWN"; bad["preflight.unreadable-jars"] = "Junk.jar"
+    let odd = PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x")
+    check(odd.warnings.contains { $0.contains("LOCKDOWN") } && odd.warnings.contains { $0.contains("Junk.jar") }, "a run that didn't warn, and an unreadable jar, are both flagged")
     let clean = PluginUpgradePlan.make(report: PreflightReport.parse(report(base)), rules: nil, target: "x")
     check(clean.allClear && !clean.canApply, "nothing to switch off is all clear")
 

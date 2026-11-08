@@ -33,6 +33,9 @@ public struct PreflightReport: Equatable, Sendable {
     public var serverVersion: String?
     public var finishedAt: String?
     public var serverChecks: String?
+    public var onFailure: String?
+    /// Not a valid jar, broken YAML or no name. The same file is just as broken on any version.
+    public var unreadableJars: [String] = []
     public var plugins: [String: Plugin] = [:]
     public var tests: [String: Test] = [:]
 
@@ -51,6 +54,8 @@ public struct PreflightReport: Equatable, Sendable {
             case "preflight.version": out.preflightVersion = value
             case "preflight.finished-at": out.finishedAt = value
             case "preflight.server-checks": out.serverChecks = value
+            case "preflight.on-failure": out.onFailure = value
+            case "preflight.unreadable-jars": out.unreadableJars = list(value)
             case "server.minecraft-version": out.minecraft = value
             case "server.version": out.serverVersion = value
             default:
@@ -212,6 +217,12 @@ public struct PluginUpgradePlan: Equatable, Sendable {
             }
         }
 
+        if let mode = report.onFailure, mode != "WARN" {
+            plan.warnings.append("Preflight ran with on-failure \(mode) instead of WARN, so later checks may not have run. Treat this plan with care.")
+        }
+        for jar in report.unreadableJars {
+            plan.warnings.append("\(jar) isn't a readable plugin jar, on any version. Remove it or replace it by hand.")
+        }
         for test in report.tests.values.sorted(by: { $0.id < $1.id }) where test.failed && test.severity == "warning" {
             plan.warnings.append("\(test.id) warned" + (test.message.map { ": \($0)" } ?? "."))
         }
