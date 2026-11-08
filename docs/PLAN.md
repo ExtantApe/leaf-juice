@@ -28,6 +28,23 @@ a single local app with no web server, no daemon and no container.
 | **No AI at runtime** | Rules are a data table with a tested sample per rule. Anything unmatched is still catalogued and grouped. "Copy report" lets a person paste it wherever they like. |
 | **Unsigned, GitHub Releases only** | Ad-hoc signed; the README explains first launch. In-app "update available" notice links to the release; no self-updater. |
 
+### Owner decisions
+
+Settled by the owner. Follow them without asking again.
+
+| Date | Decision |
+|---|---|
+| 2026-11-07 | The repo lives at `ExtantApe/leaf-juice`, MIT, "Copyright (c) 2026 EXTANT APE". The bundle identifier stays `io.github.mgilardi.leafjuice`. |
+| 2026-11-07 | v0.1.0 is the plugin links work only. Everything else was merged into `main` after it. |
+| 2026-11-07 | Three commit messages pushed by mistake (`cb44c87`, `afd4ce8`, `b345332`) stay. No history rewrite, no force-push. A pre-push hook checks messages from now on. |
+| 2026-11-07 | Plugins target Paper 26.1 and later only, so the real tests boot 26.x. 1.21.11 is only for tests that upgrade from it. |
+| 2026-11-07 | One test server per session at a time, stopped when the run ends, with no copies left between runs. |
+| Before 2026-11-07 | A player sees a world's map only if they can enter that world. If that can't be read reliably, they see no maps. |
+| Before 2026-11-07 | The map stays open directly until the gateway ships on a real server. That server's BlueMap change is made separately. |
+| Before 2026-11-07 | An exact pack can be served unchanged under its own SHA-1. The screen states both risks: it's offline while Leaf Juice is closed, and New Address breaks the address. |
+| Before 2026-11-07 | Real servers wait for the owner's go. The allowlist screen stays off real servers for children's and adults' groups until Stationmaster exists and Leaf Juice calls it. Children's safety and privacy come first. |
+| Open | Plugins on upgrade: whether to turn plugins that don't fit off before a 26.x move and back on after. A proposal is waiting for an answer. |
+
 ## The Change Queue
 
 Every change falls into one of two cases, decided by whether the server is running:
