@@ -4397,6 +4397,15 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     bad = props; bad["preflight.on-failure"] = "LOCKDOWN"; bad["preflight.unreadable-jars"] = "Junk.jar"
     let odd = PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x")
     check(odd.warnings.contains { $0.contains("LOCKDOWN") } && odd.warnings.contains { $0.contains("Junk.jar") }, "a run that didn't warn, and an unreadable jar, are both flagged")
+    // Preflight 0.2.0's own sample from a real 26.3 boot with broken made-up plugins (fixtures/, from ExtantApe/Preflight).
+    let sampleURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fixtures/preflight-report-26.3.xml")
+    let sample = (try? Data(contentsOf: sampleURL)).flatMap(PreflightReport.parse)
+    check(sample?.minecraft == "26.3" && sample?.onFailure == "WARN" && sample?.unreadableJars == ["Corrupt.jar"], "Preflight's real 26.3 sample is read")
+    let samplePlan = PluginUpgradePlan.make(report: sample, rules: nil, target: "Paper 26.3")
+    equal(samplePlan.off.map(\.name), ["BadApi", "BrokenEnable", "FailingTests", "MissingDep", "NeedsBadApi", "NoMainClass", "PaperDependsOnFailing"], "from it: every broken plugin, the one Paper enabled without its dependency, and the one that needs a failing plugin")
+    check(!samplePlan.off.contains { ["Preflight", "PreflightExample"].contains($0.name) }, "and nothing that works")
+    check(samplePlan.off.first { $0.name == "PaperDependsOnFailing" }?.why == ["Off because FailingTests is off."], "a dependent says why")
+    check(samplePlan.warnings.contains { $0.contains("Corrupt.jar") }, "the corrupt jar is listed for a person")
     let clean = PluginUpgradePlan.make(report: PreflightReport.parse(report(base)), rules: nil, target: "x")
     check(clean.allClear && !clean.canApply, "nothing to switch off is all clear")
 
