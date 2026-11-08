@@ -3,7 +3,7 @@ import Foundation
 
 public enum LeafJuice {
     public static let version = "0.1.0"
-    public static let repository = "mgilardi/leaf-juice"
+    public static let repository = "ExtantApe/leaf-juice"
     public static let userAgent = "LeafJuice/\(version) (https://github.com/\(repository))"
 }
 

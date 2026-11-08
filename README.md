@@ -185,7 +185,7 @@ BlueMap's own web server must stop answering anyone else, or the sign-in can be 
 
 ## Install
 
-1. Download the `.dmg` from [Releases](https://github.com/mgilardi/leaf-juice/releases) and drag Leaf Juice to Applications.
+1. Download the `.dmg` from [Releases](https://github.com/ExtantApe/leaf-juice/releases) and drag Leaf Juice to Applications.
 2. Leaf Juice is free and unsigned (Apple charges for signing), so macOS blocks the first launch. Allow it one of two ways:
 
    **Terminal (quickest):**
@@ -203,7 +203,7 @@ You only need to do this once per download. Requires macOS 14 or later, on Apple
 Unsure about running an unsigned app? It's reasonable to be. You can read the code and build it yourself:
 
 ```bash
-git clone https://github.com/mgilardi/leaf-juice.git
+git clone https://github.com/ExtantApe/leaf-juice.git
 ```
 
 ```bash
