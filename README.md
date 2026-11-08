@@ -45,6 +45,7 @@ Not affiliated with Mojang or Microsoft.
   the plan says to wait. Switching off happens only after you confirm, only while the server is stopped, and only after Leaf Juice's
   verified whole-server restore point; the tool keeps its own copy of the jars too. Each plugin can be switched back on from the
   Software page. A pass means a plugin starts, not that it works.
+- **Rotates server icons**: keep icons in the server's `server-icons` folder and pick one on the Overview page. It's copied over `server-icon.png`, which Minecraft reads at the next start. Added images must be square, and are scaled to 64×64 with nearest-neighbour so pixel art stays sharp. Nothing in the folder is moved or deleted, and an icon in use that isn't in the folder yet is saved there first.
 - **Renames deeply**: a world or the whole server, across known config files, with a preview, a restore point and undo.
 - **Looks after players**: inventory snapshots every 15 minutes of play, per world with Multiverse-Inventories, restored without touching the world. Merges
   duplicate profiles, and shows who was on and when.

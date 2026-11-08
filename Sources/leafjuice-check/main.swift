@@ -1,3 +1,5 @@
+import CoreGraphics
+import ImageIO
 // Self-tests, runnable with just the Command Line Tools.
 //   swift run leafjuice-check          Offline suite, plus the full server lifecycle against a small
 //                                      stand-in jar (compiled here if a JDK is available). No Minecraft.
@@ -4395,6 +4397,85 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     await exactPackChecks()
     await packSongChecks()
     await pluginUpgradeChecks()
+    await serverIconChecks()
+}
+
+/// A made-up square or oblong image, with one corner pixel a different colour so scaling can be seen.
+func madeUpImage(_ w: Int, _ h: Int, to url: URL, type: CFString = "public.png" as CFString, blue: CGFloat = 0.3) {
+    let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(red: 0.2, green: 0.6, blue: blue, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    ctx.setFillColor(red: 1, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: max(1, w / 8), height: max(1, h / 8)))
+    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let dest = CGImageDestinationCreateWithURL(url as CFURL, type, 1, nil)!
+    CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
+    CGImageDestinationFinalize(dest)
+}
+
+@MainActor func serverIconChecks() async {
+    print("• Server icons")
+    do {
+        let root = folder("server-icons")
+        let paths = ServerPaths(root: root)
+        let incoming = folder("icons-incoming")
+        equal(ServerIcons.list(paths).count, 0, "no folder means no icons, and nothing is made just by looking")
+        check(!FileOps.exists(ServerIcons.folder(paths)), "the folder isn't created by looking")
+
+        // The icon in use isn't in the folder: it's kept before anything replaces it.
+        madeUpImage(64, 64, to: ServerIcons.active(paths))
+        let original = try Data(contentsOf: ServerIcons.active(paths))
+        check(ServerIcons.activeIsUnsaved(paths), "an icon in use that isn't in the folder is noticed")
+
+        madeUpImage(64, 64, to: incoming.appendingPathComponent("Made Up Emblem.png"))
+        madeUpImage(256, 256, to: incoming.appendingPathComponent("Big Square.png"), blue: 0.9)
+        madeUpImage(100, 64, to: incoming.appendingPathComponent("wide.png"))
+        madeUpImage(32, 32, to: incoming.appendingPathComponent("small.jpg"), type: "public.jpeg" as CFString, blue: 0.6)
+
+        let emblem = try ServerIcons.add(incoming.appendingPathComponent("Made Up Emblem.png"), paths: paths)
+        // The made-up 64 is identical to the one in use, so it's recognised as that.
+        if case let .added(file) = emblem { equal(file.lastPathComponent, "made-up-emblem.png", "added under a plain name") } else { failures.append("emblem: \(emblem)") }
+        check(!ServerIcons.activeIsUnsaved(paths), "once the same image is in the folder, the one in use is found by its contents")
+        equal(ServerIcons.list(paths).first { $0.inUse }?.name, "made-up-emblem", "and marked in use")
+        if case let .alreadyThere(file) = try ServerIcons.add(incoming.appendingPathComponent("Made Up Emblem.png"), paths: paths) { equal(file.lastPathComponent, "made-up-emblem.png", "adding the same image again adds nothing") } else { failures.append("the same image was added twice") }
+
+        let big = try ServerIcons.add(incoming.appendingPathComponent("Big Square.png"), paths: paths)
+        guard case let .scaled(bigFile, from) = big else { failures.append("big: \(big)"); return }
+        equal(from, 256, "a bigger square is scaled")
+        let bigChoice = ServerIcons.list(paths).first { $0.file.lastPathComponent == bigFile.lastPathComponent }
+        check(bigChoice?.fits == true, "to 64×64: \(bigChoice.map { "\($0.width)×\($0.height)" } ?? "missing")")
+        let small = try ServerIcons.add(incoming.appendingPathComponent("small.jpg"), paths: paths)
+        if case let .scaled(file, 32) = small { check(file.pathExtension == "png" && (ServerIcons.list(paths).first { $0.file.lastPathComponent == file.lastPathComponent }?.fits == true), "a small JPEG becomes a 64×64 PNG") } else { failures.append("small: \(small)") }
+        var refusal = ""
+        do { _ = try ServerIcons.add(incoming.appendingPathComponent("wide.png"), paths: paths) } catch { refusal = error.localizedDescription }
+        check(refusal.contains("100×64") && refusal.contains("square"), "an oblong image is refused, saying why: \(refusal)")
+        write("not an image", incoming.appendingPathComponent("fake.png"))
+        var unreadable = ""
+        do { _ = try ServerIcons.add(incoming.appendingPathComponent("fake.png"), paths: paths) } catch { unreadable = error.localizedDescription }
+        check(unreadable.contains("isn't an image"), "a file that isn't an image is refused")
+
+        // Picking copies over server-icon.png and touches nothing in the folder.
+        let before = Set(FileOps.children(ServerIcons.folder(paths)).map(\.lastPathComponent))
+        try ServerIcons.use(bigChoice!, paths: paths)
+        equal(try Data(contentsOf: ServerIcons.active(paths)), try Data(contentsOf: bigFile), "the picked icon is the one Paper reads")
+        equal(ServerIcons.list(paths).filter(\.inUse).map(\.name), [bigChoice!.name], "and only it is marked in use")
+        equal(Set(FileOps.children(ServerIcons.folder(paths)).map(\.lastPathComponent)), before, "nothing in the folder moved")
+        check(ServerIcons.list(paths).contains { (try? Data(contentsOf: $0.file)) == original }, "the earlier icon is still there to pick again")
+
+        // An oversized file dropped into the folder by hand is listed but can't be picked.
+        madeUpImage(128, 128, to: ServerIcons.folder(paths).appendingPathComponent("dropped-in.png"), blue: 0.1)
+        let dropped = ServerIcons.list(paths).first { $0.name == "dropped-in" }
+        check(dropped?.fits == false, "a wrong-size file in the folder is listed as not usable")
+        var wrongSize = ""
+        do { try ServerIcons.use(dropped!, paths: paths) } catch { wrongSize = error.localizedDescription }
+        check(wrongSize.contains("128×128"), "and picking it says why")
+
+        // An icon in use that matches nothing is kept as previous-icon before another is picked.
+        madeUpImage(48, 48, to: incoming.appendingPathComponent("odd.png"), blue: 0.5)
+        try FileManager.default.removeItem(at: ServerIcons.active(paths))
+        try FileManager.default.copyItem(at: incoming.appendingPathComponent("odd.png"), to: ServerIcons.active(paths))
+        let odd = try Data(contentsOf: ServerIcons.active(paths))
+        try ServerIcons.use(ServerIcons.list(paths).first { $0.name == "made-up-emblem" }!, paths: paths)
+        equal(try? Data(contentsOf: ServerIcons.folder(paths).appendingPathComponent("previous-icon.png")), odd, "the unsaved icon was kept as previous-icon before being replaced")
+    } catch { failures.append("server icons threw: \(error)") }
 }
 
 @MainActor func pluginUpgradeChecks() async {
