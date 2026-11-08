@@ -36,14 +36,15 @@ Not affiliated with Mojang or Microsoft.
   Scheduled, with retention and pinning.
 - **Tries changes on a test copy first**: clones the server, applies an upgrade, plugin update or rename there, boots it and reports back, with
   nothing reaching the real server. If a plugin is the problem, it can find which one.
-- **Switches off plugins that won't start on a new version**: with the [Preflight](https://github.com/ExtantApe/Preflight) plugin
-  (0.2.0 or later) installed, Check with Preflight boots a test copy on the new version and reads Preflight's report. It lists
-  the plugins that didn't load, didn't start or failed a critical check, plus everything that needs them. Warnings are listed for
-  you to decide, and nothing is switched off for them. A per-server list in `.leafjuice/upgrade-rules.json` names plugins that must
-  never be switched off, and the plan says the upgrade should wait if one of them would have to go. That file also holds
-  things to check by hand afterwards. Switching off happens only after you confirm, only while the server is stopped, and
-  only after a verified restore point. Each plugin can be switched back on from the Software page. A Preflight pass means a
-  plugin starts, not that it works.
+- **Switches off plugins that won't start on a new version**, using Preflight's upgrade tool
+  ([`preflight-upgrade`](https://github.com/ExtantApe/Preflight/blob/main/docs/upgrade.md), downloaded once and checked against a
+  pinned SHA-256; it needs Java 25, and works for Paper only). Check with Preflight copies the server with saving paused, and the tool
+  boots the copy on the new version. It lists the plugins that didn't load, didn't start or failed a critical check, plus everything
+  that needs them. Warnings, and plugins that couldn't be checked in the copy, are only listed. Never-off rules and things to check by hand live in
+  `plugins/Preflight/upgrade/rules.json`, the tool's own file, so they work without Leaf Juice too. If a never-off plugin would have to go,
+  the plan says to wait. Switching off happens only after you confirm, only while the server is stopped, and only after Leaf Juice's
+  verified whole-server restore point; the tool keeps its own copy of the jars too. Each plugin can be switched back on from the
+  Software page. A pass means a plugin starts, not that it works.
 - **Renames deeply**: a world or the whole server, across known config files, with a preview, a restore point and undo.
 - **Looks after players**: inventory snapshots every 15 minutes of play, per world with Multiverse-Inventories, restored without touching the world. Merges
   duplicate profiles, and shows who was on and when.

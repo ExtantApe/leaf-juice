@@ -45,7 +45,7 @@ Settled by the owner. Follow them without asking again.
 | Before 2026-11-07 | Real servers wait for the owner's go. The allowlist screen stays off real servers for children's and adults' groups until Stationmaster exists and Leaf Juice calls it. Children's safety and privacy come first. |
 | 2026-11-08 | Per-song toggles: a pack can list its songs in `songs.json`, and each recipe can leave any song out so Minecraft's own track plays. Each choice is a new build with its own SHA-1 and per-build address. A private pack that uses this stays unserved until the owner's in-game test. |
 | 2026-11-08 | Plugins on upgrade: build it, after the per-song toggles. It shows the plan and asks for a yes, works only on a stopped server with a backup, and every step can be undone. Which plugins don't fit comes from Preflight's report on a throwaway copy booted on the target version, not from version metadata. Tested on throwaway copies only. |
-| 2026-11-08 | The upgrade helper's logic moves into Preflight, as a command-line tool in its jar (plan, apply, restore, with JSON output), so people without Leaf Juice can use it. Leaf Juice keeps the screens and the test-copy boot, and calls the tool once Preflight 0.3.0 is out. Its own planning code is then removed, and the real 26.3 run happens against the tool. |
+| 2026-11-08 | The upgrade helper's logic moves into Preflight, as a command-line tool in its jar (plan, apply, restore, with JSON output), so people without Leaf Juice can use it. Leaf Juice keeps the screens and the test-copy boot, and calls the tool once Preflight 0.3.0 is out. Its own planning code is then removed, and the real 26.3 run happens against the tool. Done with Preflight 0.3.0 the same day. |
 
 ## The Change Queue
 

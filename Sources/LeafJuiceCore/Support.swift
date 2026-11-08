@@ -257,6 +257,7 @@ public struct ExpectedHashes: Codable, Equatable, Sendable {
 // MARK: - Running tools
 
 public struct ToolResult: Sendable {
+    public init(code: Int32, out: String, err: String) { self.code = code; self.out = out; self.err = err }
     public let code: Int32
     public let out: String
     public let err: String

@@ -2342,6 +2342,13 @@ if CommandLine.arguments.contains("--real-pack") {
         print("Skipping --real-pack: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
     }
 }
+if let flag = CommandLine.arguments.firstIndex(of: "--real-upgrade-plugins"), flag + 1 < CommandLine.arguments.count {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealUpgradePlugins(madeUp: CommandLine.arguments[flag + 1])
+    } else {
+        print("Skipping --real-upgrade-plugins: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
 if CommandLine.arguments.contains("--real-paper") {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         await runRealPaper()
@@ -3032,6 +3039,60 @@ func localAddresses() -> [String] {
 }
 
 /// Real Paper in a temp folder with the real plugin and a bot: `/signin` in game through to a signed-in page.
+/// Plugins on upgrade, for real, through Preflight's upgrade tool (downloaded and checked against its pinned hash): a
+/// made-up 26.2 server with made-up plugins (one fine, one with a bad api-version, one that hard-depends on it, one
+/// that depends on that, and a soft dependent) is checked against Paper 26.3. The made-up server never boots, so only
+/// the test copy runs.
+@MainActor func runRealUpgradePlugins(madeUp: String) async {
+    section("REAL PLUGINS ON UPGRADE (EULA accepted by the person running this)")
+    do {
+        let root = folder("real-upgrade-plugins")
+        write("server-port=25594\nonline-mode=false\nwhite-list=false\nview-distance=3\nsimulation-distance=3\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "Real upgrade test")
+        defer { c.forceStop(); c.stopTicker() }
+        try EULA.accept(c.paths)
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        c.runtimes = await JavaManager.discover()
+        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: "26.2")!)
+        try FileOps.ensureDir(c.paths.plugins)
+        for jar in FileOps.children(URL(fileURLWithPath: madeUp)) where jar.pathExtension == "jar" {
+            try FileManager.default.copyItem(at: jar, to: c.paths.plugins.appendingPathComponent(jar.lastPathComponent))
+        }
+        write(#"{"format":1,"neverOff":[],"recheck":[{"plugin":"MadeUpFine","note":"Made-up note."}]}"#, try c.ensureUpgradeRules())
+        await c.refreshPlugins()
+        func jars() -> Set<String> { Set(FileOps.children(c.paths.plugins).filter { $0.lastPathComponent.hasSuffix(".jar") || $0.lastPathComponent.hasSuffix(".disabled") }.map(\.lastPathComponent)) }
+        let before = jars()
+
+        let target = try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!
+        let plan = await c.checkPluginsForUpgrade(target)
+        check(plan.stop == nil, "the tool made a plan: \(plan.stop ?? "")")
+        print("  plan: \(plan.status), off \(plan.off.map(\.name)), warnings \(plan.warnings.count), not checked \(plan.notChecked.map(\.name))")
+        equal(plan.off.map(\.name), ["MadeUpBadApi", "MadeUpNeedsBad", "MadeUpNeedsNeeds"], "the bad one, the one Paper enables without it, and the one after that")
+        check(plan.off.first { $0.name == "MadeUpBadApi" }?.why.first?.contains("99.0") == true, "with Paper's own reason: \(plan.off.first?.why ?? [])")
+        check(plan.off.first { $0.name == "MadeUpNeedsBad" }?.why.contains { $0.contains("needs MadeUpBadApi") } == true, "missing a dependency counts, though Paper enabled it: \(plan.off.first { $0.name == "MadeUpNeedsBad" }?.why ?? [])")
+        check(plan.warnings.contains { $0.contains("MadeUpSoft") }, "the soft dependent is flagged: \(plan.warnings)")
+        check(!plan.off.contains { ["MadeUpFine", "MadeUpSoft"].contains($0.name) }, "nothing that works is offered")
+        equal(plan.recheck.map(\.plugin), ["MadeUpFine"], "the by-hand check is listed")
+        check(FileOps.children(root.deletingLastPathComponent().appendingPathComponent("LeafJuice/test-copies")).isEmpty, "the copy and the downloaded jar are gone")
+        check(!FileOps.children(root.deletingLastPathComponent()).contains { $0.lastPathComponent.contains("preflight-check") }, "and the tool left nothing beside the server")
+        equal(jars(), before, "the server itself wasn't touched")
+        check(!c.state.isLive, "and never started")
+
+        try await c.applyPluginPlan(plan)
+        for name in ["MadeUpBadApi", "MadeUpNeedsBad", "MadeUpNeedsNeeds"] {
+            check(FileOps.exists(c.paths.plugins.appendingPathComponent("\(name).jar.disabled")), "\(name) switched off")
+        }
+        check(FileOps.exists(c.paths.plugins.appendingPathComponent("MadeUpFine.jar")) && FileOps.exists(c.paths.plugins.appendingPathComponent("MadeUpSoft.jar")), "the rest stay on")
+        check(!FileOps.children(c.paths.upgradeFolder.appendingPathComponent("restore-points")).isEmpty, "the tool kept its own plugin restore point")
+        check(!c.backups.isEmpty, "after Leaf Juice's whole-server restore point")
+        equal(await c.switchedOffPlugins().entries.map(\.name).sorted(), ["MadeUpBadApi", "MadeUpNeedsBad", "MadeUpNeedsNeeds"], "the tool's status lists them")
+
+        try await c.switchBackOn(["MadeUpBadApi", "MadeUpNeedsBad", "MadeUpNeedsNeeds"])
+        equal(jars(), before, "switching back on puts every file back as it was")
+        equal(await c.switchedOffPlugins().entries.count, 0, "and nothing is listed as off")
+    } catch { failures.append("real plugins on upgrade threw: \(error)") }
+}
+
 @MainActor func runRealSignIn(jar: String) async {
     section("REAL SIGN-IN (EULA accepted by the person running this)")
     do {
@@ -4338,117 +4399,86 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
 
 @MainActor func pluginUpgradeChecks() async {
     print("• Plugins on upgrade")
-    func report(_ props: [String: String], extra: String = "") -> Data {
-        let lines = props.sorted { $0.key < $1.key }.map { #"    <property name="\#($0.key)" value="\#($0.value)"/>"# }.joined(separator: "\n")
-        return Data(#"<?xml version="1.0" encoding="UTF-8"?><testsuite name="Preflight" tests="3"><properties>\#n\#(lines)</properties>\#(extra)<testcase classname="Made.Up" name="x"/></testsuite>"#.utf8)
-    }
-    let base = ["preflight.report.format": "1", "preflight.finished-at": "2026-11-08T00:00:00Z", "preflight.server-checks": "passed", "server.minecraft-version": "26.3"]
-    var props = base
-    func plugin(_ name: String, _ fields: [String: String]) { for (k, v) in fields { props["plugin.\(name).\(k)"] = v } }
-    plugin("Made.Up.Core", ["state": "enabled", "version": "1.0", "files": "MadeUpCore.jar"])
-    plugin("BrokenThing", ["state": "not-loaded", "files": "BrokenThing-2.jar", "reason": "Unsupported API version 99.0"])
-    plugin("NeedsBroken", ["state": "enabled", "files": "NeedsBroken.jar", "depends": "BrokenThing", "missing-depends": "BrokenThing"])
-    plugin("NeedsNeeds", ["state": "enabled", "files": "NeedsNeeds.jar", "depends": "NeedsBroken"])
-    plugin("SoftOnBroken", ["state": "enabled", "files": "SoftOnBroken.jar", "soft-depends": "BrokenThing"])
-    plugin("FailsSmoke", ["state": "enabled", "files": "FailsSmoke.jar", "failed-tests": "FailsSmoke:works"])
-    plugin("WarnsOnly", ["state": "enabled", "files": "WarnsOnly.jar", "failed-tests": "WarnsOnly:version"])
-    props["test.FailsSmoke:works.result"] = "failed"; props["test.FailsSmoke:works.severity"] = "critical"; props["test.FailsSmoke:works.message"] = "made-up failure"
-    props["test.WarnsOnly:version.result"] = "failed"; props["test.WarnsOnly:version.severity"] = "warning"; props["test.WarnsOnly:version.message"] = "unsupported server version"
+    // Real output from Preflight's upgrade tool 0.3.0 on Paper 26.3 with broken made-up plugins (fixtures/, from
+    // ExtantApe/Preflight's live run; the server path is replaced with a made-up one).
+    let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fixtures")
+    let switchOff = (try? Data(contentsOf: fixtures.appendingPathComponent("upgrade-check-26.3.json"))) ?? Data()
+    let wait = (try? Data(contentsOf: fixtures.appendingPathComponent("upgrade-check-26.3-wait.json"))) ?? Data()
+    let plan = PluginUpgradePlan.decode(switchOff, target: "Paper 26.3")
+    equal(plan?.target, "Paper 26.3 build 244", "the tool's plan names the build it checked")
+    equal(plan?.off.map(\.name), ["BadApi", "BrokenEnable", "FailingTests", "MissingDep", "NeedsBadApi", "NoMainClass", "PaperDependsOnFailing"], "and what it would switch off")
+    check(plan?.off.first { $0.name == "NeedsBadApi" }?.why.contains { $0.contains("needs BadApi") } == true, "including the one Paper enabled without its dependency")
+    equal(plan?.notChecked.map(\.name), ["ChatAddon", "DiscordSRV"], "what couldn't be checked in the copy is listed apart")
+    check(plan?.warnings.contains { $0.contains("Corrupt.jar") } == true, "warnings come through")
+    check(plan?.canApply == true && plan?.stop == nil, "a switch-off plan can be applied")
+    let held = PluginUpgradePlan.decode(wait, target: "Paper 26.3")
+    check(held?.blocked.contains { $0.name == "FailingTests" } == true && held?.canApply == false, "a wait plan can't be applied")
+    let shared = PluginUpgradePlan.decode(Data(#"{"format":1,"status":"stop","stop":"MadeUpStats uses an outside database. Run the check again with --allow-shared-database if that's fine.","target":{"file":"paper.jar"}}"#.utf8), target: "Paper 26.3")
+    check(shared?.stop != nil && shared?.sharedDatabase == true && shared?.canApply == false, "a shared-database stop offers to check anyway")
+    let newer = PluginUpgradePlan.decode(Data(#"{"format":2,"status":"switch-off"}"#.utf8), target: "x")
+    check(newer?.stop?.contains("format 2") == true && newer?.canApply == false, "a newer format is refused")
+    check(PluginUpgradePlan.decode(Data("Exception in thread main".utf8), target: "x") == nil, "output that isn't JSON isn't a plan")
+    check(PluginUpgradePlan.decode(Data(#"{"format":1,"status":"maybe"}"#.utf8), target: "x")?.canApply == false, "an unknown status can't be applied")
 
-    let parsed = PreflightReport.parse(report(props))
-    equal(parsed?.plugins["Made.Up.Core"]?.files, ["MadeUpCore.jar"], "a plugin name with dots is split on the last dot")
-    equal(parsed?.plugins["BrokenThing"]?.state, .notLoaded, "a jar that never loaded is read")
-    equal(parsed?.tests["FailsSmoke:works"]?.severity, "critical", "and tests by their own id")
-
-    var rules = UpgradeRules()
-    rules.recheck = [.init(plugin: "made.up.core", note: "Try it by hand."), .init(plugin: "NotInstalled", note: "Never shown.")]
-    let plan = PluginUpgradePlan.make(report: parsed, rules: rules, target: "Paper 26.3")
-    equal(plan.off.map(\.name), ["BrokenThing", "FailsSmoke", "NeedsBroken", "NeedsNeeds"], "what didn't load, what failed a critical check, and everything that needs them, however far down")
-    check(plan.off.first { $0.name == "BrokenThing" }?.why.first?.contains("Unsupported API version 99.0") == true, "with Paper's own reason")
-    check(plan.off.first { $0.name == "NeedsNeeds" }?.why == ["Off because NeedsBroken is off."], "a dependent says what it's off because of")
-    check(plan.off.first { $0.name == "NeedsBroken" }?.why.contains { $0.contains("needs BrokenThing") } == true, "enabled, but missing a dependency, counts as broken")
-    check(plan.warnings.contains { $0.contains("WarnsOnly:version") }, "a warning is listed for a person: \(plan.warnings)")
-    check(!plan.off.contains { $0.name == "WarnsOnly" }, "and switches nothing off")
-    check(plan.warnings.contains { $0.contains("SoftOnBroken stays on") }, "a soft dependent stays on, flagged")
-    equal(plan.recheck.map(\.plugin), ["made.up.core"], "rechecks for installed plugins only, matched ignoring case")
-    check(plan.canApply && plan.blocked.isEmpty, "a plan with nothing protected can be applied")
-
-    rules.neverOff = [.init(plugin: "needsbroken", why: "Made-up protection.")]
-    let held = PluginUpgradePlan.make(report: parsed, rules: rules, target: "Paper 26.3")
-    equal(held.blocked.map(\.name), ["NeedsBroken"], "a never-off plugin that would have to go is held, matched ignoring case")
-    check(!held.canApply, "and then the upgrade waits")
-    rules.neverOff = [.init(plugin: "NotInstalledYet", why: "Arrives later.")]
-    check(PluginUpgradePlan.make(report: parsed, rules: rules, target: "x").canApply, "a never-off plugin that isn't installed is fine")
-
-    // Anything that can't be judged offers nothing.
-    var bad = props; bad["preflight.finished-at"] = nil
-    check(PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x").stop?.contains("isn't finished") == true, "an unfinished report offers nothing")
-    bad = props; bad["preflight.report.format"] = "2"
-    check(PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x").stop?.contains("format 2") == true, "a newer format offers nothing")
-    bad = props; bad["preflight.report.format"] = nil
-    check(PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x").stop?.contains("too old") == true, "a report from an older Preflight offers nothing")
-    bad = props; bad["preflight.server-checks"] = "failed"
-    check(PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x").stop?.contains("doesn't run properly") == true, "a broken version says so instead of offering plugins")
-    check(PluginUpgradePlan.make(report: nil, rules: nil, target: "x").stop != nil, "no report offers nothing")
-    check(PreflightReport.parse(Data("<not xml".utf8)) == nil, "unreadable XML isn't a report")
-    bad = props; bad["plugin.BrokenThing.files"] = "../outside.jar"
-    let sneaky = PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x")
-    check(sneaky.blocked.contains { $0.name == "BrokenThing" } && !sneaky.canApply, "a file outside plugins/ is never touched")
-    bad = props; bad["preflight.on-failure"] = "LOCKDOWN"; bad["preflight.unreadable-jars"] = "Junk.jar"
-    let odd = PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x")
-    check(odd.warnings.contains { $0.contains("LOCKDOWN") } && odd.warnings.contains { $0.contains("Junk.jar") }, "a run that didn't warn, and an unreadable jar, are both flagged")
-    // Preflight 0.2.0's own sample from a real 26.3 boot with broken made-up plugins (fixtures/, from ExtantApe/Preflight).
-    let sampleURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fixtures/preflight-report-26.3.xml")
-    let sample = (try? Data(contentsOf: sampleURL)).flatMap(PreflightReport.parse)
-    check(sample?.minecraft == "26.3" && sample?.onFailure == "WARN" && sample?.unreadableJars == ["Corrupt.jar"], "Preflight's real 26.3 sample is read")
-    let samplePlan = PluginUpgradePlan.make(report: sample, rules: nil, target: "Paper 26.3")
-    equal(samplePlan.off.map(\.name), ["BadApi", "BrokenEnable", "FailingTests", "MissingDep", "NeedsBadApi", "NoMainClass", "PaperDependsOnFailing"], "from it: every broken plugin, the one Paper enabled without its dependency, and the one that needs a failing plugin")
-    check(!samplePlan.off.contains { ["Preflight", "PreflightExample"].contains($0.name) }, "and nothing that works")
-    check(samplePlan.off.first { $0.name == "PaperDependsOnFailing" }?.why == ["Off because FailingTests is off."], "a dependent says why")
-    check(samplePlan.warnings.contains { $0.contains("Corrupt.jar") }, "the corrupt jar is listed for a person")
-    let clean = PluginUpgradePlan.make(report: PreflightReport.parse(report(base)), rules: nil, target: "x")
-    check(clean.allClear && !clean.canApply, "nothing to switch off is all clear")
-
-    // Applying, and undoing, on a made-up stopped server.
+    // Calling the tool, with it stood in for, on a made-up stopped server.
+    defer { UpgradeTool.runOverride = nil }
     do {
         let root = folder("plugin-upgrade")
         write("server-port=25601\n", root.appendingPathComponent("server.properties"))
-        for jar in ["MadeUpCore.jar", "BrokenThing-2.jar", "NeedsBroken.jar", "NeedsNeeds.jar", "FailsSmoke.jar", "WarnsOnly.jar", "SoftOnBroken.jar"] {
-            write("made up", root.appendingPathComponent("plugins/\(jar)"))
-        }
+        write("made up", root.appendingPathComponent("plugins/BadApi.jar"))
         let c = try await ServerController.adopt(root: root, name: "plugin-upgrade")
         defer { c.stopTicker() }
-        write("{ broken", c.paths.upgradeRules)
-        var refused = false
-        do { _ = try c.upgradeRules() } catch { refused = true }
-        check(refused, "an unreadable rules file is an error, not 'no rules'")
-        try c.saveUpgradeRules(rules)
-        equal(try c.upgradeRules(), rules, "rules are saved as a plain file and read back")
-
-        var missing = plan
-        missing.off.append(.init(name: "Ghost", files: ["Ghost.jar"], why: ["made up"]))
-        var stopped = ""
-        do { try await c.applyPluginPlan(missing) } catch { stopped = error.localizedDescription }
-        check(stopped.contains("Ghost.jar") && FileOps.exists(root.appendingPathComponent("plugins/BrokenThing-2.jar")), "a file that isn't there stops everything before anything moves")
-
-        try await c.applyPluginPlan(plan)
-        for name in ["BrokenThing-2.jar", "NeedsBroken.jar", "NeedsNeeds.jar", "FailsSmoke.jar"] {
-            check(FileOps.exists(root.appendingPathComponent("plugins/\(name).disabled")) && !FileOps.exists(root.appendingPathComponent("plugins/\(name)")), "\(name) is switched off")
+        var calls: [[String]] = []
+        var planSent = Data()
+        var reply = ToolResult(code: 0, out: "", err: "")
+        UpgradeTool.runOverride = { args in
+            calls.append(args)
+            if args.first == "apply", let i = args.firstIndex(of: "--plan") { planSent = (try? Data(contentsOf: URL(fileURLWithPath: args[i + 1]))) ?? Data() }
+            return reply
         }
-        check(FileOps.exists(root.appendingPathComponent("plugins/WarnsOnly.jar")) && FileOps.exists(root.appendingPathComponent("plugins/SoftOnBroken.jar")), "and nothing else")
-        check(c.switchedOffPlugins.backupFile != nil, "after a restore point")
-        equal(c.switchedOffPlugins.entries.map(\.name).sorted(), ["BrokenThing", "FailsSmoke", "NeedsBroken", "NeedsNeeds"], "and they're remembered, to offer back")
+        c.runtimes = []
+        var noJava = ""
+        do { try await c.applyPluginPlan(plan!) } catch { noJava = error.localizedDescription }
+        check(noJava.contains("Java 25"), "without Java 25 it says so: \(noJava)")
+        c.runtimes = [JavaRuntime(path: "/made/up/java", version: "25", major: 25, vendor: nil, managed: false)]
 
-        try await c.switchBackOn(["BrokenThing", "NeedsBroken"])
-        check(FileOps.exists(root.appendingPathComponent("plugins/BrokenThing-2.jar")) && FileOps.exists(root.appendingPathComponent("plugins/NeedsBroken.jar")), "chosen ones go back on")
-        check(FileOps.exists(root.appendingPathComponent("plugins/NeedsNeeds.jar.disabled")), "and only those")
-        equal(c.switchedOffPlugins.entries.map(\.name).sorted(), ["FailsSmoke", "NeedsNeeds"], "the rest are still offered")
-        write("a newer one", root.appendingPathComponent("plugins/FailsSmoke.jar"))
-        var kept = ""
-        do { try await c.switchBackOn(["FailsSmoke"]) } catch { kept = error.localizedDescription }
-        check(kept.contains("already"), "a newer jar in its place isn't overwritten: \(kept)")
-        try await c.switchBackOn(["NeedsNeeds"])
-        check(FileOps.exists(root.appendingPathComponent("plugins/NeedsNeeds.jar")), "the last one goes back on too")
+        var refused = ""
+        do { try await c.applyPluginPlan(held!) } catch { refused = error.localizedDescription }
+        check(!refused.isEmpty && calls.isEmpty, "a wait plan never reaches the tool")
+
+        let backupsBefore = c.backups.count
+        try await c.applyPluginPlan(plan!)
+        let apply = calls.last ?? []
+        check(apply.first == "apply" && apply.contains("--yes") && apply.contains(root.path), "apply passes the server and --yes, after the person confirmed: \(apply)")
+        equal(planSent, switchOff, "the tool gets back the plan exactly as it gave it")
+        check(!FileOps.children(c.paths.meta).contains { $0.lastPathComponent.hasPrefix("upgrade-plan-") }, "and the plan file is cleaned up")
+        check(c.backups.count > backupsBefore, "after Leaf Juice's own restore point")
+
+        reply = ToolResult(code: 13, out: "", err: "Refused: BadApi.jar has changed since the check.\n")
+        var changed = ""
+        do { try await c.applyPluginPlan(plan!) } catch { changed = error.localizedDescription }
+        check(changed.contains("Nothing was switched off") && changed.contains("has changed since the check"), "a refusal says what the tool said: \(changed)")
+
+        reply = ToolResult(code: 0, out: "", err: "")
+        try await c.switchBackOn(["BadApi", "NoMainClass"])
+        let restore = calls.last ?? []
+        check(restore.starts(with: ["restore", "--server", root.path]) && restore.filter { $0 == "--plugin" }.count == 2 && restore.last == "--yes", "restore names each plugin: \(restore)")
+        reply = ToolResult(code: 13, out: "BadApi: a newer BadApi.jar is in place, so it was left off.\n", err: "")
+        var partly = ""
+        do { try await c.switchBackOn(["BadApi"]) } catch { partly = error.localizedDescription }
+        check(partly.contains("newer BadApi.jar"), "a plugin left off says why: \(partly)")
+
+        equal(await c.switchedOffPlugins().entries.count, 0, "with no record from the tool, nothing is listed")
+        write("{}", c.paths.switchedOffFile)
+        reply = ToolResult(code: 0, out: #"{"format":1,"server":"x","running":false,"switchedOff":[{"name":"BadApi","files":["BadApi.jar"],"why":["It didn't load."],"date":"2026-11-08T16:00:00Z","target":"Paper 26.3"}],"restorePoints":[]}"#, err: "")
+        equal(await c.switchedOffPlugins().entries.map(\.name), ["BadApi"], "what's switched off comes from the tool's status")
+        equal(calls.last?.prefix(2).map { $0 }, ["status", "--server"], "asked with status")
+
+        let rules = try c.ensureUpgradeRules()
+        check(rules.path.hasSuffix("plugins/Preflight/upgrade/rules.json") && (try? String(contentsOf: rules, encoding: .utf8))?.contains(#""neverOff": []"#) == true, "an empty rules file is made where the tool reads it")
+        write(#"{"format":1,"neverOff":[{"plugin":"Kept","why":"made up"}],"recheck":[]}"#, rules)
+        _ = try c.ensureUpgradeRules()
+        check((try? String(contentsOf: rules, encoding: .utf8))?.contains("Kept") == true, "and an existing one is never overwritten")
     } catch { failures.append("plugins on upgrade threw: \(error)") }
 }
 

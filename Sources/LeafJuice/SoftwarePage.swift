@@ -13,7 +13,7 @@ struct SoftwarePage: View {
             currentCard
             if server.profile.software.flavor.canDownload { updatesCard }
             ChangeVersionCard(model: model, server: server)
-            if !server.switchedOffPlugins.entries.isEmpty { SwitchedOffCard(server: server) }
+            if FileOps.exists(server.paths.switchedOffFile) { SwitchedOffCard(server: server) }
             IdentifyCard(server: server)
             if !server.archivedJars.isEmpty { rollbackCard }
         }
@@ -152,13 +152,11 @@ struct ChangeVersionCard: View {
                     Button("Check with Preflight") { checkWithPreflight() }
                         .buttonStyle(.juice)
                         .disabled(target.isEmpty || move == .downgrade || move == .same || planning || server.activity != nil || server.trialPhase.map { $0 != .finished } == true)
-                        .help("Boots a throwaway copy on this version with Preflight, and lists the plugins that don't start. The real server isn't touched.")
+                        .help("Boots a throwaway copy on this version with Preflight's upgrade tool, and lists the plugins that don't start. The real server isn't touched.")
                     if planning { ProgressView().controlSize(.small).accessibilityLabel("Checking plugins with Preflight") }
                 }
-                if !server.plugins.contains(where: { $0.enabled && $0.key == "preflight" }) {
-                    Hint("Needs the Preflight plugin, version 0.2.0 or later, on this server.")
-                }
-                if let pluginPlan { PluginPlanView(server: server, plan: pluginPlan) }
+                Hint("Uses Preflight's upgrade tool \(UpgradeTool.version), downloaded once and checked. It needs Java \(UpgradeTool.javaMajor). Paper only.")
+                if let pluginPlan { PluginPlanView(server: server, plan: pluginPlan, checkAllowingSharedDatabase: { checkWithPreflight(allowSharedDatabase: true) }) }
             }
             if !server.isLab, model.lab.isBusy || model.lab.failure != nil { LabProgress(lab: model.lab) }
             if !server.isLab, !model.lab.isBusy, let report = model.lab.report, report.serverName == server.profile.name, report.to.contains(target) {
@@ -249,7 +247,7 @@ struct ChangeVersionCard: View {
         }
     }
 
-    private func checkWithPreflight() {
+    private func checkWithPreflight(allowSharedDatabase: Bool = false) {
         planning = true
         pluginPlan = nil
         Task {
@@ -260,7 +258,7 @@ struct ChangeVersionCard: View {
                     loadError = "No build of \(target) on the channels you accept."
                     return
                 }
-                pluginPlan = await server.checkPluginsForUpgrade(found)
+                pluginPlan = await server.checkPluginsForUpgrade(found, allowSharedDatabase: allowSharedDatabase)
             } catch { loadError = error.localizedDescription }
         }
     }
@@ -337,13 +335,17 @@ struct IdentifyCard: View {
 struct PluginPlanView: View {
     let server: ServerController
     let plan: PluginUpgradePlan
+    let checkAllowingSharedDatabase: () -> Void
     @State private var confirming = false
+    @State private var confirmingDatabase = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Plugins on \(plan.target), from Preflight").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
             if let stop = plan.stop {
-                Callout(tone: .warning, title: "Nothing to offer", detail: stop)
+                Callout(tone: .warning, title: "Nothing to offer", detail: stop) {
+                    if plan.sharedDatabase { Button("Check Anyway…") { confirmingDatabase = true }.buttonStyle(.juice) }
+                }
             } else if plan.allClear {
                 Callout(tone: .good, title: "Every plugin started", detail: "Preflight found nothing to switch off. That means they start, not that everything works, so try the checks below by hand afterwards.")
             }
@@ -358,6 +360,10 @@ struct PluginPlanView: View {
                     row(badge: "Switch off", tone: .warning, name: item.name, lines: item.why + ["File: " + item.files.joined(separator: ", ")])
                 }
             }
+            if !plan.notChecked.isEmpty {
+                Text("Not checked").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
+                ForEach(plan.notChecked) { item in row(badge: "Not checked", tone: .neutral, name: item.name, lines: [item.why]) }
+            }
             if !plan.warnings.isEmpty {
                 Text("For you to decide").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
                 ForEach(plan.warnings, id: \.self) { Hint($0) }
@@ -366,8 +372,12 @@ struct PluginPlanView: View {
                 Text("Check by hand after the upgrade").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
                 ForEach(plan.recheck) { item in Hint("\(item.plugin): \(item.note)") }
             }
-            if !plan.hasRules {
-                Hint("This server has no list of plugins that must never be switched off. Add one in \(server.paths.upgradeRules.path).")
+            HStack {
+                Hint(plan.hasRules ? "Plugins that must never be switched off, and checks to do by hand, are in this server's rules file." : "This server has no list of plugins that must never be switched off yet.")
+                Button(plan.hasRules ? "Open Rules File" : "Make a Rules File") {
+                    server.attempt { NSWorkspace.shared.open(try server.ensureUpgradeRules()) }
+                }
+                .buttonStyle(.juice)
             }
             if plan.canApply {
                 HStack {
@@ -382,6 +392,11 @@ struct PluginPlanView: View {
             Button("Switch Off") { server.attempt { try await server.applyPluginPlan(plan) } }
         } message: {
             Text("\(plan.off.map(\.name).joined(separator: ", ")). A restore point of the whole server is made and verified first. Each one can be switched back on from this page.")
+        }
+        .confirmationDialog("Check with the shared database?", isPresented: $confirmingDatabase) {
+            Button("Check Anyway") { checkAllowingSharedDatabase() }
+        } message: {
+            Text("The test copy would use the same outside database as the real server, and its plugins could write to it while it runs. Only go ahead if that's safe for these plugins.")
         }
     }
 
@@ -401,15 +416,18 @@ struct PluginPlanView: View {
 struct SwitchedOffCard: View {
     let server: ServerController
     @State private var chosen: Set<String> = []
+    @State private var entries: [SwitchedOffPlugins.Entry] = []
+    @State private var loaded = false
 
     var body: some View {
         Card(title: "Switched off for an upgrade", systemImage: "power") {
             Hint("Switch a plugin back on once there's a build that works. Preflight can check again from Change version.")
-            ForEach(server.switchedOffPlugins.entries) { entry in
+            if !loaded { ProgressView().controlSize(.small).accessibilityLabel("Reading what's switched off") }
+            ForEach(entries) { entry in
                 Toggle(isOn: Binding(get: { chosen.contains(entry.name) }, set: { on in if on { chosen.insert(entry.name) } else { chosen.remove(entry.name) } })) {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(entry.name).foregroundStyle(Juice.ink)
-                        Hint("For \(entry.target), \(entry.date.formatted(date: .abbreviated, time: .omitted)). \(entry.why.first ?? "")")
+                        Hint([entry.target.map { "For \($0)" }, entry.why?.first].compactMap { $0 }.joined(separator: ". "))
                     }
                 }
                 .toggleStyle(.checkbox)
@@ -417,13 +435,20 @@ struct SwitchedOffCard: View {
             HStack {
                 Button("Switch Back On") {
                     let names = Array(chosen)
-                    server.attempt { try await server.switchBackOn(names) }
+                    server.attempt {
+                        try await server.switchBackOn(names)
+                        entries = await server.switchedOffPlugins().entries
+                    }
                     chosen = []
                 }
                 .buttonStyle(.juice)
                 .disabled(chosen.isEmpty || !server.state.canStart || server.activity != nil)
                 if !server.state.canStart { Hint("Stop the server first.") }
             }
+        }
+        .task {
+            entries = await server.switchedOffPlugins().entries
+            loaded = true
         }
     }
 }

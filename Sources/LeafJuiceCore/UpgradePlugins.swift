@@ -1,370 +1,270 @@
 import Foundation
 
-// Plugins on upgrade: boot a throwaway copy on the new version with Preflight, read what it reports, and offer to
-// switch off what doesn't start, plus whatever can't start without it. Nothing changes on the real server without a
-// yes, and only while it's stopped, after a verified restore point. Each plugin can be switched back on later.
+// Plugins on upgrade, through Preflight's own command-line tool (preflight-upgrade, ExtantApe/Preflight). The tool
+// decides: it boots a copy on the new version, says what won't start and what needs it, switches plugins off and
+// back on, and keeps its own plugin restore point. Leaf Juice makes the copy with saving paused, asks the person,
+// adds its own verified restore point of the whole server, and shows the result. See docs/PLAN.md, 2026-11-08.
 
-/// What Preflight wrote to plugins/Preflight/report.xml. Only its properties are read: `plugin.<Name>.<field>`,
-/// `test.<Owner:check>.<field>` and a few run-wide ones. Keys are split on the last dot, since names can contain dots.
-public struct PreflightReport: Equatable, Sendable {
-    public enum State: String, Sendable { case enabled, disabled, notLoaded = "not-loaded", unknown }
-    public struct Plugin: Equatable, Sendable {
-        public var name: String
-        public var state: State = .unknown
-        public var version = ""
-        public var files: [String] = []
-        public var depends: [String] = []
-        public var softDepends: [String] = []
-        public var requiredBy: [String] = []
-        public var missingDepends: [String] = []
-        public var failedTests: [String] = []
-        public var reason: String?
-    }
-    public struct Test: Equatable, Sendable {
-        public var id: String
-        public var result = ""
-        public var severity = ""
-        public var message: String?
-        public var failed: Bool { result == "failed" || result == "timed-out" }
-    }
-    public var format: Int?
-    public var preflightVersion: String?
-    public var minecraft: String?
-    public var serverVersion: String?
-    public var finishedAt: String?
-    public var serverChecks: String?
-    public var onFailure: String?
-    /// Not a valid jar, broken YAML or no name. The same file is just as broken on any version.
-    public var unreadableJars: [String] = []
-    public var plugins: [String: Plugin] = [:]
-    public var tests: [String: Test] = [:]
+/// Which release of the tool Leaf Juice uses, pinned by hash so a changed download is refused.
+public enum UpgradeTool {
+    public static let version = "0.3.0"
+    public static let sha256 = "1789f326e44f841ede148e6338e2d9399b52a0695c4a6f1397d1c8ed9609b7ef"
+    public static let javaMajor = 25
+    public static var fileName: String { "preflight-upgrade-\(version).jar" }
+    public static var url: URL { URL(string: "https://github.com/ExtantApe/Preflight/releases/download/v\(version)/\(fileName)")! }
+    public static var folder: URL { AppPaths.servers.appendingPathComponent(AppPaths.ownFolderName, isDirectory: true).appendingPathComponent("tools", isDirectory: true) }
+    public static var jar: URL { folder.appendingPathComponent(fileName) }
 
-    public static let fileName = "plugins/Preflight/report.xml"
+    /// For the checks: runs something else in place of `java -jar <tool>`.
+    nonisolated(unsafe) public static var runOverride: (([String]) async throws -> ToolResult)?
 
-    public static func parse(_ data: Data) -> PreflightReport? {
-        let reader = PropertyReader()
-        let parser = XMLParser(data: data)
-        parser.delegate = reader
-        guard parser.parse() else { return nil }
-        var out = PreflightReport()
-        func list(_ text: String) -> [String] { text.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
-        for (key, value) in reader.properties {
-            switch key {
-            case "preflight.report.format": out.format = Int(value)
-            case "preflight.version": out.preflightVersion = value
-            case "preflight.finished-at": out.finishedAt = value
-            case "preflight.server-checks": out.serverChecks = value
-            case "preflight.on-failure": out.onFailure = value
-            case "preflight.unreadable-jars": out.unreadableJars = list(value)
-            case "server.minecraft-version": out.minecraft = value
-            case "server.version": out.serverVersion = value
-            default:
-                guard let dot = key.lastIndex(of: ".") else { continue }
-                let field = String(key[key.index(after: dot)...]), head = key[..<dot]
-                if head.hasPrefix("plugin.") {
-                    let name = String(head.dropFirst("plugin.".count))
-                    guard !name.isEmpty else { continue }
-                    var p = out.plugins[name] ?? Plugin(name: name)
-                    switch field {
-                    case "state": p.state = State(rawValue: value) ?? .unknown
-                    case "version": p.version = value
-                    case "files", "file": p.files = list(value)
-                    case "depends": p.depends = list(value)
-                    case "soft-depends": p.softDepends = list(value)
-                    case "required-by": p.requiredBy = list(value)
-                    case "missing-depends": p.missingDepends = list(value)
-                    case "failed-tests": p.failedTests = list(value)
-                    case "reason": p.reason = value
-                    default: break
-                    }
-                    out.plugins[name] = p
-                } else if head.hasPrefix("test.") {
-                    let id = String(head.dropFirst("test.".count))
-                    guard !id.isEmpty else { continue }
-                    var t = out.tests[id] ?? Test(id: id)
-                    switch field {
-                    case "result": t.result = value
-                    case "severity": t.severity = value
-                    case "message": t.message = value
-                    default: break
-                    }
-                    out.tests[id] = t
-                }
-            }
-        }
-        return out
+    /// The tool's jar, downloaded once and checked against the pinned hash every time it's used.
+    public static func ensureJar() async throws -> URL {
+        if FileOps.exists(jar), (try? Hashing.digests(of: jar).sha256) == sha256 { return jar }
+        try? FileManager.default.removeItem(at: jar)
+        try FileOps.ensureDir(folder)
+        try await HTTP.download(url, to: jar, expect: ExpectedHashes(sha256: sha256))
+        return jar
     }
 
-    private final class PropertyReader: NSObject, XMLParserDelegate {
-        var properties: [String: String] = [:]
-        func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
-            guard name == "property", let key = attributes["name"], let value = attributes["value"] else { return }
-            properties[key] = value
-        }
+    static func run(java: String, _ args: [String]) async throws -> ToolResult {
+        if let runOverride { return try await runOverride(args) }
+        let tool = try await ensureJar()
+        return try await Tool.run(java, ["-jar", tool.path] + args)
+    }
+
+    /// The last thing the tool said, for when it fails without JSON.
+    static func lastWords(_ result: ToolResult) -> String {
+        let lines = (result.err + "\n" + result.out).split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        return lines.last.map { String($0) } ?? "It gave no reason (exit \(result.code))."
     }
 }
 
-/// Per-server rules, kept in `.leafjuice/upgrade-rules.json` so they're plain to read and edit.
-public struct UpgradeRules: Codable, Equatable, Sendable {
-    public struct Keep: Codable, Equatable, Sendable, Identifiable {
-        public var id: String { plugin }
-        public var plugin: String
-        public var why: String
-        public init(plugin: String, why: String) { self.plugin = plugin; self.why = why }
-    }
-    public struct Recheck: Codable, Equatable, Sendable, Identifiable {
-        public var id: String { plugin + note }
-        public var plugin: String
-        public var note: String
-        public init(plugin: String, note: String) { self.plugin = plugin; self.note = note }
-    }
-    public var format = 1
-    /// Never switched off. If one of these would have to go, the upgrade waits instead.
-    public var neverOff: [Keep] = []
-    /// What to try by hand after the upgrade. Never switches anything.
-    public var recheck: [Recheck] = []
-    public init() {}
-
-    /// Names are matched ignoring case, so a rule written "OneBlock" still protects a plugin that calls itself "Oneblock".
-    public func keep(_ name: String) -> Keep? { neverOff.first { $0.plugin.caseInsensitiveCompare(name) == .orderedSame } }
-}
-
+/// The tool's plan, as `check --json` prints it. Kept with its original bytes, which `apply` takes back.
 public struct PluginUpgradePlan: Equatable, Sendable {
-    public struct Off: Equatable, Sendable, Identifiable {
+    public struct Target: Codable, Equatable, Sendable {
+        public var file: String?
+        public var brand: String?
+        public var minecraft: String?
+        public var build: Int?
+        public var version: String?
+    }
+    public struct Off: Codable, Equatable, Sendable, Identifiable {
         public var id: String { name }
         public var name: String
         public var files: [String]
-        /// In plain words, such as "It didn't start: …" or "Off because Chunky is off".
         public var why: [String]
     }
-    public struct Blocked: Equatable, Sendable, Identifiable {
+    public struct Blocked: Codable, Equatable, Sendable, Identifiable {
         public var id: String { name }
         public var name: String
         public var rule: String
         public var why: [String]
     }
+    public struct NotChecked: Codable, Equatable, Sendable, Identifiable {
+        public var id: String { name }
+        public var name: String
+        public var why: String
+    }
+    public struct Recheck: Codable, Equatable, Sendable, Identifiable {
+        public var id: String { plugin + note }
+        public var plugin: String
+        public var note: String
+    }
+    struct Body: Codable {
+        var format: Int
+        var server: String?
+        var target: Target?
+        var status: String
+        var stop: String?
+        var off: [Off]?
+        var blocked: [Blocked]?
+        var notChecked: [NotChecked]?
+        var warnings: [String]?
+        var recheck: [Recheck]?
+    }
+
     public var target: String
-    /// Set when there's nothing safe to offer at all, and says why.
+    /// Set when there's no plan to act on, and says why.
     public var stop: String?
+    public var status = "stop"
+    public var server: String?
     public var off: [Off] = []
-    /// Never-off plugins that would have to go. Any of these means the upgrade waits.
     public var blocked: [Blocked] = []
-    /// For a person to decide. Nothing is switched off for these.
+    public var notChecked: [NotChecked] = []
     public var warnings: [String] = []
-    public var recheck: [UpgradeRules.Recheck] = []
+    public var recheck: [Recheck] = []
     public var hasRules = false
-    public var canApply: Bool { stop == nil && blocked.isEmpty && !off.isEmpty }
-    public var allClear: Bool { stop == nil && blocked.isEmpty && off.isEmpty }
+    /// Offered to the person when the stop was only about a shared outside database.
+    public var sharedDatabase = false
+    var raw = Data()
 
-    public init(target: String, stop: String? = nil) { self.target = target; self.stop = stop }
+    public var canApply: Bool { status == "switch-off" && stop == nil && blocked.isEmpty && !off.isEmpty }
+    public var allClear: Bool { status == "all-clear" }
 
-    /// Works out the plan from a report. Doesn't touch anything.
-    public static func make(report: PreflightReport?, rules: UpgradeRules?, target: String) -> PluginUpgradePlan {
-        var plan = PluginUpgradePlan(target: target)
-        plan.hasRules = rules != nil
-        guard let report else { return PluginUpgradePlan(target: target, stop: "Preflight didn't write a report on the test copy, so nothing can be judged. Check that Preflight 0.2.0 or later is installed.") }
-        guard report.format == 1 else {
-            return PluginUpgradePlan(target: target, stop: report.format == nil
-                ? "Preflight's report has no format number, so it's from a version too old for this. Preflight 0.2.0 or later is needed."
-                : "Preflight's report is format \(report.format!), which this version of Leaf Juice doesn't know. Look for a Leaf Juice update.")
-        }
-        guard report.finishedAt != nil else { return PluginUpgradePlan(target: target, stop: "Preflight's report isn't finished, so nothing can be judged. Try the check again.") }
-        if report.serverChecks == "failed" {
-            return PluginUpgradePlan(target: target, stop: "Preflight's own server checks failed, so \(target) itself doesn't run properly on this server. Switching plugins off won't fix that.")
-        }
-        let rules = rules ?? UpgradeRules()
-        let plugins = report.plugins
-        func failedCritical(_ p: PreflightReport.Plugin) -> [PreflightReport.Test] {
-            p.failedTests.compactMap { report.tests[$0] }.filter { $0.failed && $0.severity != "warning" }
-        }
+    public init(target: String, stop: String) { self.target = target; self.stop = stop }
 
-        // Why each plugin can't stay on by itself.
-        var reasons: [String: [String]] = [:]
-        for p in plugins.values {
-            var why: [String] = []
-            switch p.state {
-            case .notLoaded: why.append("It didn't load." + (p.reason.map { " \($0)" } ?? ""))
-            case .disabled: why.append("It didn't start." + (p.reason.map { " \($0)" } ?? ""))
-            case .enabled, .unknown: break
-            }
-            if !p.missingDepends.isEmpty { why.append("It needs \(p.missingDepends.joined(separator: ", ")), which didn't load.") }
-            for test in failedCritical(p) { why.append("It failed \(test.id)" + (test.message.map { ": \($0)" } ?? ".")) }
-            if !why.isEmpty { reasons[p.name] = why }
+    /// nil if it isn't the tool's JSON. A format Leaf Juice doesn't know becomes a stop.
+    public static func decode(_ data: Data, target fallback: String) -> PluginUpgradePlan? {
+        guard let body = try? JSONDecoder().decode(Body.self, from: data) else { return nil }
+        guard body.format == 1 else {
+            return PluginUpgradePlan(target: fallback, stop: "The upgrade tool gave format \(body.format), which this version of Leaf Juice doesn't know. Look for a Leaf Juice update.")
         }
-
-        // Whatever needs a plugin that goes off has to go too, however far down the chain.
-        var off = reasons
-        var queue = Array(reasons.keys)
-        while let name = queue.popLast() {
-            let needers = Set(plugins.values.filter { $0.depends.contains { $0.caseInsensitiveCompare(name) == .orderedSame } }.map(\.name))
-                .union(plugins[name]?.requiredBy ?? [])
-            for needer in needers.sorted() where needer != name {
-                if off[needer] == nil { queue.append(needer) }
-                if off[needer]?.contains("Off because \(name) is off.") != true { off[needer, default: []].append("Off because \(name) is off.") }
-            }
+        var plan = PluginUpgradePlan(target: fallback, stop: "")
+        if let t = body.target, let mc = t.minecraft { plan.target = "\(t.brand ?? "Paper") \(mc)" + (t.build.map { " build \($0)" } ?? "") }
+        plan.status = body.status
+        plan.server = body.server
+        plan.off = body.off ?? []
+        plan.blocked = body.blocked ?? []
+        plan.notChecked = body.notChecked ?? []
+        plan.warnings = body.warnings ?? []
+        plan.recheck = body.recheck ?? []
+        plan.raw = data
+        switch body.status {
+        case "switch-off", "all-clear", "wait": plan.stop = nil
+        case "stop":
+            plan.stop = body.stop ?? "The upgrade tool stopped without saying why."
+            plan.sharedDatabase = body.stop?.contains("--allow-shared-database") == true || body.stop?.localizedCaseInsensitiveContains("outside database") == true
+        default: plan.stop = "The upgrade tool gave a result Leaf Juice doesn't know: \(body.status)."
         }
-
-        for name in off.keys.sorted(by: { $0.lowercased() < $1.lowercased() }) {
-            if let rule = rules.keep(name) {
-                plan.blocked.append(Blocked(name: name, rule: rule.why, why: off[name]!))
-            } else {
-                let files = plugins[name]?.files ?? []
-                if files.isEmpty || files.contains(where: { $0.contains("/") || $0.hasPrefix(".") }) {
-                    plan.blocked.append(Blocked(name: name, rule: "Preflight didn't say which file it is, so it can't be switched off safely.", why: off[name]!))
-                } else {
-                    plan.off.append(Off(name: name, files: files, why: off[name]!))
-                }
-            }
-        }
-
-        if let mode = report.onFailure, mode != "WARN" {
-            plan.warnings.append("Preflight ran with on-failure \(mode) instead of WARN, so later checks may not have run. Treat this plan with care.")
-        }
-        for jar in report.unreadableJars {
-            plan.warnings.append("\(jar) isn't a readable plugin jar, on any version. Remove it or replace it by hand.")
-        }
-        for test in report.tests.values.sorted(by: { $0.id < $1.id }) where test.failed && test.severity == "warning" {
-            plan.warnings.append("\(test.id) warned" + (test.message.map { ": \($0)" } ?? "."))
-        }
-        for p in plugins.values.sorted(by: { $0.name < $1.name }) where off[p.name] == nil {
-            let gone = p.softDepends.filter { soft in off.keys.contains { $0.caseInsensitiveCompare(soft) == .orderedSame } }
-            if !gone.isEmpty { plan.warnings.append("\(p.name) stays on, but works with \(gone.joined(separator: ", ")), which would be off. Check it by hand.") }
-        }
-        let installed = Set(plugins.keys.map { $0.lowercased() })
-        plan.recheck = rules.recheck.filter { installed.contains($0.plugin.lowercased()) }
         return plan
     }
 }
 
-/// Plugins this helper switched off, so they can be offered back. Kept in `.leafjuice/upgrade-switched-off.json`.
-public struct SwitchedOffPlugins: Codable, Equatable, Sendable {
+/// What the tool has switched off, from `status --json`.
+public struct SwitchedOffPlugins: Equatable, Sendable {
     public struct Entry: Codable, Equatable, Sendable, Identifiable {
         public var id: String { name }
         public var name: String
         public var files: [String]
-        public var why: [String]
-        public var date: Date
-        public var target: String
+        public var why: [String]?
+        public var date: String?
+        public var target: String?
     }
+    struct Body: Codable { var format: Int; var switchedOff: [Entry]? }
     public var entries: [Entry] = []
-    public var backupFile: String?
     public init() {}
+    public static func decode(_ data: Data) -> SwitchedOffPlugins? {
+        guard let body = try? JSONDecoder().decode(Body.self, from: data), body.format == 1 else { return nil }
+        var out = SwitchedOffPlugins()
+        out.entries = body.switchedOff ?? []
+        return out
+    }
 }
 
 extension ServerPaths {
-    public var upgradeRules: URL { meta.appendingPathComponent("upgrade-rules.json") }
-    public var switchedOff: URL { meta.appendingPathComponent("upgrade-switched-off.json") }
+    /// The tool's own files on this server, readable without Leaf Juice.
+    public var upgradeFolder: URL { plugins.appendingPathComponent("Preflight/upgrade", isDirectory: true) }
+    public var upgradeRules: URL { upgradeFolder.appendingPathComponent("rules.json") }
+    public var switchedOffFile: URL { upgradeFolder.appendingPathComponent("switched-off.json") }
 }
 
 extension ServerController {
-    /// nil when there's no rules file. A file that can't be read is an error, not "no rules", because a missing
-    /// never-off rule could let a protective plugin be switched off.
-    public func upgradeRules() throws -> UpgradeRules? {
-        guard FileOps.exists(paths.upgradeRules) else { return nil }
-        guard let data = try? Data(contentsOf: paths.upgradeRules), let rules = try? JSONDecoder().decode(UpgradeRules.self, from: data) else {
-            throw LeafError("\(paths.upgradeRules.path) couldn't be read, so no plugin plan is offered until it's fixed.")
+    /// Java for the tool, which needs 25 or newer.
+    func upgradeToolJava() throws -> String {
+        guard let java = JavaManager.best(for: UpgradeTool.javaMajor, in: runtimes) else {
+            throw LeafError("The upgrade check needs Java \(UpgradeTool.javaMajor) or newer. Install it from Settings, then try again.")
         }
-        guard rules.format == 1 else { throw LeafError("The upgrade rules file is format \(rules.format), which this version of Leaf Juice doesn't know.") }
-        return rules
+        return java.path
     }
 
-    public func saveUpgradeRules(_ rules: UpgradeRules) throws {
-        try FileOps.ensureDir(paths.meta)
-        try JSONStore.save(rules, to: paths.upgradeRules)
+    /// Makes an empty rules file to fill in, if there isn't one, and returns where it is.
+    public func ensureUpgradeRules() throws -> URL {
+        if !FileOps.exists(paths.upgradeRules) {
+            try FileOps.ensureDir(paths.upgradeFolder)
+            try FileOps.writeAtomic(#"{"format": 1, "neverOff": [], "recheck": []}"# + "\n", to: paths.upgradeRules)
+        }
+        return paths.upgradeRules
     }
 
-    public var switchedOffPlugins: SwitchedOffPlugins { JSONStore.load(paths.switchedOff, defaults: SwitchedOffPlugins()) }
-
-    /// Boots a throwaway copy on `build` with Preflight warning instead of stopping, and works out the plan from its
-    /// report. The real server isn't touched.
-    public func checkPluginsForUpgrade(_ build: SoftwareBuild, waitForReport: Duration = .seconds(180)) async -> PluginUpgradePlan {
+    /// Copies the server with saving paused, downloads the target Paper, and has the tool boot the copy and plan.
+    /// The copy and the downloaded jar are deleted afterwards. The real server isn't changed.
+    public func checkPluginsForUpgrade(_ build: SoftwareBuild, allowSharedDatabase: Bool = false) async -> PluginUpgradePlan {
         let target = "\(build.flavor.title) \(build.label)"
-        let rules: UpgradeRules?
-        do { rules = try upgradeRules() } catch { return PluginUpgradePlan(target: target, stop: error.localizedDescription) }
-        guard plugins.contains(where: { $0.enabled && $0.key == "preflight" }) else {
-            return PluginUpgradePlan(target: target, stop: "Preflight isn't installed on this server, and the check needs it. Install Preflight 0.2.0 or later first.")
+        guard build.flavor == .paper else { return PluginUpgradePlan(target: target, stop: "The upgrade check works for Paper only.") }
+        guard trialPhase == nil || trialPhase == .finished else { return PluginUpgradePlan(target: target, stop: "A test copy is already in use. Finish it first.") }
+        let work = paths.root.deletingLastPathComponent()
+            .appendingPathComponent(AppPaths.ownFolderName, isDirectory: true).appendingPathComponent("test-copies", isDirectory: true)
+            .appendingPathComponent("upgrade-check-\(paths.root.lastPathComponent)-\(Int(Date().timeIntervalSince1970))", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: work) }
+        do {
+            let java = try upgradeToolJava()
+            setActivity("Getting \(target) for the check…")
+            defer { setActivity(nil) }
+            try FileOps.ensureDir(work)
+            let paper = work.appendingPathComponent(build.fileName)
+            try await HTTP.download(HTTP.url(build.downloadURL), to: paper, expect: build.hashes)
+            setActivity("Copying the server for the check…")
+            let copy = work.appendingPathComponent("copy", isDirectory: true)
+            try await copyWithSavingPaused(to: copy)
+            setActivity("Checking plugins on \(target). This takes a few minutes…")
+            var args = ["check", "--server", paths.root.path, "--copy", copy.path, "--paper", paper.path, "--json",
+                        "--memory", "\(min(profile.launch.maxMemoryMB, 4096))M", "--java", java]
+            if allowSharedDatabase { args.append("--allow-shared-database") }
+            let result = try await UpgradeTool.run(java: java, args)
+            guard var plan = PluginUpgradePlan.decode(Data(result.out.utf8), target: target) else {
+                return PluginUpgradePlan(target: target, stop: "The check didn't finish. \(UpgradeTool.lastWords(result))")
+            }
+            plan.hasRules = FileOps.exists(paths.upgradeRules)
+            appendWrapper("Plugin check for \(plan.target): \(plan.status).", level: .info)
+            return plan
+        } catch {
+            return PluginUpgradePlan(target: target, stop: error.localizedDescription)
         }
-        await startTrial(.custom(title: "Check plugins on \(target)") { child in
-            try await child.installSoftware(build)
-            child.profile.launch.extraJVMArgs += " -Dpreflight.on-failure=WARN"
-        }, keepOpen: true)
-        return await planFromOpenTrial(target: target, rules: rules, waitForReport: waitForReport)
     }
 
-    /// Reads Preflight's report from the test copy once it's finished, then deletes the copy.
-    func planFromOpenTrial(target: String, rules: UpgradeRules?, waitForReport: Duration) async -> PluginUpgradePlan {
-        guard trialPhase == .open, let folder = trialFolder else {
-            let why = trialReport?.failure ?? trialReport?.blockers.first ?? "it didn't start"
-            await collapseTrial()
-            return PluginUpgradePlan(target: target, stop: "The test copy on \(target) couldn't be checked: \(why)")
+    /// A copy taken the way test copies are: a running server stops saving for the moment it takes.
+    func copyWithSavingPaused(to copy: URL) async throws {
+        let wasRunning = state == .running
+        if wasRunning, let process {
+            process.send("save-off")
+            let saved = Task { await waitForLine(containing: "saved the game", timeout: .seconds(120)) }
+            await Task.yield()
+            process.send("save-all flush")
+            _ = await saved.value
         }
-        let file = folder.appendingPathComponent(PreflightReport.fileName)
-        var report: PreflightReport?
-        let deadline = ContinuousClock.now + waitForReport
-        while ContinuousClock.now < deadline {
-            if let data = try? Data(contentsOf: file), let read = PreflightReport.parse(data), read.finishedAt != nil { report = read; break }
-            try? await Task.sleep(for: .milliseconds(500))
-        }
-        if report == nil, let data = try? Data(contentsOf: file) { report = PreflightReport.parse(data) }
-        // The copy has done its job, and none is left between runs.
-        await collapseTrial()
-        return PluginUpgradePlan.make(report: report, rules: rules, target: target)
+        defer { if wasRunning { process?.send("save-on") } }
+        try await Trial.clone(paths.root, to: copy)
     }
 
-    /// Switches off what the plan lists, on the real server. It must be stopped, and a verified restore point is
-    /// taken first. If any file can't be moved, the ones already moved are put back.
+    /// Switches off what the plan lists, through the tool. Leaf Juice's own verified restore point of the whole server
+    /// comes first. The tool then refuses if the server is running or a jar changed since the check.
     public func applyPluginPlan(_ plan: PluginUpgradePlan) async throws {
         guard plan.canApply else { throw LeafError(plan.stop ?? (plan.blocked.isEmpty ? "There's nothing to switch off." : "A plugin that must stay on would have to go, so the upgrade waits.")) }
         guard state.canStart, !state.isLive else { throw LeafError("Stop the server first. Plugins are only switched off while it's stopped.") }
-        // Every file must be there and switched on before anything moves.
-        for item in plan.off {
-            for file in item.files where !FileOps.exists(paths.plugins.appendingPathComponent(file)) {
-                throw LeafError("\(file) isn't in the plugins folder as it was on the test copy, so nothing was changed. Check the plugins again.")
-            }
-        }
-        let point: BackupRecord? = isTrialCopy ? nil : try await makeRestorePoint()
-        var moved: [URL] = []
-        do {
-            for item in plan.off {
-                for file in item.files {
-                    let jar = paths.plugins.appendingPathComponent(file)
-                    try FileOps.move(jar, to: jar.appendingPathExtension("disabled"))
-                    moved.append(jar)
-                }
-            }
-        } catch {
-            for jar in moved.reversed() { try? FileOps.move(jar.appendingPathExtension("disabled"), to: jar) }
-            throw LeafError("Switching plugins off stopped part-way, so the ones already switched off were put back. \(error.localizedDescription)")
-        }
-        var record = switchedOffPlugins
-        record.entries.removeAll { entry in plan.off.contains { $0.name == entry.name } }
-        record.entries += plan.off.map { .init(name: $0.name, files: $0.files, why: $0.why, date: Date(), target: plan.target) }
-        record.backupFile = point?.fileName ?? record.backupFile
-        try JSONStore.save(record, to: paths.switchedOff)
+        let java = try upgradeToolJava()
+        if !isTrialCopy { _ = try await makeRestorePoint() }
+        let file = paths.meta.appendingPathComponent("upgrade-plan-\(UUID().uuidString).json")
+        try FileOps.ensureDir(paths.meta)
+        try plan.raw.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        setActivity("Switching plugins off…")
+        defer { setActivity(nil) }
+        let result = try await UpgradeTool.run(java: java, ["apply", "--server", paths.root.path, "--plan", file.path, "--yes"])
         await refreshPlugins()
+        guard result.ok else { throw LeafError("Nothing was switched off. \(UpgradeTool.lastWords(result))") }
         appendWrapper("Switched off for \(plan.target): \(plan.off.map(\.name).joined(separator: ", ")).", level: .info)
         recordEvent(.plugin, "Plugins switched off for \(plan.target)", detail: plan.off.map(\.name).joined(separator: ", "))
     }
 
-    /// Puts plugins the helper switched off back on. Only while stopped.
+    /// What the tool has switched off on this server.
+    public func switchedOffPlugins() async -> SwitchedOffPlugins {
+        guard FileOps.exists(paths.switchedOffFile), let java = try? upgradeToolJava(),
+              let result = try? await UpgradeTool.run(java: java, ["status", "--server", paths.root.path, "--json"]) else { return SwitchedOffPlugins() }
+        return SwitchedOffPlugins.decode(Data(result.out.utf8)) ?? SwitchedOffPlugins()
+    }
+
+    /// Puts plugins the tool switched off back on. Only while stopped; a newer jar in its place is left alone.
     public func switchBackOn(_ names: [String]) async throws {
+        guard !names.isEmpty else { return }
         guard state.canStart, !state.isLive else { throw LeafError("Stop the server first. Plugins are only switched on while it's stopped.") }
-        var record = switchedOffPlugins
-        let chosen = record.entries.filter { names.contains($0.name) }
-        for entry in chosen {
-            for file in entry.files {
-                let jar = paths.plugins.appendingPathComponent(file), off = jar.appendingPathExtension("disabled")
-                guard FileOps.exists(off) else { continue }
-                guard !FileOps.exists(jar) else { throw LeafError("\(file) is already in the plugins folder, switched on, so \(entry.name) was left as it is.") }
-                try FileOps.move(off, to: jar)
-            }
-        }
-        record.entries.removeAll { names.contains($0.name) }
-        if record.entries.isEmpty { try? FileManager.default.removeItem(at: paths.switchedOff) } else { try JSONStore.save(record, to: paths.switchedOff) }
+        let java = try upgradeToolJava()
+        setActivity("Switching plugins back on…")
+        defer { setActivity(nil) }
+        let result = try await UpgradeTool.run(java: java, ["restore", "--server", paths.root.path] + names.flatMap { ["--plugin", $0] } + ["--yes"])
         await refreshPlugins()
-        if !chosen.isEmpty {
-            appendWrapper("Switched back on: \(chosen.map(\.name).joined(separator: ", ")).", level: .info)
-            recordEvent(.plugin, "Plugins switched back on", detail: chosen.map(\.name).joined(separator: ", "))
-        }
+        guard result.ok else { throw LeafError("Not every plugin went back on. \(UpgradeTool.lastWords(result))") }
+        appendWrapper("Switched back on: \(names.joined(separator: ", ")).", level: .info)
+        recordEvent(.plugin, "Plugins switched back on", detail: names.joined(separator: ", "))
     }
 }
