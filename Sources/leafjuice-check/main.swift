@@ -4333,6 +4333,111 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     await packHostingChecks()
     await exactPackChecks()
     await packSongChecks()
+    await pluginUpgradeChecks()
+}
+
+@MainActor func pluginUpgradeChecks() async {
+    print("• Plugins on upgrade")
+    func report(_ props: [String: String], extra: String = "") -> Data {
+        let lines = props.sorted { $0.key < $1.key }.map { #"    <property name="\#($0.key)" value="\#($0.value)"/>"# }.joined(separator: "\n")
+        return Data(#"<?xml version="1.0" encoding="UTF-8"?><testsuite name="Preflight" tests="3"><properties>\#n\#(lines)</properties>\#(extra)<testcase classname="Made.Up" name="x"/></testsuite>"#.utf8)
+    }
+    let base = ["preflight.report.format": "1", "preflight.finished-at": "2026-11-08T00:00:00Z", "preflight.server-checks": "passed", "server.minecraft-version": "26.3"]
+    var props = base
+    func plugin(_ name: String, _ fields: [String: String]) { for (k, v) in fields { props["plugin.\(name).\(k)"] = v } }
+    plugin("Made.Up.Core", ["state": "enabled", "version": "1.0", "files": "MadeUpCore.jar"])
+    plugin("BrokenThing", ["state": "not-loaded", "files": "BrokenThing-2.jar", "reason": "Unsupported API version 99.0"])
+    plugin("NeedsBroken", ["state": "enabled", "files": "NeedsBroken.jar", "depends": "BrokenThing", "missing-depends": "BrokenThing"])
+    plugin("NeedsNeeds", ["state": "enabled", "files": "NeedsNeeds.jar", "depends": "NeedsBroken"])
+    plugin("SoftOnBroken", ["state": "enabled", "files": "SoftOnBroken.jar", "soft-depends": "BrokenThing"])
+    plugin("FailsSmoke", ["state": "enabled", "files": "FailsSmoke.jar", "failed-tests": "FailsSmoke:works"])
+    plugin("WarnsOnly", ["state": "enabled", "files": "WarnsOnly.jar", "failed-tests": "WarnsOnly:version"])
+    props["test.FailsSmoke:works.result"] = "failed"; props["test.FailsSmoke:works.severity"] = "critical"; props["test.FailsSmoke:works.message"] = "made-up failure"
+    props["test.WarnsOnly:version.result"] = "failed"; props["test.WarnsOnly:version.severity"] = "warning"; props["test.WarnsOnly:version.message"] = "unsupported server version"
+
+    let parsed = PreflightReport.parse(report(props))
+    equal(parsed?.plugins["Made.Up.Core"]?.files, ["MadeUpCore.jar"], "a plugin name with dots is split on the last dot")
+    equal(parsed?.plugins["BrokenThing"]?.state, .notLoaded, "a jar that never loaded is read")
+    equal(parsed?.tests["FailsSmoke:works"]?.severity, "critical", "and tests by their own id")
+
+    var rules = UpgradeRules()
+    rules.recheck = [.init(plugin: "made.up.core", note: "Try it by hand."), .init(plugin: "NotInstalled", note: "Never shown.")]
+    let plan = PluginUpgradePlan.make(report: parsed, rules: rules, target: "Paper 26.3")
+    equal(plan.off.map(\.name), ["BrokenThing", "FailsSmoke", "NeedsBroken", "NeedsNeeds"], "what didn't load, what failed a critical check, and everything that needs them, however far down")
+    check(plan.off.first { $0.name == "BrokenThing" }?.why.first?.contains("Unsupported API version 99.0") == true, "with Paper's own reason")
+    check(plan.off.first { $0.name == "NeedsNeeds" }?.why == ["Off because NeedsBroken is off."], "a dependent says what it's off because of")
+    check(plan.off.first { $0.name == "NeedsBroken" }?.why.contains { $0.contains("needs BrokenThing") } == true, "enabled, but missing a dependency, counts as broken")
+    check(plan.warnings.contains { $0.contains("WarnsOnly:version") }, "a warning is listed for a person: \(plan.warnings)")
+    check(!plan.off.contains { $0.name == "WarnsOnly" }, "and switches nothing off")
+    check(plan.warnings.contains { $0.contains("SoftOnBroken stays on") }, "a soft dependent stays on, flagged")
+    equal(plan.recheck.map(\.plugin), ["made.up.core"], "rechecks for installed plugins only, matched ignoring case")
+    check(plan.canApply && plan.blocked.isEmpty, "a plan with nothing protected can be applied")
+
+    rules.neverOff = [.init(plugin: "needsbroken", why: "Made-up protection.")]
+    let held = PluginUpgradePlan.make(report: parsed, rules: rules, target: "Paper 26.3")
+    equal(held.blocked.map(\.name), ["NeedsBroken"], "a never-off plugin that would have to go is held, matched ignoring case")
+    check(!held.canApply, "and then the upgrade waits")
+    rules.neverOff = [.init(plugin: "NotInstalledYet", why: "Arrives later.")]
+    check(PluginUpgradePlan.make(report: parsed, rules: rules, target: "x").canApply, "a never-off plugin that isn't installed is fine")
+
+    // Anything that can't be judged offers nothing.
+    var bad = props; bad["preflight.finished-at"] = nil
+    check(PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x").stop?.contains("isn't finished") == true, "an unfinished report offers nothing")
+    bad = props; bad["preflight.report.format"] = "2"
+    check(PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x").stop?.contains("format 2") == true, "a newer format offers nothing")
+    bad = props; bad["preflight.report.format"] = nil
+    check(PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x").stop?.contains("too old") == true, "a report from an older Preflight offers nothing")
+    bad = props; bad["preflight.server-checks"] = "failed"
+    check(PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x").stop?.contains("doesn't run properly") == true, "a broken version says so instead of offering plugins")
+    check(PluginUpgradePlan.make(report: nil, rules: nil, target: "x").stop != nil, "no report offers nothing")
+    check(PreflightReport.parse(Data("<not xml".utf8)) == nil, "unreadable XML isn't a report")
+    bad = props; bad["plugin.BrokenThing.files"] = "../outside.jar"
+    let sneaky = PluginUpgradePlan.make(report: PreflightReport.parse(report(bad)), rules: nil, target: "x")
+    check(sneaky.blocked.contains { $0.name == "BrokenThing" } && !sneaky.canApply, "a file outside plugins/ is never touched")
+    let clean = PluginUpgradePlan.make(report: PreflightReport.parse(report(base)), rules: nil, target: "x")
+    check(clean.allClear && !clean.canApply, "nothing to switch off is all clear")
+
+    // Applying, and undoing, on a made-up stopped server.
+    do {
+        let root = folder("plugin-upgrade")
+        write("server-port=25601\n", root.appendingPathComponent("server.properties"))
+        for jar in ["MadeUpCore.jar", "BrokenThing-2.jar", "NeedsBroken.jar", "NeedsNeeds.jar", "FailsSmoke.jar", "WarnsOnly.jar", "SoftOnBroken.jar"] {
+            write("made up", root.appendingPathComponent("plugins/\(jar)"))
+        }
+        let c = try await ServerController.adopt(root: root, name: "plugin-upgrade")
+        defer { c.stopTicker() }
+        write("{ broken", c.paths.upgradeRules)
+        var refused = false
+        do { _ = try c.upgradeRules() } catch { refused = true }
+        check(refused, "an unreadable rules file is an error, not 'no rules'")
+        try c.saveUpgradeRules(rules)
+        equal(try c.upgradeRules(), rules, "rules are saved as a plain file and read back")
+
+        var missing = plan
+        missing.off.append(.init(name: "Ghost", files: ["Ghost.jar"], why: ["made up"]))
+        var stopped = ""
+        do { try await c.applyPluginPlan(missing) } catch { stopped = error.localizedDescription }
+        check(stopped.contains("Ghost.jar") && FileOps.exists(root.appendingPathComponent("plugins/BrokenThing-2.jar")), "a file that isn't there stops everything before anything moves")
+
+        try await c.applyPluginPlan(plan)
+        for name in ["BrokenThing-2.jar", "NeedsBroken.jar", "NeedsNeeds.jar", "FailsSmoke.jar"] {
+            check(FileOps.exists(root.appendingPathComponent("plugins/\(name).disabled")) && !FileOps.exists(root.appendingPathComponent("plugins/\(name)")), "\(name) is switched off")
+        }
+        check(FileOps.exists(root.appendingPathComponent("plugins/WarnsOnly.jar")) && FileOps.exists(root.appendingPathComponent("plugins/SoftOnBroken.jar")), "and nothing else")
+        check(c.switchedOffPlugins.backupFile != nil, "after a restore point")
+        equal(c.switchedOffPlugins.entries.map(\.name).sorted(), ["BrokenThing", "FailsSmoke", "NeedsBroken", "NeedsNeeds"], "and they're remembered, to offer back")
+
+        try await c.switchBackOn(["BrokenThing", "NeedsBroken"])
+        check(FileOps.exists(root.appendingPathComponent("plugins/BrokenThing-2.jar")) && FileOps.exists(root.appendingPathComponent("plugins/NeedsBroken.jar")), "chosen ones go back on")
+        check(FileOps.exists(root.appendingPathComponent("plugins/NeedsNeeds.jar.disabled")), "and only those")
+        equal(c.switchedOffPlugins.entries.map(\.name).sorted(), ["FailsSmoke", "NeedsNeeds"], "the rest are still offered")
+        write("a newer one", root.appendingPathComponent("plugins/FailsSmoke.jar"))
+        var kept = ""
+        do { try await c.switchBackOn(["FailsSmoke"]) } catch { kept = error.localizedDescription }
+        check(kept.contains("already"), "a newer jar in its place isn't overwritten: \(kept)")
+        try await c.switchBackOn(["NeedsNeeds"])
+        check(FileOps.exists(root.appendingPathComponent("plugins/NeedsNeeds.jar")), "the last one goes back on too")
+    } catch { failures.append("plugins on upgrade threw: \(error)") }
 }
 
 @MainActor func packSongChecks() async {
