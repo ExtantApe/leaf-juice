@@ -28,6 +28,30 @@ a single local app with no web server, no daemon and no container.
 | **No AI at runtime** | Rules are a data table with a tested sample per rule. Anything unmatched is still catalogued and grouped. "Copy report" lets a person paste it wherever they like. |
 | **Unsigned, GitHub Releases only** | Ad-hoc signed; the README explains first launch. In-app "update available" notice links to the release; no self-updater. |
 
+### Owner decisions
+
+Settled by the owner. Follow them without asking again.
+
+| Date | Decision |
+|---|---|
+| 2026-11-07 | The repo lives at `ExtantApe/leaf-juice`, MIT, "Copyright (c) 2026 EXTANT APE". The bundle identifier stays `io.github.mgilardi.leafjuice`. |
+| 2026-11-07 | v0.1.0 is the plugin links work only. Everything else was merged into `main` after it. |
+| 2026-11-07 | Three commit messages pushed by mistake (`cb44c87`, `afd4ce8`, `b345332`) stay. No history rewrite, no force-push. A pre-push hook checks messages from now on. |
+| 2026-11-07 | Plugins target Paper 26.1 and later only, so the real tests boot 26.x. 1.21.11 is only for tests that upgrade from it. |
+| 2026-11-07 | One test server per session at a time, stopped when the run ends, with no copies left between runs. |
+| Before 2026-11-07 | A player sees a world's map only if they can enter that world. If that can't be read reliably, they see no maps. |
+| Before 2026-11-07 | The map stays open directly until the gateway ships on a real server. That server's BlueMap change is made separately. |
+| Before 2026-11-07 | An exact pack can be served unchanged under its own SHA-1. The screen states both risks: it's offline while Leaf Juice is closed, and New Address breaks the address. |
+| Before 2026-11-07 | Real servers wait for the owner's go. The allowlist screen stays off real servers for children's and adults' groups until Stationmaster exists and Leaf Juice calls it. Children's safety and privacy come first. |
+| 2026-11-08 | Per-song toggles: a pack can list its songs in `songs.json`, and each recipe can leave any song out so Minecraft's own track plays. Each choice is a new build with its own SHA-1 and per-build address. A private pack that uses this stays unserved until the owner's in-game test. |
+| 2026-11-08 | Plugins on upgrade: build it, after the per-song toggles. It shows the plan and asks for a yes, works only on a stopped server with a backup, and every step can be undone. Which plugins don't fit comes from Preflight's report on a throwaway copy booted on the target version, not from version metadata. Tested on throwaway copies only. |
+| 2026-11-08 | The upgrade helper's logic moves into Preflight, as a command-line tool in its jar (plan, apply, restore, with JSON output), so people without Leaf Juice can use it. Leaf Juice keeps the screens and the test-copy boot, and calls the tool once Preflight 0.3.0 is out. Its own planning code is then removed, and the real 26.3 run happens against the tool. Done with Preflight 0.3.0 the same day. |
+| 2026-11-08 | Server icons can be rotated: choices live in `<server>/server-icons/`, picking one copies it over `server-icon.png`, and nothing in the folder is ever moved or deleted. The one in use is found by its contents. Added images must be square, and are scaled to 64×64 with nearest-neighbour. A change shows after the next restart. |
+| 2026-11-09 | Player browser sessions belong to Latchkey, not Leaf Juice, so servers without Leaf Juice get them too. When Latchkey's side is built, the links page and map gateway check sessions through its local admin API, and Leaf Juice keeps no player sessions of its own. Session length is a setting from 1 to 30 days, default 1. Anything Leaf Juice shows or sets stays in that range. |
+| 2026-11-09 | Commands are the API. Plugins work without Leaf Juice in any combination. Leaf Juice sends the same commands through the console of a server it started (`<plugin> <subcommand> … --json <id>`, answered by one `ea-result <id> <json>` line), and no secret ever goes through the console: it comes in a one-time file the plugin writes and Leaf Juice deletes. Screens are decided per feature. |
+| 2026-11-09 | The Players page invite flow is built by hand and filled from each plugin's `describe`. It says plainly that invites from the app only work while Leaf Juice is running that server. |
+| 2026-11-09 | The links page and map gateway check a player's session through a file per session that Latchkey keeps, named by the cookie's hash and deleted on revoke. |
+
 ## The Change Queue
 
 Every change falls into one of two cases, decided by whether the server is running:
@@ -235,7 +259,7 @@ What's been learned from real runs is in [FINDINGS.md](FINDINGS.md).
 
 Built-in features with an on/off switch, not a plugin system. An unsigned app loading third-party code would be a real risk, and Swift has no stable way to do it. `modules.json` stores only what's off, so anything added later starts on. A module going off hides its pages and buttons and stops its background work, and keeps its data. Lifecycle, console, plugins, software, configs, backups, issues and the Change Queue are the base and can't be turned off.
 
-The Wiki is one: `Wiki.swift` assembles a page from `plugin.yml` files, a LuckPerms export and an allowlist of settings, and shows it in the app. Files are only written on export.
+Plugin links is one: `PluginLinks.swift` lists each plugin with a link to its documentation, in the app only. It replaced a generated wiki before the first release, because tables of commands and ranks were more to maintain and more to leak than a link.
 
 Ideas for later modules: scheduled announcements, a player whitelist manager, a Discord webhook for crashes and restarts (off by default, since it reaches outside), offsite backup targets, chunk pre-generation, a world map preview.
 
@@ -245,7 +269,18 @@ Ideas for later modules: scheduled announcements, a player whitelist manager, a 
 
 Most specific wins: My changes, then a pick for one file, then a pack for a category, then rank. Builds fix file times, order and permissions so identical inputs give an identical SHA-1. A git submodule was considered and left out: many packs aren't in git, binaries don't diff, and every user would need git. Lock files give the history that was wanted, and a GitHub source covers packs that are in git.
 
-Zip work uses the system's `unzip` and `zip`, so there are still no dependencies. Hosting is left to the user: a pack needs a public address, and running a web server from a Mac means opening a port.
+Zip work uses the system's `unzip` and `zip`, so there are still no dependencies. 
+Serving is a separate read-only listener on loopback, with settings per server in `.leafjuice/pack-hosting.json`, not in the recipe, so an exported recipe never carries an address. It answers `GET` and `HEAD` for `/<token>/pack.zip` and `/<token>/pack.zip.sha1`, and 404 for everything else. It streams in 256 KiB pieces, allows 32 connections, drops a connection that sends nothing for 10 seconds or stalls for 60, and doesn't log addresses. It works out the build per request: `resource-pack-sha1` if `server.properties` points at this address and Packmule isn't installed, otherwise the build chosen with Serve This Build. A tunnel and Caddy aren't part of Leaf Juice and haven't been tested.
+
+### Handoff to per-world pack plugins
+
+Packmule (called Resource Pack Butler before 0.2.0, 2026-11-09) and WorldResourcepacks are treated the same way. What Leaf Juice offers either one:
+
+- **An address per build,** `/<token>/<sha1>.zip`, which only ever gives that build. A config holding that address and its SHA-1 can't fall out of step, because publishing a new build doesn't change what the old address gives. Old builds stay reachable while their file is kept. This is what the Hosting card shows when one of these plugins is installed.
+- **A stable address,** `/<token>/pack.zip`, plus `pack.zip.sha1`, a plain text file with the current hash. This one switches when you press Serve This Build, so a plugin using it has to re-read the hash.
+- With a plugin named `Packmule`, `ResourcePackButler` (Packmule 0.1.x) or `WorldResourcepacks` present, enabled or not, Leaf Juice refuses to write the pack settings, and warns if `server.properties` still sets a pack.
+
+For Packmule: per-build addresses are the suggested format. A new build then means changing the address and the hash in Butler's config together.
 
 ## Later
 

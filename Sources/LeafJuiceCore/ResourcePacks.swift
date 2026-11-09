@@ -121,6 +121,8 @@ public struct PackRecipe: Codable, Equatable, Sendable {
         public var version: String
         public var enabled = true
         public var excluded: Set<String> = []
+        /// Song ids from the pack's songs.json to leave out, so Minecraft's own track plays. Optional, so older recipes still load.
+        public var songsOff: Set<String>?
         public init(pack: String, version: String) { self.pack = pack; self.version = version }
     }
     public var name = "combined"
@@ -611,6 +613,9 @@ public enum ResourcePacks {
         var id: String; var title: String; var root: URL; var files: [String]; var meta: [String: Any]?; var icon: URL?
         /// A file under today's name, read from where an older pack keeps it.
         var renamed: [String: String] = [:]
+        var songs: PackSongList?
+        /// For the build's warnings.
+        var notes: [String] = []
         func url(_ path: String) -> URL { root.appendingPathComponent(renamed[path] ?? path) }
     }
 
@@ -656,11 +661,25 @@ public enum ResourcePacks {
             guard let pack = packs.first(where: { $0.id == entry.pack }), let version = pack.versions.first(where: { $0.sha1 == entry.version }) ?? pack.latest else { continue }
             let root = try await read(zip(pack, version), version: version.version).root
             // Loose files at the top are a pack's license or readme, not something a game reads, so they aren't ranked.
-            let files = listing(root).filter { $0.contains("/") && !entry.excluded.contains(category(of: $0)) }
+            let songs = songList(root: root)
+            let off = entry.songsOff ?? []
+            let dropped = songs?.files(off: off) ?? []
+            var notes: [String] = []
+            if !off.isEmpty {
+                if let songs, !songs.usable {
+                    notes.append("Songs were switched off in \(pack.title), but its song list has a problem, so every song is included. \(songs.problems.first ?? "")")
+                } else if songs == nil {
+                    notes.append("Songs were switched off in \(pack.title), but this version has no song list, so every song is included.")
+                } else if let songs {
+                    let gone = off.subtracting(songs.songs.map(\.id)).sorted()
+                    if !gone.isEmpty { notes.append("\(pack.title) no longer lists these switched-off songs: \(gone.joined(separator: ", ")).") }
+                }
+            }
+            let files = listing(root).filter { $0.contains("/") && !entry.excluded.contains(category(of: $0)) && !dropped.contains($0) }
             let meta = (try? JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("pack.mcmeta")))) as? [String: Any]
             let icon = root.appendingPathComponent("pack.png")
             let renamed = rescued(files).filter { !entry.excluded.contains(category(of: $0.key)) }
-            out.append(Source(id: pack.id, title: pack.title, root: root, files: files + renamed.keys, meta: meta, icon: FileOps.exists(icon) ? icon : nil, renamed: renamed))
+            out.append(Source(id: pack.id, title: pack.title, root: root, files: files + renamed.keys, meta: meta, icon: FileOps.exists(icon) ? icon : nil, renamed: renamed, songs: songs, notes: notes))
         }
         return out
     }
@@ -750,7 +769,8 @@ public enum ResourcePacks {
     // MARK: Building
 
     private static func folder(forBuildsOf recipe: String) -> URL { builds.appendingPathComponent(slug(recipe), isDirectory: true) }
-    public static func buildFile(_ build: PackBuild, recipe: String) -> URL { folder(forBuildsOf: recipe).appendingPathComponent("\(build.sha1).zip") }
+    public static func buildFile(_ build: PackBuild, recipe: String) -> URL { buildFile(sha1: build.sha1, recipe: recipe) }
+    public static func buildFile(sha1: String, recipe: String) -> URL { folder(forBuildsOf: recipe).appendingPathComponent("\(sha1).zip") }
     public static func lockFile(sha1: String, recipe: String) -> URL { folder(forBuildsOf: recipe).appendingPathComponent("\(sha1).lock.json") }
 
     /// Newest first. Kept so going back is only a matter of pointing the server at an older file.
@@ -787,7 +807,7 @@ public enum ResourcePacks {
         let work = folder.appendingPathComponent(".building-\(UUID().uuidString)", isDirectory: true)
         try FileOps.ensureDir(work)
         defer { try? FileManager.default.removeItem(at: work) }
-        var merged: [String] = [], warnings: [String] = []
+        var merged: [String] = [], warnings: [String] = sources.flatMap(\.notes)
         let byID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
         for file in lock.files {
             let target = work.appendingPathComponent(file.path)
@@ -836,10 +856,11 @@ public enum ResourcePacks {
         if !overlays.isEmpty { meta["overlays"] = ["entries": overlays] }
         try JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]).write(to: work.appendingPathComponent("pack.mcmeta"))
         if let icon = sources.compactMap(\.icon).first { try FileManager.default.copyItem(at: icon, to: work.appendingPathComponent("pack.png")) }
-        try FileOps.writeAtomic(credits(recipe), to: work.appendingPathComponent("CREDITS.txt"))
+        let songCredits = songCredits(sources)
+        try FileOps.writeAtomic(credits(recipe) + (songCredits.isEmpty ? "" : "\n\n" + songCredits), to: work.appendingPathComponent("CREDITS.txt"))
         // Each pack keeps its own license and readme, since many licenses require them to travel with the work.
         for source in sources where source.id != mineID {
-            for loose in listing(source.root) where !loose.contains("/") && loose != "pack.mcmeta" && loose != "pack.png" {
+            for loose in listing(source.root) where !loose.contains("/") && loose != "pack.mcmeta" && loose != "pack.png" && loose != songListName {
                 let target = work.appendingPathComponent("credits/\(source.id)/\(loose)")
                 try FileOps.ensureDir(target.deletingLastPathComponent())
                 try FileManager.default.copyItem(at: source.root.appendingPathComponent(loose), to: target)

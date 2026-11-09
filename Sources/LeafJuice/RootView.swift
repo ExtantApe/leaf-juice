@@ -179,12 +179,13 @@ struct ServerWindow: View {
     @ViewBuilder private var pageView: some View {
         switch model.visiblePage {
         case .resourcePacks: ResourcePacksPage(server: server)
-        case .wiki: WikiPage(server: server)
+        case .links: LinksPage(server: server)
         case .advisor: AdvisorPage(model: model, server: server)
         case .overview: OverviewPage(model: model, server: server, renaming: $renaming)
         case .console: ConsolePage(server: server)
         case .history: HistoryPage(server: server)
         case .players: PlayersPage(server: server)
+        case .allowlist: AllowlistPage(server: server)
         case .worlds: WorldsPage(model: model, server: server)
         case .cleanup: CleanupPage(server: server)
         case .plugins: PluginsPage(model: model, server: server)

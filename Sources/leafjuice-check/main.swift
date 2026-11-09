@@ -1,21 +1,100 @@
+import CoreGraphics
+import ImageIO
 // Self-tests, runnable with just the Command Line Tools.
 //   swift run leafjuice-check          Offline suite, plus the full server lifecycle against a small
 //                                      stand-in jar (compiled here if a JDK is available). No Minecraft.
 //   ... --live                         Also calls the real Paper, Modrinth, Hangar, Spiget, GitHub APIs.
+//   ... --real-prejoin --i-accept-the-minecraft-eula
+//   ... --real-signin <Latchkey.jar> --i-accept-the-minecraft-eula
 //   ... --sandbox --i-accept-the-minecraft-eula
 //                                      A lasting test server in .lab-sandbox/, seeded with bot players and several worlds.
 //                                      Each run tests a throwaway clone. Add --sandbox-wipe to start it afresh.
 //   ... --lab --i-accept-the-minecraft-eula
 //   ... --experiments <versions,failures,multiverse,players,renames,restore|all> --i-accept-the-minecraft-eula
 //                                      Tries things and writes down what really happened, in .lab-sandbox/findings/.
+//   ... --real-map --i-accept-the-minecraft-eula
+//                                      Real BlueMap, Multiverse and LuckPerms behind the sign-in page, on a throwaway server.
+//   ... --real-pack --i-accept-the-minecraft-eula
+//                                      A throwaway Paper server and bots, with made-up packs served by Leaf Juice.
+//   ... --mc <version>                 The version --real-map, --real-prejoin, --real-signin and --real-pack boot. 26.3 by default.
 //   ... --real-paper --i-accept-the-minecraft-eula
 //                                      Boots real Paper. The second flag is your own acceptance of
 //                                      https://aka.ms/MinecraftEULA, for a throwaway server in a temp folder.
+import CryptoKit
 import Foundation
+import Network
 @testable import LeafJuiceCore
+
+// ... --demo-packs <folder> <zip>...  Fills a throwaway folder with these packs and a server, for clicking through the app.
+if let flag = CommandLine.arguments.firstIndex(of: "--demo-packs") {
+    let demo = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+    setenv("LEAFJUICE_HOME", demo.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", demo.appendingPathComponent("servers").path, 1)
+    var added: [LibraryPack] = []
+    for zip in CommandLine.arguments[(flag + 2)...] { added.append(try await ResourcePacks.add(URL(fileURLWithPath: zip))) }
+    var recipe = ResourcePacks.reconcile(PackRecipe(), with: added)
+    recipe.name = "world-one"
+    ResourcePacks.saveRecipe(recipe)
+    _ = try await ResourcePacks.combine(recipe)
+    recipe.name = "world-two"
+    recipe.entries.reverse()
+    ResourcePacks.saveRecipe(recipe)
+    _ = try await ResourcePacks.combine(recipe)
+    let root = demo.appendingPathComponent("servers/demo-server", isDirectory: true)
+    try FileOps.writeAtomic("server-port=25592\nmotd=made up\n", to: root.appendingPathComponent("server.properties"))
+    _ = try await ServerController.adopt(root: root, name: "demo-server")
+    print("Demo folder ready: \(demo.path)")
+    exit(0)
+}
+
+// ... --songs <folder> <zip>  Reads a pack's songs.json in a throwaway folder, then builds it with each song off in turn.
+if let flag = CommandLine.arguments.firstIndex(of: "--songs") {
+    let scratch = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+    setenv("LEAFJUICE_HOME", scratch.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", scratch.appendingPathComponent("servers").path, 1)
+    let pack = try await ResourcePacks.add(URL(fileURLWithPath: CommandLine.arguments[flag + 2]))
+    var recipe = ResourcePacks.reconcile(PackRecipe(), with: [pack])
+    recipe.name = "songs"
+    guard let list = await ResourcePacks.songList(for: recipe.entries[0]) else { print("No songs.json."); exit(1) }
+    print("Usable: \(list.usable). Problems: \(list.problems). Notes: \(list.notes)")
+    for song in list.songs { print("  \(song.id): \(song.title), \(song.files.count) files, \(Format.bytes(list.sizes[song.id] ?? 0)), stands in for \(song.standsInFor.joined(separator: ", "))") }
+    let all = try await ResourcePacks.combine(recipe)
+    print("All on: \(all.sha1), \(Format.bytes(all.size)), warnings \(all.warnings)")
+    for song in list.songs {
+        recipe.entries[0].songsOff = [song.id]
+        let build = try await ResourcePacks.combine(recipe)
+        let kept = ResourcePacks.loadLock(sha1: build.sha1, recipe: recipe.name)?.files.filter { f in song.files.contains { $0.path == f.path } }.count ?? -1
+        print("  \(song.id) off: \(build.sha1), \(Format.bytes(build.size)), its files left in: \(kept), warnings \(build.warnings)")
+        try? FileManager.default.removeItem(at: ResourcePacks.buildFile(build, recipe: recipe.name))
+    }
+    exit(0)
+}
+
+/// The Minecraft version the real map, pre-join, sign-in and pack tests boot: `--mc <version>`, 26.3 by default.
+/// Plugins now target 26.1 and later, so 1.21.11 is only used by tests that upgrade from it.
+let realMC: String = {
+    guard let flag = CommandLine.arguments.firstIndex(of: "--mc"), flag + 1 < CommandLine.arguments.count else { return "26.3" }
+    return CommandLine.arguments[flag + 1]
+}()
 
 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("leafjuice-check-\(UUID().uuidString)", isDirectory: true)
 try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+// Real-server runs leave hundreds of MB here, so every exit deletes it, and says so if it can't.
+atexit { cleanUpScratch() }
+
+func cleanUpScratch() {
+    guard FileManager.default.fileExists(atPath: scratch.path) else { return }
+    do { try FileManager.default.removeItem(at: scratch) } catch {
+        // A jar or a server can leave read-only files behind.
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = ["-R", "u+w", scratch.path]
+        try? chmod.run(); chmod.waitUntilExit()
+        do { try FileManager.default.removeItem(at: scratch) } catch {
+            print("Couldn't delete the test folder \(scratch.path): \(error.localizedDescription)")
+        }
+    }
+}
 setenv("LEAFJUICE_HOME", scratch.appendingPathComponent("home").path, 1)
 setenv("LEAFJUICE_SERVERS", scratch.appendingPathComponent("servers").path, 1)
 defer { try? FileManager.default.removeItem(at: scratch) }
@@ -312,7 +391,7 @@ do {
             equal(a.sorted.first?.ruleID, rule.id, "sample routes to \(rule.id): \(sample)")
         }
     }
-    let pages = Set(["resourcePacks", "wiki", "launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
+    let pages = Set(["resourcePacks", "links", "allowlist", "launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
     for rule in rules { if let a = rule.action { check(pages.contains(a.page), "\(rule.id) action page") } }
     check(rules.allSatisfy { !$0.title.isEmpty && !$0.explanation.isEmpty }, "rules have text")
 }
@@ -1253,6 +1332,14 @@ do {
         equal(LabFiles.saveName(date: when, software: soft, note: "Before 26 upgrade!"), "2026-11-03_20-15_paper-1.21.11-build132_before-26-upgrade.tar.gz", "save names read well")
         equal(LabFiles.saveName(date: when, software: soft, note: "../../etc"), "2026-11-03_20-15_paper-1.21.11-build132_etc.tar.gz", "notes can't reach outside the folder")
         equal(LabFiles.saveName(date: when, software: soft, note: ""), "2026-11-03_20-15_paper-1.21.11-build132.tar.gz", "the note is optional")
+        // Wiping needs both the mark and the exact folder.
+        var marked = ServerProfile(); marked.isLab = true
+        let plain = ServerProfile()
+        check(LabFiles.isLab(root: LabFiles.root, profile: marked), "the marked Lab in its own folder can be wiped")
+        check(!LabFiles.isLab(root: LabFiles.root, profile: plain), "a server in the lab folder without the mark can't")
+        check(!LabFiles.isLab(root: LabFiles.root.deletingLastPathComponent().appendingPathComponent("lab-2"), profile: marked), "nor a marked one anywhere else")
+        check(!LabFiles.isLab(root: LabFiles.root.appendingPathComponent("worlds"), profile: marked), "nor a folder inside it")
+        check(LabFiles.isLab(root: LabFiles.root.appendingPathComponent("../lab"), profile: marked), "a roundabout path to the same folder is still the Lab")
         func path(_ title: String, _ outcomes: [LabCheck.Outcome]) -> RehearsalPath {
             var p = RehearsalPath(title: title, route: ""); p.checks = outcomes.enumerated().map { LabCheck("c\($0.offset)", $0.element) }; return p
         }
@@ -1366,114 +1453,127 @@ do {
         check(c.lastSizeCheck != oldCheck, "and on starts it")
     }
     await resourcePackChecks()
-    do { // The wiki: reading plugin.yml in the shapes it really takes.
-        let yaml = """
-        name: Example
-        version: '1.2'
-        description: Does things
-        author: Someone
-        commands:
-          home:
-            description: Go home
-            usage: /<command> [name]
-            aliases: [h, gohome]
-            permission: example.home
-          warp:
-            description: >
-              Goes somewhere
-            aliases:
-            - w
-            permission: example.warp
-          secret:
-            description: Admin things
-            usage: "§cUse /<command>"
-            permission: example.admin
-          open:
-            description: No permission declared
-        permissions:
-          example.home:
-            description: Use home
-            default: true
-          example.warp:
-            description: Use warp
-            default: op
-          example.admin:
-            description: Staff
-            default: op
-          example.*:
-            description: Everything
-            children:
-              example.home: true
-              example.warp: true
-              example.admin: true
-          nope.only:
-            default: false
-        """
-        let manual = PluginManualReader.parse(yaml)
-        equal(manual?.name, "Example", "name read"); equal(manual?.authors, ["Someone"], "author read"); equal(manual?.commands.map(\.name), ["home", "warp", "secret", "open"], "commands read")
-        equal(manual?.commands[0].aliases, ["h", "gohome"], "inline aliases"); equal(manual?.commands[1].aliases, ["w"], "listed aliases"); equal(manual?.commands[1].description, "Goes somewhere", "folded text")
-        equal(manual?.permissions.first { $0.node == "example.*" }?.children.count, 3, "permission children"); equal(manual?.permissions.first { $0.node == "nope.only" }?.defaultValue, "false", "a default")
-        equal(Wiki.tidyUsage("§cUse /<command>", "secret"), "Use /secret", "usage tidied")
-        equal(PluginManualReader.parse("nothing useful"), nil, "not a plugin.yml")
-
-        // Ranks, from a real export's shape.
-        let export = #"{"groups":{"vip":{"nodes":[{"type":"permission","key":"example.warp","value":true},{"type":"prefix","key":"prefix.100.&6VIP","value":true},{"type":"weight","key":"weight.10","value":true}]},"default":{"nodes":[{"type":"permission","key":"example.home","value":false}]},"moderator":{"nodes":[{"type":"inheritance","key":"group.vip","value":true},{"type":"permission","key":"example.*","value":true,"context":{"server":"survival"}},{"type":"permission","key":"example.home","value":false}]}}}"#
-        let ranks = WikiRanks.parse(Data(export.utf8))
-        equal(ranks.map(\.name), ["default", "moderator", "vip"], "ranks read, by weight")
-        equal(ranks.first { $0.name == "vip" }?.prefix, "VIP", "prefix without color codes"); equal(ranks.first { $0.name == "vip" }?.weight, 10, "weight")
-        equal(ranks.first { $0.name == "moderator" }?.grants.first?.context, "server=survival", "context kept")
-        let perms = manual!.permissions
-        let vip = ranks.first { $0.name == "vip" }!, moderator = ranks.first { $0.name == "moderator" }!, base = ranks.first { $0.name == "default" }!
-        equal(WikiRanks.has(vip, node: "example.warp", ranks: ranks, permissions: perms), true, "direct")
-        equal(WikiRanks.has(vip, node: "example.admin", ranks: ranks, permissions: perms), nil, "silent")
-        equal(WikiRanks.has(moderator, node: "example.warp", ranks: ranks, permissions: perms), true, "wildcard")
-        equal(WikiRanks.has(moderator, node: "example.home", ranks: ranks, permissions: perms), false, "an exact no beats a wildcard")
-        equal(WikiRanks.has(base, node: "example.home", ranks: ranks, permissions: perms), false, "denied for everyone")
-        let commands = manual!.commands
-        func who(_ i: Int) -> WikiContent.Who { Wiki.who(commands[i], permissions: perms, ranks: ranks) }
-        check(!who(0).everyone, "a default rank's no overrides the plugin's default yes")
-        equal(who(1).ranks.sorted(), ["moderator", "vip"], "a rank-only command names its ranks"); check(!who(1).everyone, "and isn't for everyone")
-        equal(who(2).ranks, ["moderator"], "an admin command only goes to who has it")
-        check(who(3).unconfirmed, "no declared permission is told apart"); check(!who(3).isPublic, "and isn't called public")
-        check(Wiki.who(commands[0], permissions: perms, ranks: []).everyone, "with no ranks known, the plugin's default applies")
-        check(!Wiki.who(commands[2], permissions: perms, ranks: []).isPublic, "and an op-only command stays private")
-
-        // Nothing it shouldn't.
-        let props = "rcon.password=hunter2\nmanagement-server-secret=topsecret\nresource-pack=https\\://x.example/secretlink.zip\nresource-pack-sha1=abc123def\ndifficulty=hard\npvp=false\nserver-ip=10.0.0.5\nrequire-resource-pack=true\n"
-        var settings = WikiSettings()
-        settings.address = "play.example.com"; settings.rules = "Be <kind>.\n\nNo griefing."
-        var wiki = Wiki.assemble(serverName: "My <Server>", message: "Hello & welcome", software: "Paper 1.21.11", properties: props, manuals: [manual!], ranks: ranks, ranksKnown: true, worlds: [
-            .init(name: "world", environment: "Normal", gameMode: "Survival", difficulty: "Hard", hidden: false), .init(name: "staffbase", environment: "Normal", gameMode: "Creative", difficulty: "Easy", hidden: true),
-        ], settings: settings)
-        let playerPage = Wiki.html(wiki, admin: false), adminPage = Wiki.html(wiki, admin: true)
-        for secret in ["hunter2", "topsecret", "secretlink", "abc123def", "10.0.0.5"] {
-            check(!playerPage.contains(secret), "player wiki never has \(secret)"); check(!adminPage.contains(secret), "admin wiki never has \(secret)")
-            check(!Wiki.markdown(wiki, admin: true).contains(secret), "markdown never has \(secret)")
-        }
-        check(playerPage.contains("My &lt;Server&gt;") && !playerPage.contains("My <Server>"), "text is escaped"); check(playerPage.contains("Be &lt;kind&gt;."), "your words too")
-        check(playerPage.contains("Hard"), "allowed facts shown"); check(playerPage.contains("Required. Accept it"), "the pack is explained, not linked")
-        check(!playerPage.contains("example.warp"), "players don't see permission nodes"); check(adminPage.contains("example.warp"), "admins do")
-        check(!playerPage.contains("staffbase"), "a hidden world stays hidden"); check(adminPage.contains("staffbase"), "except from admins")
-        check(playerPage.contains("/warp") || playerPage.contains("warp"), "a rank's command is listed for players")
-        check(!playerPage.contains("No permission declared"), "unconfirmed commands stay out by default")
-        wiki.settings.showUnconfirmed = true
-        check(Wiki.html(wiki, admin: false).contains("No permission declared"), "unless you say otherwise")
-        wiki.settings.hiddenPlugins = ["Example"]
-        check(!Wiki.html(wiki, admin: false).contains("Goes somewhere"), "a plugin can be left out"); check(Wiki.html(wiki, admin: true).contains("Goes somewhere"), "of the player wiki only")
-        wiki.settings = settings
-        let exported = folder("wiki-export")
-        try Wiki.write(wiki, to: exported)
-        write("A note from me", Wiki.notesFile(wiki.serverName, plugin: "Example"))
-        try Wiki.write(wiki, to: exported)
-        check((try String(contentsOf: exported.appendingPathComponent("player/index.html"), encoding: .utf8)).contains("A note from me"), "notes appear")
-        check(FileOps.exists(Wiki.notesFile(wiki.serverName, plugin: "Example")), "and survive exporting again")
-        check(FileOps.exists(exported.appendingPathComponent("player/wiki.md")) && FileOps.exists(exported.appendingPathComponent("admin/index.html")), "both views, as pages and Markdown")
-
+    do {
         // Names that collide on a Mac.
         let collide = folder("case-collide")
         write("online-mode=false\n", collide.appendingPathComponent("server.properties"))
         check(PlayerMerge.caseCollisions(ServerPaths(root: collide), players: []).isEmpty, "nothing to warn about with no players")
-    } catch { failures.append("wiki threw: \(error)") }
+    }
+    do { // Plugin links: a known source fills one in, and nothing else does.
+        for bad in ["javascript:alert(1)", "file:///etc/passwd", "ftp://example.com", "https://", "not a link", "https://user:pass@example.com/", "https://me@example.com/", "https://example.com/" + String(repeating: "a", count: 3000), ""] {
+            equal(PluginLinks.clean(bad), nil, "not a link: \(bad.prefix(40))")
+        }
+        equal(PluginLinks.clean("  https://example.com/docs \n"), "https://example.com/docs", "spaces trimmed"); equal(PluginLinks.clean("http://example.com"), "http://example.com", "plain http allowed")
+        equal(PluginLink(url: "https://docs.example.com/a", origin: .typed).host, "docs.example.com", "the host is what gets shown")
+
+        let modrinth: PluginSource = .modrinth(project: "abc", allowBeta: false)
+        equal(PluginLinks.fromSource(modrinth, modrinth: ModrinthLinks(wiki: "https://w.example.com", code: "https://c.example.com")), PluginLink(url: "https://w.example.com", origin: .modrinthWiki), "wiki first")
+        equal(PluginLinks.fromSource(modrinth, modrinth: ModrinthLinks(code: "https://c.example.com")), PluginLink(url: "https://c.example.com", origin: .modrinthCode), "then its source code")
+        equal(PluginLinks.fromSource(modrinth, modrinth: ModrinthLinks(wiki: "javascript:alert(1)", code: "https://c.example.com"))?.origin, .modrinthCode, "a bad wiki link is skipped")
+        equal(PluginLinks.fromSource(modrinth, modrinth: nil)?.url, "https://modrinth.com/plugin/abc", "before Modrinth answers, its page")
+        equal(PluginLinks.fromSource(.github(repo: "o/r", assetPattern: "", prereleases: false), modrinth: nil)?.url, "https://github.com/o/r", "a GitHub repo, not its releases")
+        equal(PluginLinks.fromSource(.spigot(resourceID: 7), modrinth: nil)?.url, "https://www.spigotmc.org/resources/7/", "SpigotMC page")
+        equal(PluginLinks.fromSource(.hangar(project: "o/p", channel: "Release"), modrinth: nil)?.url, "https://hangar.papermc.io/o/p", "Hangar page")
+        equal(PluginLinks.fromSource(.web(url: "javascript:alert(1)", linkPattern: ""), modrinth: nil), nil, "a bad source gives no link")
+        equal(PluginLinks.fromSource(.none, modrinth: nil), nil, "no source, no link")
+
+        func plugin(_ name: String, website: String? = nil, enabled: Bool = true) -> InstalledPlugin {
+            var d = PluginDescriptor(name: name); d.version = "1.2"; d.website = website
+            return InstalledPlugin(fileName: "\(name).jar\(enabled ? "" : ".disabled")", enabled: enabled, descriptor: d, digests: nil, size: 1)
+        }
+        var store = PluginLinkStore()
+        store.modrinth["abc"] = ModrinthLinks(wiki: "https://w.example.com")
+        let sources: [String: PluginSource] = ["known": modrinth, "typed": modrinth]
+        store.chosen["typed"] = PluginLink(url: "https://mine.example.com", origin: .typed)
+        let rows = PluginLinks.rows([plugin("Known"), plugin("Typed"), plugin("Site", website: "https://site.example.com"), plugin("BadSite", website: "javascript:alert(1)"), plugin("Private"), plugin("Off", enabled: false)], source: { sources[$0.key] ?? .none }, store: store)
+        func row(_ key: String) -> PluginLinkRow? { rows.first { $0.key == key } }
+        equal(row("known")?.link?.origin, .modrinthWiki, "a known source fills in the link"); equal(row("known")?.version, "1.2", "with its version")
+        equal(row("typed")?.link?.url, "https://mine.example.com", "your choice wins")
+        equal(row("site")?.link, nil, "a website field is never the link by itself"); equal(row("site")?.suggestions.first?.link.origin, .website, "it's a suggestion")
+        equal(row("badsite")?.suggestions.count, 0, "a bad website isn't even suggested")
+        equal(row("private")?.link, nil, "nothing known, no link"); check(row("off") == nil, "a disabled plugin isn't listed")
+
+        let answer = #"[{"id":"AAA","slug":"some-plugin","wiki_url":"https://w.example.com","source_url":null},{"id":"BBB","wiki_url":null,"source_url":"https://c.example.com"}]"#
+        let parsed = try PluginLinks.parseModrinth(Data(answer.utf8))
+        equal(parsed["AAA"]?.wiki, "https://w.example.com", "by ID"); equal(parsed["some-plugin"]?.wiki, "https://w.example.com", "and by slug"); equal(parsed["BBB"]?.code, "https://c.example.com", "no slug is fine")
+        let asked = try PluginLinks.modrinthAddress(["a b", "c"]).absoluteString
+        check(asked.hasPrefix("https://api.modrinth.com/v2/projects?ids=") && !asked.contains(" "), "project IDs go in the address, encoded")
+
+        let c = ServerController(root: folder("links"), profile: ServerProfile())
+        equal(c.chooseLink("javascript:alert(1)", origin: .typed, forPlugin: "x"), false, "a bad link is refused"); equal(c.pluginLinkStore.chosen["x"], nil, "and not saved")
+        equal(c.chooseLink("https://mine.example.com", origin: .typed, forPlugin: "x"), true, "a good one is saved"); equal(c.pluginLinkStore.chosen["x"]?.origin, .typed, "and survives reading back")
+        c.clearChosenLink(forPlugin: "x"); equal(c.pluginLinkStore.chosen["x"], nil, "and can be removed")
+        try await c.refreshModrinthLinks(all: true)  // No plugins, so this must not reach for the network or fail.
+        c.stopTicker()
+    } catch { failures.append("plugin links threw: \(error)") }
+    do { // Adding players before they've joined.
+        let id = "069a79f444e94726a5befca90e38aaf5", full = "069a79f4-44e9-4726-a5be-fca90e38aaf5"
+        func look(_ typed: String, _ status: Int, _ body: String) -> AccountLookup.Outcome { AccountLookup.interpret(typed: typed, status: status, data: Data(body.utf8)) }
+        equal(look("mAdEuP", 200, #"{"id":"\#(id)","name":"MadeUp"}"#), .found(MojangAccount(name: "MadeUp", uuid: full)), "any capitals find the real spelling and ID")
+        equal(look("other", 200, #"{"id":"\#(id)","name":"MadeUp"}"#), .noAccount, "an answer for another name isn't a match")
+        equal(look("x", 404, #"{"errorMessage":"Couldn't find"}"#), .noAccount, "no such account"); equal(look("x", 204, ""), .noAccount, "the older way of saying so")
+        if case .unreachable = look("x", 429, "") {} else { check(false, "being rate limited isn't the same as no account") }
+        if case .unreachable = look("x", 500, "") {} else { check(false, "an outage isn't the same as no account") }
+        if case .unreachable = look("x", 200, "nonsense") {} else { check(false, "an unreadable answer isn't a match") }
+        if case .unreachable = look("x", 200, #"{"id":"nope","name":"x"}"#) {} else { check(false, "a bad ID isn't a match") }
+        for bad in ["", "a b", "semi;colon", "seventeen_letters", "new\nline", "../x"] { check(!AccountLookup.isValidName(bad), "not a name: \(bad.debugDescription)") }
+        check(AccountLookup.isValidName("Made_Up1"), "a real name"); equal(AccountLookup.dashed(full), full, "an ID stays the same"); equal(AccountLookup.dashed("no"), nil, "or isn't one")
+        let invalid = await AccountLookup.lookUp("bad name;")
+        equal(invalid, .invalid, "a bad name is never sent")
+
+        // What LuckPerms prints, as observed.
+        equal(LuckPermsText.groupList(["[11:10:12 INFO]: [LP] Showing group entries:    (page 1 of 1 - 3 entries)", "[11:10:12 INFO]: [LP] Groups: (name, weight, tracks)", "[11:10:12 INFO]: [LP] -  default - 0", "[11:10:12 INFO]: [LP] -  made-up_one - 10"]), ["default", "made-up_one"], "groups read")
+        equal(LuckPermsText.parents(["[11:10:30 INFO]: [LP] x's Parents:  (page 1 of 1 - 3 entries)", "[11:10:30 INFO]: > default ", "[11:10:30 INFO]: > madeup-one ", "[11:10:30 INFO]: Saved the game"]), ["default", "madeup-one"], "parents read, and nothing after them")
+        equal(LuckPermsText.parents(["[LP] A user for x could not be found."]), nil, "no header means not known, rather than none")
+        equal(LuckPermsText.pageCount(["[LP] x's Parents:  (page 2 of 3 - 40 entries)"]), 3, "pages counted")
+        equal(LuckPermsText.checkResult(["[LP]     Result: true"]), .yes, "can sign in"); equal(LuckPermsText.checkResult(["[LP]     Result: false"]), .no, "can't"); equal(LuckPermsText.checkResult(["[LP]     Result: undefined"]), .noGroupGivesIt, "left to the default"); equal(LuckPermsText.checkResult(["whatever"]), .unknown, "unknown stays unknown")
+        for bad in ["", "a b", "A;op me", "../x", "UPPER"] { check(!LuckPermsText.isValidGroup(bad), "not a group: \(bad)") }
+
+        // Don't combine.
+        var rules = PlayerAccessSettings()
+        rules.conflicts = [["group-a", "group-b"]]
+        equal(rules.warnings(adding: ["group-a", "group-b"]).count, 1, "choosing both warns")
+        equal(rules.warnings(adding: ["group-a"], alreadyHas: ["group-b"]).count, 1, "and so does adding to someone who has the other")
+        equal(rules.warnings(adding: ["group-a"]).count, 0, "one alone doesn't")
+        equal(rules.warnings(adding: [], alreadyHas: ["group-a", "group-b"]).count, 0, "and a change that doesn't add to the pair doesn't nag")
+        check(PlayerAccessSettings().grantable.isEmpty, "no group is offered until ticked")
+
+        // Refusals, before anything reaches a console.
+        let root = folder("access"), paths = ServerPaths(root: root)
+        write("online-mode=true\n", paths.properties)
+        write(#"[{"uuid":"\#(full)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+        let c = ServerController(root: root, profile: ServerProfile())
+        defer { c.stopTicker() }
+        equal(c.playerAccessBlocked, nil, "online mode can add players")
+        check(c.accessRefusal(AccessChange(uuid: "not-an-id", name: "MadeUp")) != nil, "a bad ID is refused")
+        check(c.accessRefusal(AccessChange(uuid: full, name: "a; stop")) != nil, "a name can't carry a command")
+        check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp", addGroups: ["group-a"])) != nil, "an unticked group is refused")
+        var ticked = PlayerAccessSettings(); ticked.grantable = ["group-a", "BAD;GROUP"]; c.playerAccessSettings = ticked
+        check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp", addGroups: ["BAD;GROUP"])) != nil, "even a ticked group needs a safe name")
+        check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp", addGroups: ["group-a"])) != nil, "groups need LuckPerms")
+        equal(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp")), nil, "the allowlist alone doesn't")
+        check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp", addToAllowlist: false)) != nil, "an empty change is refused")
+
+        // A stopped server: additions wait, and removals don't have to.
+        equal(c.allowlist.map(\.name), ["MadeUp"], "the list reads")
+        let other = "00000000-0000-4000-8000-00000000000c"
+        let held = await c.requestAccess(AccessChange(uuid: other, name: "MadeUpTwo"))
+        equal(held, nil, "stopped, an addition is accepted"); equal(c.waitingAccess.map(\.name), ["MadeUpTwo"], "and waits")
+        check(!c.allowlist.contains { $0.uuid == other }, "without touching the allowlist")
+        let replaced = await c.requestAccess(AccessChange(uuid: other, name: "MadeUpTwo"))
+        equal(replaced, nil, "asking again"); equal(c.waitingAccess.count, 1, "replaces it")
+        let reopened = ServerController(root: root, profile: ServerProfile())
+        defer { reopened.stopTicker() }
+        equal(reopened.waitingAccess.count, 1, "and survives quitting")
+        c.cancelAccess(c.waitingAccess[0].id); equal(c.waitingAccess.count, 0, "it can be cancelled")
+        let removal = await c.removeFromAllowlist(AllowlistEntry(uuid: full, name: "MadeUp"))
+        equal(removal, nil, "stopped, removing works"); equal(c.allowlist.count, 0, "and the file is updated")
+        write("online-mode=false\n", paths.properties)
+        check(c.playerAccessBlocked != nil, "offline mode can't add players")
+        check(c.accessRefusal(AccessChange(uuid: full, name: "MadeUp")) != nil, "and refuses")
+    }
+    await linksWebChecks()
+    await mapGatewayChecks()
     do { // The audit: paths that delete or move by name.
         let r = folder("audit-names")
         equal(FileOps.child("", of: r), nil, "an empty name isn't the folder itself"); equal(FileOps.child(".", of: r), nil, "nor is a dot")
@@ -2088,7 +2188,7 @@ if let flag = CommandLine.arguments.firstIndex(of: "--experiments") {
         exit(2)
     }
     await runExperiments(CommandLine.arguments[flag + 1].components(separatedBy: ","))
-    try? FileManager.default.removeItem(at: scratch)
+    cleanUpScratch()
     exit(0)
 }
 
@@ -2156,12 +2256,6 @@ if CommandLine.arguments.contains("--plugin-report") {
         for p in proposals { print("    \(p.plugin.name) \(p.plugin.version): \(p.options.map { "\($0.suggestion.source.summary) \($0.newest ?? "?")\($0.looksWrong ? " WRONG" : "")" })") }
         c.stopTicker()
     } catch { print("  find sources failed: \(error)") }
-    var manuals: [PluginManual] = []
-    for plugin in plugins where plugin.enabled { if let m = await PluginManualReader.read(jar: paths.plugins.appendingPathComponent(plugin.fileName)) { manuals.append(m) } }
-    let wiki = Wiki.assemble(serverName: "Test", message: "", software: "", properties: "", manuals: manuals, ranks: [], ranksKnown: false, worlds: [], settings: WikiSettings())
-    print("  wiki: read \(manuals.count) manuals, \(wiki.commandCount) commands, \(wiki.publicCommandCount) open to everyone by plugin defaults, \(wiki.plugins.flatMap(\.entries).filter(\.who.unconfirmed).count) not stated, \(wiki.plugins.flatMap(\.manual.permissions).count) permissions")
-    print("  per plugin: \(wiki.plugins.filter { !$0.entries.isEmpty }.map { "\($0.manual.name) \($0.entries.filter(\.who.isPublic).count)/\($0.entries.count)" }.joined(separator: ", "))")
-    print("  page sizes: player \(Wiki.html(wiki, admin: false).count), admin \(Wiki.html(wiki, admin: true).count)")
     print("  groups: \(PluginThemes.batches(plugins.filter { !Trial.disabledInCopies.contains($0.key) }).map { "\($0.title):\($0.plugins.count)" })")
     exit(0)
 }
@@ -2177,20 +2271,6 @@ if CommandLine.arguments.contains("--perf") {
         let took = Date().timeIntervalSince(start)
         print("  \(title): \(Int(Double(count) / took)) lines a second")
     }
-    exit(0)
-}
-if let flag = CommandLine.arguments.firstIndex(of: "--wiki-demo"), flag + 1 < CommandLine.arguments.count {
-    // Writes an example wiki from the sandbox's plugin copies with made-up ranks and words, for looking at the page.
-    let base = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".lab-sandbox", isDirectory: true)
-    let paths = ServerPaths(root: base.appendingPathComponent("servers/lab-model", isDirectory: true))
-    var manuals: [PluginManual] = []
-    for plugin in await PluginScanner.scan(paths) where plugin.enabled { if let m = await PluginManualReader.read(jar: paths.plugins.appendingPathComponent(plugin.fileName)) { manuals.append(m) } }
-    let ranks = WikiRanks.parse(Data(#"{"groups":{"default":{"nodes":[{"type":"permission","key":"gsit.*","value":true},{"type":"permission","key":"chestsort.use","value":true}]},"member":{"nodes":[{"type":"weight","key":"weight.10","value":true},{"type":"prefix","key":"prefix.10.&aMember","value":true},{"type":"inheritance","key":"group.default","value":true},{"type":"permission","key":"tardis.use","value":true}]},"moderator":{"nodes":[{"type":"weight","key":"weight.50","value":true},{"type":"inheritance","key":"group.member","value":true},{"type":"permission","key":"citizens.*","value":true}]}}}"#.utf8))
-    var settings = WikiSettings()
-    settings.address = "play.example.com"; settings.welcome = "A friendly survival server.\n\nSay hello when you arrive."; settings.rules = "Be kind.\nNo griefing."
-    let wiki = Wiki.assemble(serverName: "Example Server", message: "Welcome in", software: "Paper 1.21.11", properties: "difficulty=normal\ngamemode=survival\nmax-players=20\npvp=false\nresource-pack=https\\://x/y.zip\nrequire-resource-pack=true\n", manuals: manuals, ranks: ranks, ranksKnown: true, worlds: [.init(name: "world", environment: "Normal", gameMode: "Survival", difficulty: "Normal", hidden: false), .init(name: "mining", environment: "Normal", gameMode: "Survival", difficulty: "Hard", hidden: false), .init(name: "deep", environment: "Nether", gameMode: "Survival", difficulty: "Hard", hidden: false)], settings: settings)
-    try! Wiki.write(wiki, to: URL(fileURLWithPath: CommandLine.arguments[flag + 1]))
-    print("  commands open to players: \(wiki.publicCommandCount) of \(wiki.commandCount)")
     exit(0)
 }
 if CommandLine.arguments.contains("--lab-demo") {
@@ -2227,7 +2307,7 @@ if CommandLine.arguments.contains("--sandbox") {
         exit(2)
     }
     await runSandbox()
-    try? FileManager.default.removeItem(at: scratch)
+    cleanUpScratch()
     print("\n\(passed) passed, \(failures.count) failed")
     for failure in failures { print("  - \(failure)") }
     exit(failures.isEmpty ? 0 : 1)
@@ -2236,6 +2316,62 @@ if CommandLine.arguments.contains("--sandbox") {
 try runAdvisorChecks()
 await runLifecycleWithStandIn()
 if CommandLine.arguments.contains("--live") { await runLiveAPIs() }
+if CommandLine.arguments.contains("--real-prejoin") {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealPrejoin()
+    } else {
+        print("Skipping --real-prejoin: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
+if let flag = CommandLine.arguments.firstIndex(of: "--links-browser"), flag + 1 < CommandLine.arguments.count {
+    // Serves the players' page with made-up data on localhost for two minutes, to try in a real browser.
+    let root = folder("links-browser"), paths = ServerPaths(root: root)
+    let player = "00000000-0000-4000-8000-00000000000a"
+    write("online-mode=true\n", paths.properties)
+    write(#"[{"uuid":"\#(player)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+    let token = LinksWeb.randomSecret()
+    write(#"{"uuid":"\#(player)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+    let web = LinksWeb(paths: paths, settings: { LinksPageSettings() }, content: {
+        LinksPageContent(serverVersion: "Paper 1.21.11", plugins: [.init(name: "MadeUpWarps", version: "2.4.1", link: "https://docs.example.com/warps"), .init(name: "MadeUpChat", version: nil, link: nil)])
+    })
+    web.testOrigin = "http://localhost:25591"
+    let listener = LinksListener(web: web)
+    try! listener.start(port: 25591)
+    try! FileOps.writeAtomic("http://localhost:25591/signin#\(token)\n", to: URL(fileURLWithPath: CommandLine.arguments[flag + 1]))
+    print("  serving")
+    try? await Task.sleep(for: .seconds(120))
+    print("  log: \(web.log.map(\.kind.rawValue))")
+    listener.stop()
+    exit(0)
+}
+if let flag = CommandLine.arguments.firstIndex(of: "--real-signin"), flag + 1 < CommandLine.arguments.count {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealSignIn(jar: CommandLine.arguments[flag + 1])
+    } else {
+        print("Skipping --real-signin: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
+if CommandLine.arguments.contains("--real-map") {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealMap()
+    } else {
+        print("Skipping --real-map: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
+if CommandLine.arguments.contains("--real-pack") {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealPack()
+    } else {
+        print("Skipping --real-pack: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
+if let flag = CommandLine.arguments.firstIndex(of: "--real-upgrade-plugins"), flag + 1 < CommandLine.arguments.count {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealUpgradePlugins(madeUp: CommandLine.arguments[flag + 1])
+    } else {
+        print("Skipping --real-upgrade-plugins: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
 if CommandLine.arguments.contains("--real-paper") {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         await runRealPaper()
@@ -2244,9 +2380,859 @@ if CommandLine.arguments.contains("--real-paper") {
     }
 }
 
+/// Real Paper, LuckPerms, Multiverse and BlueMap on a throwaway server, with bots and made-up worlds: the map
+/// through the sign-in page shows each player only the worlds Multiverse lets them enter.
+@MainActor func runRealMap() async {
+    section("REAL MAP BEHIND SIGN-IN (EULA accepted by the person running this)")
+    do {
+        let port = 25593, pagePort = 28795, mapPort = 28100
+        let root = folder("real-map")
+        write("server-port=\(port)\nonline-mode=false\nwhite-list=false\nnetwork-compression-threshold=-1\nview-distance=3\nsimulation-distance=3\nlevel-type=minecraft\\:flat\nspawn-protection=0\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "real-map")
+        try EULA.accept(c.paths)
+        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!)
+        for source in [PluginSource.modrinth(project: "luckperms", allowBeta: false), Multiverse.source, .modrinth(project: "bluemap", allowBeta: false)] { try await c.addPlugin(source: source) }
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        defer { c.stopLinksPage(); c.forceStop(); c.stopTicker() }
+        await c.start()
+        await checkUntil(240, "up: \(c.state)") { c.state == .running }
+        await c.refreshPlugins()
+        print("    plugins: \(c.plugins.map { "\($0.name) \($0.version)" })")
+        func run(_ command: String, until needle: String) async { _ = await c.ask(command, seconds: 30) { $0.contains { $0.contains(needle) } } }
+        await run("mv create madeup_magic normal -t flat", until: "created")
+        await run("mv create madeup_open normal -t flat", until: "created")
+        await run("mv config enforce-access true", until: "enforce-access")
+        equal(c.multiverseEnforcesAccess, true, "Multiverse's file says it enforces access")
+
+        // BlueMap: its download accepted, its web server on this Mac only, and a map for each made-up world.
+        let bluemap = c.paths.plugins.appendingPathComponent("BlueMap")
+        let core = bluemap.appendingPathComponent("core.conf"), webConf = bluemap.appendingPathComponent("webserver.conf")
+        try FileOps.writeAtomic(try String(contentsOf: core, encoding: .utf8).replacingOccurrences(of: "accept-download: false", with: "accept-download: true"), to: core)
+        try FileOps.writeAtomic(try String(contentsOf: webConf, encoding: .utf8).replacingOccurrences(of: "port: 8100", with: "port: \(mapPort)") + "\nip: \"127.0.0.1\"\n", to: webConf)
+        let template = try String(contentsOf: bluemap.appendingPathComponent("maps/world.conf"), encoding: .utf8)
+        for world in ["madeup_magic", "madeup_open"] {
+            try FileOps.writeAtomic(template.replacingOccurrences(of: "world: \"world\"", with: "world: \"\(world)\"").replacingOccurrences(of: "name: \"World\"", with: "name: \"\(world)\""), to: bluemap.appendingPathComponent("maps/\(world).conf"))
+        }
+        await run("bluemap reload", until: "reloaded")
+        let server = c.blueMapServer
+        check(server.onlyThisMac && server.port == mapPort, "BlueMap's settings read back: \(server)")
+        equal(MapGateway.mapWorlds(in: bluemap.appendingPathComponent("maps"))?["madeup_magic"], "madeup_magic", "each map's world is read")
+
+        let table = try await ProtocolTable.load(mc: realMC, cache: folder("real-map-protocol"), java: c.resolvedJava()?.path ?? "")
+        let viewerBot = try await join("MadeUpViewer", c, table, port: port)
+        let otherBot = try await join("MadeUpOther", c, table, port: port)
+        guard let viewer = c.playerUUIDs["MadeUpViewer"], let other = c.playerUUIDs["MadeUpOther"] else { throw LeafError("no player ids") }
+        write(#"[{"uuid":"\#(viewer)","name":"MadeUpViewer"},{"uuid":"\#(other)","name":"MadeUpOther"}]"#, root.appendingPathComponent("whitelist.json"))
+        await run("lp user \(viewer) permission set multiverse.access.madeup_magic true", until: "Set")
+        // Let BlueMap draw something of the magic world before asking for it.
+        await run("mv tp MadeUpViewer madeup_magic", until: "Teleported")
+        let tiles = c.paths.root.appendingPathComponent("bluemap/web/maps/madeup_magic/tiles")
+        func anyTile() -> String? {
+            FileManager.default.enumerator(at: tiles, includingPropertiesForKeys: nil)?.compactMap { ($0 as? URL)?.path }.first { $0.hasSuffix(".prbm.gz") || $0.hasSuffix(".png") }
+        }
+        await checkUntil(240, "BlueMap drew a tile of the magic world") { anyTile() != nil }
+
+        // The real sign-in page, with only what a test needs loosened: plain http on localhost, and offline bots.
+        var page = c.linksPageSettings
+        page.address = "https://map.example.test"; page.port = pagePort
+        var map = MapGatewaySettings(); map.on = true; page.map = map
+        c.linksPageSettings = page
+        try c.startLinksPage()
+        c.linksWeb?.testOrigin = "http://localhost:\(pagePort)"
+        c.linksWeb?.requireOnlineMode = false
+        try? await Task.sleep(for: .milliseconds(300))
+        func signIn(_ uuid: String) -> String {
+            let token = LinksWeb.randomSecret()
+            write(#"{"uuid":"\#(uuid)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, c.paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+            let response = c.linksWeb!.handle(.init(method: "POST", path: "/signin", headers: ["host": "localhost:\(pagePort)", "origin": "http://localhost:\(pagePort)"], body: Data("token=\(token)".utf8)))
+            return response.headers["Set-Cookie"]?.split(separator: ";").first.map(String.init) ?? ""
+        }
+        func get(_ path: String, _ cookie: String) async -> Data {
+            await rawData(port: pagePort, "GET \(path) HTTP/1.1\r\nHost: localhost:\(pagePort)\r\nCookie: \(cookie)\r\nAccept-Encoding: gzip\r\n\r\n")
+        }
+        func split(_ data: Data) -> (head: String, body: Data) {
+            guard let range = data.range(of: Data("\r\n\r\n".utf8)) else { return (String(decoding: data, as: UTF8.self), Data()) }
+            return (String(decoding: data[..<range.lowerBound], as: UTF8.self), Data(data[range.upperBound...]))
+        }
+        func maps(_ cookie: String) async -> [String]? {
+            ((try? JSONSerialization.jsonObject(with: split(await get("/map/settings.json", cookie)).body)) as? [String: Any])?["maps"] as? [String]
+        }
+        let viewerCookie = signIn(viewer), otherCookie = signIn(other)
+        let viewerMaps = await maps(viewerCookie)
+        equal(viewerMaps, ["madeup_magic"], "the player allowed into one world sees only its map")
+        let otherMaps = await maps(otherCookie)
+        equal(otherMaps, [], "the player allowed into none sees none")
+        let index = split(await get("/map/", viewerCookie))
+        check(index.head.contains("200") && String(decoding: index.body, as: UTF8.self).lowercased().contains("<html"), "BlueMap's own page comes through")
+
+        let webPath = c.paths.root.appendingPathComponent("bluemap/web").resolvingSymlinksInPath().path
+        let tilePath = String(URL(fileURLWithPath: anyTile()!).resolvingSymlinksInPath().path.dropFirst(webPath.count)).replacingOccurrences(of: ".gz", with: "")
+        print("    tile asked for: \(tilePath)")
+        // BlueMap may redraw a tile at any moment, so the gate's copy is compared with BlueMap's own just before and after.
+        var matched = false, tries: [String] = []
+        for _ in 0..<5 where !matched {
+            let before = split(await rawData(port: mapPort, "GET \(tilePath) HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept-Encoding: gzip\r\n\r\n"))
+            let throughGate = split(await get("/map" + tilePath, viewerCookie))
+            let after = split(await rawData(port: mapPort, "GET \(tilePath) HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept-Encoding: gzip\r\n\r\n"))
+            tries.append("\(before.body.count)/\(throughGate.body.count)/\(after.body.count)")
+            if before.body == after.body {
+                check(throughGate.head.contains("200") && throughGate.head.contains("Cache-Control: private") && !throughGate.head.contains("Server: BlueMap"), "a real tile comes through, with its headers made private")
+                equal(throughGate.body, before.body, "byte for byte what BlueMap itself sends (\(before.body.count) bytes)")
+                matched = true
+            }
+            try? await Task.sleep(for: .seconds(2))
+        }
+        check(matched, "BlueMap held the tile still long enough to compare: \(tries)")
+        let refused = split(await get("/map" + tilePath, otherCookie))
+        check(refused.head.contains("404"), "the other player gets nothing for that map")
+        let openTile = split(await get("/map/maps/madeup_open/live/players.json", viewerCookie))
+        check(openTile.head.contains("404"), "and the viewer nothing for a world they can't enter")
+        let live = split(await get("/map/maps/madeup_magic/live/players.json", viewerCookie))
+        print("    live players through the gate: \(live.head.split(separator: "\r\n").first ?? "") \(String(decoding: live.body.prefix(160), as: UTF8.self))")
+        check(live.head.contains("200"), "live data for their own map")
+
+        // Taking access away: once the few minutes' memory is cleared, it's gone.
+        await run("lp user \(viewer) permission unset multiverse.access.madeup_magic", until: "Unset")
+        c.forgetMapAccess()
+        let afterUnset = await maps(viewerCookie)
+        equal(afterUnset, [], "with the permission gone, so is the map")
+
+        // Multiverse not enforcing access: everyone can enter everything, so everyone sees every map.
+        await run("mv config enforce-access false", until: "enforce-access")
+        c.forgetMapAccess()
+        let everything = await maps(otherCookie)
+        equal(Set(everything ?? []), Set(MapGateway.mapWorlds(in: bluemap.appendingPathComponent("maps"))!.keys), "with enforce-access off, every map")
+
+        // Something unreadable: no maps, and a reason in the app.
+        try FileOps.writeAtomic("broken: [\n", to: c.paths.plugins.appendingPathComponent("Multiverse-Core/config.yml"))
+        c.forgetMapAccess()
+        let unreadable = await maps(otherCookie)
+        equal(unreadable, [], "an unreadable Multiverse setting shows nothing")
+        check(c.mapAccessNote?.contains("enforce-access") == true, "and the app says why: \(c.mapAccessNote ?? "")")
+        viewerBot.leave(); otherBot.leave()
+        c.stopLinksPage()
+        c.stop()
+        await checkUntil(90, "stopped") { !c.state.isLive }
+    } catch { failures.append("real map threw: \(error)") }
+}
+
+/// Real Paper and LuckPerms on throwaway servers: an account that has never joined, through to a first join.
+@MainActor func runRealPrejoin() async {
+    section("REAL PRE-JOIN (EULA accepted by the person running this)")
+    func server(_ name: String, port: Int, online: Bool) async throws -> ServerController {
+        let root = folder(name)
+        write("server-port=\(port)\nonline-mode=\(online)\nnetwork-compression-threshold=-1\nwhite-list=true\nenforce-whitelist=true\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: name)
+        try EULA.accept(c.paths)
+        let build = try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!
+        try await c.installSoftware(build)
+        try await c.addPlugin(source: .modrinth(project: "luckperms", allowBeta: false))
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        await c.start()
+        await checkUntil(240, "\(name) up: \(c.state)") { c.state == .running }
+        await c.refreshPlugins()
+        for group in ["madeup-one", "madeup-two", "madeup-staff"] { c.send("lp creategroup \(group)"); try? await Task.sleep(for: .seconds(1)) }
+        c.send("lp group madeup-one permission set latchkey.signin true")
+        try? await Task.sleep(for: .seconds(2))
+        await c.refreshGroups()
+        return c
+    }
+    do {
+        // These accounts only ever appear on this temporary server's own lists.
+        guard case let .found(first) = await AccountLookup.lookUp("nOtCh"), case let .found(second) = await AccountLookup.lookUp("JEB_") else { throw LeafError("Mojang lookup failed") }
+        equal(first.name, "Notch", "the real spelling comes back"); equal(second.name, "jeb_", "for any capitals")
+        let afterLookup = try? await SoftwareCatalog.versions(.vanilla)
+        check(afterLookup?.isEmpty == false, "a lookup doesn't break Mojang's version list afterwards")
+        let missing = await AccountLookup.lookUp("ZzqQmadeUpNoSu9")
+        equal(missing, .noAccount, "a made-up name has no account")
+        let c = try await server("prejoin-online", port: 25590, online: true)
+        defer { c.forceStop(); c.stopTicker() }
+        equal(c.playerAccessSettings.knownGroups, ["default", "madeup-one", "madeup-staff", "madeup-two"], "groups read from the server")
+        var settings = c.playerAccessSettings
+        settings.grantable = ["madeup-one", "madeup-two", "no-such-group"]
+        c.playerAccessSettings = settings
+
+        let unknownAtFirst = await c.currentGroups(uuid: first.uuid)
+        equal(unknownAtFirst, ["default"], "someone who has never joined has only the default")
+        let refused = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, addGroups: ["madeup-staff"]))
+        check(refused?.contains("isn't marked") == true, "an unticked group is refused: \(refused ?? "")")
+        check(!c.allowlist.contains { $0.uuid == first.uuid }, "and they aren't added")
+
+        // A group that's gone stops before the allowlist.
+        let stopped = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, addGroups: ["madeup-two", "no-such-group"]))
+        check(stopped?.contains("doesn't exist") == true, "a missing group stops it: \(stopped ?? "")")
+        check(!c.allowlist.contains { $0.uuid == first.uuid }, "before the allowlist")
+        equal(c.waitingAccess.first?.problem != nil, true, "and it stays in view")
+        c.cancelAccess(c.waitingAccess[0].id)
+
+        let added = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, addGroups: ["madeup-one", "madeup-two"]))
+        equal(added, nil, "a never-joined account is added: \(added ?? "")")
+        equal(c.allowlist.first { $0.uuid == first.uuid }?.name, "Notch", "on the allowlist with its ID")
+        let groups = await c.currentGroups(uuid: first.uuid)
+        equal(groups, ["default", "madeup-one", "madeup-two"], "with its groups")
+        let signIn = await c.signInAccess(uuid: first.uuid)
+        equal(signIn, .yes, "a group holding the permission gives sign-in")
+        equal(c.waitingAccess.count, 0, "and nothing's left waiting")
+        let again = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, addGroups: ["madeup-one"]))
+        equal(again, nil, "repeating it is safe")
+        let trimmed = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, removeGroups: ["madeup-one"], addToAllowlist: false))
+        equal(trimmed, nil, "a group can be removed")
+        let fewer = await c.currentGroups(uuid: first.uuid)
+        equal(fewer, ["default", "madeup-two"], "and it's gone")
+        let noSignIn = await c.signInAccess(uuid: first.uuid)
+        equal(noSignIn, .noGroupGivesIt, "with sign-in")
+        _ = await c.requestAccess(AccessChange(uuid: first.uuid, name: first.name, addGroups: ["madeup-one"], addToAllowlist: false))
+
+        // Stopped: everything waits, and happens once it's back.
+        await c.stop()
+        await checkUntil(60, "stopped") { !c.state.isLive }
+        let held = await c.requestAccess(AccessChange(uuid: second.uuid, name: second.name, addGroups: ["madeup-one"]))
+        equal(held, nil, "stopped, it's accepted"); equal(c.waitingAccess.count, 1, "and waits")
+        check(!c.allowlist.contains { $0.uuid == second.uuid }, "without a half-done allowlist entry")
+        await c.start()
+        await checkUntil(240, "back up") { c.state == .running }
+        await checkUntil(40, "the waiting change applied by itself") { c.waitingAccess.isEmpty }
+        equal(c.allowlist.first { $0.uuid == second.uuid }?.name, "jeb_", "on the allowlist after starting")
+        let secondGroups = await c.currentGroups(uuid: second.uuid)
+        equal(secondGroups, ["default", "madeup-one"], "with its groups")
+        let kept = await c.currentGroups(uuid: first.uuid)
+        equal(kept, ["default", "madeup-one", "madeup-two"], "and the first account's groups survived the restart")
+
+        let running = await c.removeFromAllowlist(AllowlistEntry(uuid: second.uuid, name: second.name))
+        equal(running, nil, "running, removing works"); check(!c.allowlist.contains { $0.uuid == second.uuid }, "and the list agrees")
+        let stay = await c.currentGroups(uuid: second.uuid)
+        equal(stay, ["default", "madeup-one"], "their groups stay")
+        await c.stop()
+        await checkUntil(60, "stopped") { !c.state.isLive }
+    } catch { failures.append("real pre-join online: \(error)") }
+    do {
+        // Offline mode, because a bot can't join an online-mode server. Being set by ID is the same either way.
+        let name = "MadeUpBot"
+        var bytes = Array(Insecure.MD5.hash(data: Data("OfflinePlayer:\(name)".utf8)))
+        bytes[6] = (bytes[6] & 0x0F) | 0x30
+        bytes[8] = (bytes[8] & 0x3F) | 0x80
+        let uuid = UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15])).uuidString.lowercased()
+        let c = try await server("prejoin-offline", port: 25589, online: false)
+        defer { c.forceStop(); c.stopTicker() }
+        check(c.playerAccessBlocked != nil, "offline mode is refused for real use")
+        c.accessAllowsOffline = true
+        var settings = c.playerAccessSettings
+        settings.grantable = ["madeup-one"]
+        c.playerAccessSettings = settings
+        let table = try await ProtocolTable.load(mc: realMC, cache: folder("prejoin-protocol"), java: c.resolvedJava()?.path ?? "")
+        let early = try Bot(name: name, port: 25589, table: table)
+        try? await Task.sleep(for: .seconds(4))
+        check(!early.inGame, "before being added, the allowlist keeps them out")
+        early.leave()
+        let added = await c.requestAccess(AccessChange(uuid: uuid, name: name, addGroups: ["madeup-one"]))
+        equal(added, nil, "added before they've ever joined: \(added ?? "")")
+        let bot = try Bot(name: name, port: 25589, table: table)
+        defer { bot.leave() }
+        await checkUntil(60, "they can join: \(bot.disconnectReason ?? "")") { bot.inGame }
+        try? await Task.sleep(for: .seconds(2))
+        let groups = await c.currentGroups(uuid: uuid)
+        equal(groups, ["default", "madeup-one"], "their groups are there on first join")
+        bot.leave()
+        await c.stop()
+        await checkUntil(60, "stopped") { !c.state.isLive }
+    } catch { failures.append("real pre-join offline: \(error)") }
+}
+
+/// Stands in for BlueMap's web server: canned answers, and a record of what it was asked.
+final class FakeBlueMap: @unchecked Sendable {
+    let listener: NWListener
+    var seen: [String] = []
+    var answers: [String: (head: String, body: Data)] = [:]
+    let lock = NSLock()
+    init(port: Int) throws {
+        let parameters = NWParameters.tcp
+        parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: UInt16(port))!)
+        parameters.allowLocalEndpointReuse = true
+        listener = try NWListener(using: parameters)
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: .global())
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 16384) { data, _, _, _ in
+                let request = String(decoding: data ?? Data(), as: UTF8.self)
+                let path = request.split(separator: " ").dropFirst().first.map(String.init) ?? ""
+                self.lock.lock(); self.seen.append(request); let answer = self.answers[path]; self.lock.unlock()
+                let reply = answer.map { Data("HTTP/1.1 200 OK\r\nContent-Length: \($0.body.count)\r\n\($0.head)\r\n".utf8) + $0.body } ?? Data("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".utf8)
+                connection.send(content: reply, completion: .contentProcessed { _ in connection.cancel() })
+            }
+        }
+        listener.start(queue: .global())
+    }
+    var requests: [String] { lock.lock(); defer { lock.unlock() }; return seen }
+}
+
+@MainActor func mapGatewayChecks() async {
+    print("• Map behind sign-in")
+    // Reading what BlueMap and Multiverse say.
+    let conf = "# The path to the save folder of the world to render.\nworld: \"madeup_magic\"\n# world: \"commented\"\ndimension: \"minecraft:overworld\"\n"
+    equal(MapGateway.setting("world", in: conf), "madeup_magic", "a map's world is read, not its comments")
+    equal(MapGateway.setting("world", in: "world: a\nworld: b\n"), nil, "two answers mean none")
+    let server = MapGateway.blueMapServer(webserverConf: "enabled: true\nwebroot: \"bluemap/web\"\nport: 8100\n")
+    check(!server.onlyThisMac && server.port == 8100, "BlueMap's default is every interface")
+    check(MapGateway.blueMapServer(webserverConf: "port: 28100\nip: \"127.0.0.1\"\n").onlyThisMac, "and ip: 127.0.0.1 is this Mac only")
+    equal(MapGateway.enforcesAccess(multiverseConfig: "world:\n  # the `mv.access.<worldname>` permission.\n  enforce-access: true\n"), true, "enforce-access read as Multiverse 5 writes it")
+    equal(MapGateway.enforcesAccess(multiverseConfig: "  enforce-access: false\n"), false, "off")
+    equal(MapGateway.enforcesAccess(multiverseConfig: "nothing here\n"), nil, "missing is unknown"); equal(MapGateway.enforcesAccess(multiverseConfig: nil), nil, "and so is no file")
+    equal(MapGateway.enforcesAccess(multiverseConfig: "  enforce-access: maybe\n"), nil, "and anything odd")
+    let mapsFolder = folder("map-confs")
+    write("world: \"madeup_magic\"\n", mapsFolder.appendingPathComponent("magic.conf"))
+    write("world: \"../escape\"\n", mapsFolder.appendingPathComponent("odd.conf"))
+    write("dimension: \"x\"\n", mapsFolder.appendingPathComponent("noworld.conf"))
+    equal(MapGateway.mapWorlds(in: mapsFolder), ["magic": "madeup_magic"], "maps whose world can't be read safely are left out")
+    equal(MapGateway.mapWorlds(in: folder("map-confs-none").appendingPathComponent("missing")), nil, "no BlueMap folder is unknown")
+    // Minecraft 26 moves worlds inside the level folder. BlueMap's configs then name the level and a dimension,
+    // as seen on a 26.2 trial with BlueMap 5.29. Before 26, a nether map names its own folder.
+    let old = folder("map-layout-old"), new = folder("map-layout-26")
+    write("x", old.appendingPathComponent("world_nether/DIM-1/region/r.0.0.mca"))
+    write("x", new.appendingPathComponent("survival/dimensions/minecraft/overworld/region/r.0.0.mca"))
+    let oldMaps = old.appendingPathComponent("plugins/BlueMap/maps"), newMaps = new.appendingPathComponent("plugins/BlueMap/maps")
+    write("world: \"world_nether\"\ndimension: \"minecraft:the_nether\"\n", oldMaps.appendingPathComponent("world_nether.conf"))
+    write("world: \"madeup_magic\"\ndimension: \"minecraft:overworld\"\n", oldMaps.appendingPathComponent("madeup_magic.conf"))
+    equal(MapGateway.mapWorlds(in: oldMaps, serverRoot: old), ["world_nether": "world_nether", "madeup_magic": "madeup_magic"], "before 26, the folder is the world")
+    for (id, dimension) in [("survival", "minecraft:overworld"), ("survival_nether", "minecraft:the_nether"), ("survival_the_end", "minecraft:the_end"), ("madeup_magic", "minecraft:madeup_magic"), ("moon", "acme:moon"), ("odd", "minecraft:../x")] {
+        write("world: \"survival\"\ndimension: \"\(dimension)\"\n", newMaps.appendingPathComponent("\(id).conf"))
+    }
+    write("world: \"survival\"\n", newMaps.appendingPathComponent("plain.conf"))
+    equal(MapGateway.mapWorlds(in: newMaps, serverRoot: new), ["survival": "survival", "survival_nether": "survival_nether", "survival_the_end": "survival_the_end", "madeup_magic": "madeup_magic", "plain": "survival"],
+          "from 26, the dimension says which world, and another namespace or an odd name isn't shown")
+
+    // Which paths get through.
+    let allowed: Set<String> = ["world"]
+    equal(MapGateway.route(path: "/map", allowed: allowed), .redirect, "the bare address goes to the folder")
+    equal(MapGateway.route(path: "/map/", allowed: allowed), .forward("/"), "the page")
+    equal(MapGateway.route(path: "/map/assets/index-1.js", allowed: allowed), .forward("/assets/index-1.js"), "its scripts")
+    equal(MapGateway.route(path: "/map/settings.json", allowed: allowed), .settings, "the map list is filtered")
+    equal(MapGateway.route(path: "/map/maps/world/tiles/0/x9/z-8.prbm", allowed: allowed), .forward("/maps/world/tiles/0/x9/z-8.prbm"), "an allowed map's tiles")
+    for blocked in ["/map/maps/hidden/tiles/0/x1/z1.prbm", "/map/maps/hidden/live/players.json", "/map/maps/hidden/settings.json", "/map/maps/world", "/map/maps/world/", "/map/sql.php",
+                    "/map/../whitelist.json", "/map/maps/world/../hidden/live/players.json", "/map//etc", "/map/maps/%2e%2e/x", "/mapx", "/map/assets/../../x", "/map/maps/World/live/players.json"] {
+        equal(MapGateway.route(path: blocked, allowed: allowed), .notFound, "refused: \(blocked)")
+    }
+    let real = Data(#"{"version":"5.16","useCookies":true,"mapDataRoot":"maps","liveDataRoot":"maps","maps":["world_the_end","world","hidden"],"scripts":[],"styles":[]}"#.utf8)
+    let filtered = (try? JSONSerialization.jsonObject(with: MapGateway.filterSettings(real, allowed: ["world", "world_the_end"]) ?? Data())) as? [String: Any]
+    equal(filtered?["maps"] as? [String], ["world_the_end", "world"], "the list keeps its order and loses what's hidden")
+    equal(filtered?["version"] as? String, "5.16", "and keeps everything else")
+    equal(MapGateway.filterSettings(Data(#"{"mapDataRoot":"https://elsewhere.example.test/maps","maps":["world"]}"#.utf8), allowed: allowed), nil, "map data from elsewhere can't be hidden, so nothing is served")
+    equal(MapGateway.filterSettings(Data("nonsense".utf8), allowed: allowed), nil, "an unreadable list isn't served")
+    let head = MapGateway.rewriteHead("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nSet-Cookie: bluemap=1\r\nCache-Control: public, max-age=86400\r\nConnection: keep-alive") ?? ""
+    check(!head.contains("bluemap=1") && !head.contains("public") && head.contains("Cache-Control: private, no-cache") && head.contains("Content-Type: image/png"), "BlueMap's cookies and public caching are dropped")
+    let upstream = String(decoding: MapGateway.upstreamRequest(method: "GET", path: "/x", port: 1, headers: ["cookie": "__Host-leafjuice=secret", "accept-encoding": "gzip", "authorization": "x", "origin": "o"]), as: UTF8.self)
+    check(upstream.contains("accept-encoding: gzip") && !upstream.contains("secret") && !upstream.contains("authorization") && !upstream.contains("origin"), "the sign-in cookie never reaches BlueMap")
+
+    // The whole way through, with a stand-in BlueMap.
+    do {
+        let port = 28790, mapPort = 28791
+        let root = folder("map-gateway")
+        let paths = ServerPaths(root: root)
+        let viewer = "00000000-0000-4000-8000-0000000000a1", nobody = "00000000-0000-4000-8000-0000000000a2"
+        write("online-mode=true\n", paths.properties)
+        write(#"[{"uuid":"\#(viewer)","name":"MadeUpViewer"},{"uuid":"\#(nobody)","name":"MadeUpNobody"}]"#, root.appendingPathComponent("whitelist.json"))
+        write(String(decoding: real, as: UTF8.self), root.appendingPathComponent("web/settings.json"))
+        let fake = try FakeBlueMap(port: mapPort)
+        defer { fake.listener.cancel() }
+        let big = Data((0..<(6 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 7) })
+        fake.answers = [
+            "/": ("Content-Type: text/html\r\nSet-Cookie: bluemap=1\r\n", Data("<html>BlueMap</html>".utf8)),
+            "/maps/world/tiles/0/x1/z1.prbm": ("Content-Type: application/octet-stream\r\n", big),
+            "/maps/hidden/live/players.json": ("Content-Type: application/json\r\n", Data("secret positions".utf8)),
+            "/maps/world/live/players.json": ("Content-Type: application/json\r\n", Data(#"{"players":[]}"#.utf8)),
+        ]
+        var access: [String: MapAccess] = [viewer: .maps(["world"]), nobody: .problem("made up")]
+        var mapOn = true
+        let web = LinksWeb(paths: paths, settings: { LinksPageSettings() }, content: { LinksPageContent(showMap: mapOn) })
+        web.testOrigin = "http://localhost:\(port)"
+        let listener = LinksListener(web: web)
+        listener.map = MapHooks(on: { mapOn }, access: { access[$0] ?? .problem("unknown") }, server: { BlueMapServer(port: mapPort, ip: "127.0.0.1", webroot: "web") }, root: root)
+        try listener.start(port: port)
+        defer { listener.stop() }
+        try? await Task.sleep(for: .milliseconds(200))
+        func signIn(_ uuid: String) -> String {
+            let token = LinksWeb.randomSecret()
+            write(#"{"uuid":"\#(uuid)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+            let response = web.handle(.init(method: "POST", path: "/signin", headers: ["host": "localhost:\(port)", "origin": "http://localhost:\(port)"], body: Data("token=\(token)".utf8)))
+            return response.headers["Set-Cookie"]?.split(separator: ";").first.map(String.init) ?? ""
+        }
+        func get(_ path: String, cookie: String? = nil, method: String = "GET") async -> String {
+            await rawRequest(port: port, "\(method) \(path) HTTP/1.1\r\nHost: localhost:\(port)\r\n\(cookie.map { "Cookie: \($0)\r\n" } ?? "")Accept-Encoding: gzip\r\n\r\n")
+        }
+        func status(_ text: String) -> String { String(text.split(separator: "\r\n").first ?? "") }
+        func body(_ text: String) -> String { text.components(separatedBy: "\r\n\r\n").dropFirst().joined(separator: "\r\n\r\n") }
+
+        // Signed out: nothing from BlueMap.
+        let before = fake.requests.count
+        let signedOut = await get("/map/")
+        check(status(signedOut).contains("200") && signedOut.contains("/signin") && !signedOut.contains("BlueMap"), "signed out, the map page says how to sign in")
+        let v1 = await get("/map/maps/world/tiles/0/x1/z1.prbm")
+        equal(status(v1), "HTTP/1.1 404 Not Found", "and its tiles aren't there")
+        let v2 = await get("/map/settings.json")
+        equal(status(v2), "HTTP/1.1 404 Not Found", "nor its list")
+        equal(fake.requests.count, before, "BlueMap isn't asked anything for someone signed out")
+        let wrongHost = await rawRequest(port: port, "GET /map/ HTTP/1.1\r\nHost: other.example.test\r\n\r\n")
+        equal(status(wrongHost), "HTTP/1.1 421 Misdirected Request", "another host is refused")
+
+        let cookie = signIn(viewer)
+        check(cookie.hasPrefix("__Host-leafjuice="), "signed in")
+        let v3 = await get("/", cookie: cookie)
+        check(body(v3).contains("/map/"), "the plugin page links to the map")
+        let v4 = await get("/map", cookie: cookie)
+        equal(status(v4), "HTTP/1.1 303 See Other", "the bare address goes to the folder")
+        let page = await get("/map/", cookie: cookie)
+        check(body(page) == "<html>BlueMap</html>", "BlueMap's page comes through")
+        check(!page.contains("bluemap=1") && page.contains("Cache-Control: private, no-cache"), "without BlueMap's cookie, and not for shared caches")
+        check(fake.requests.last.map { !$0.contains("leafjuice") && $0.contains("accept-encoding: gzip") } == true, "BlueMap never sees the sign-in cookie")
+        let list = (try? JSONSerialization.jsonObject(with: Data(body(await get("/map/settings.json", cookie: cookie)).utf8))) as? [String: Any]
+        equal(list?["maps"] as? [String], ["world"], "the map list has only their map")
+        let tile = await rawData(port: port, "GET /map/maps/world/tiles/0/x1/z1.prbm HTTP/1.1\r\nHost: localhost:\(port)\r\nCookie: \(cookie)\r\n\r\n")
+        let tileBody = tile.range(of: Data("\r\n\r\n".utf8)).map { tile[$0.upperBound...] }
+        check(tileBody.map { Data($0) == big } == true, "a 6 MB tile comes through unchanged (\(tileBody?.count ?? 0) bytes)")
+        let v5 = await get("/map/maps/world/live/players.json", cookie: cookie)
+        equal(body(v5), #"{"players":[]}"#, "live data for their map")
+        let hidden = await get("/map/maps/hidden/live/players.json", cookie: cookie)
+        check(status(hidden) == "HTTP/1.1 404 Not Found" && !hidden.contains("secret positions"), "a map they can't enter is refused, live data included")
+        check(!fake.requests.contains { $0.contains("/maps/hidden/") }, "and BlueMap is never asked for it")
+        let v6 = await get("/map/sql.php", cookie: cookie)
+        equal(status(v6), "HTTP/1.1 404 Not Found", "paths the map doesn't use are refused")
+        let posted = await rawRequest(port: port, "POST /map/settings.json HTTP/1.1\r\nHost: localhost:\(port)\r\nCookie: \(cookie)\r\nContent-Length: 0\r\n\r\n")
+        equal(status(posted), "HTTP/1.1 405 Method Not Allowed", "only looking")
+        let headOnly = await get("/map/", cookie: cookie, method: "HEAD")
+        check(status(headOnly).contains("200"), "HEAD works too")
+
+        // Losing access: someone off the allowlist, or a world they can no longer enter.
+        access[viewer] = .maps([])
+        let none = await get("/map/", cookie: cookie)
+        check(body(none).contains("no maps for you"), "with no worlds, the page says so rather than showing an empty map")
+        let v7 = await get("/map/maps/world/tiles/0/x1/z1.prbm", cookie: cookie)
+        equal(status(v7), "HTTP/1.1 404 Not Found", "and the tiles they saw before are gone")
+        access[viewer] = .maps(["world"])
+        let nobodyCookie = signIn(nobody)
+        let v8 = await get("/map/", cookie: nobodyCookie)
+        check(body(v8).contains("no maps for you"), "anything unreadable shows no maps")
+        let nobodyList = (try? JSONSerialization.jsonObject(with: Data(body(await get("/map/settings.json", cookie: nobodyCookie)).utf8))) as? [String: Any]
+        equal(nobodyList?["maps"] as? [String], [], "and an empty list")
+        write(#"[{"uuid":"\#(nobody)","name":"MadeUpNobody"}]"#, root.appendingPathComponent("whitelist.json"))
+        let v9 = await get("/map/maps/world/live/players.json", cookie: cookie)
+        equal(status(v9), "HTTP/1.1 404 Not Found", "off the allowlist, the map is gone at once")
+
+        // BlueMap down.
+        fake.listener.cancel()
+        try? await Task.sleep(for: .milliseconds(200))
+        let viewerAgain = { write(#"[{"uuid":"\#(viewer)","name":"MadeUpViewer"}]"#, root.appendingPathComponent("whitelist.json")) }
+        viewerAgain()
+        let down = await get("/map/", cookie: signIn(viewer))
+        equal(status(down), "HTTP/1.1 502 Bad Gateway", "BlueMap not running is said plainly")
+
+        // Off means off.
+        mapOn = false
+        let off = await get("/map/", cookie: signIn(viewer))
+        equal(status(off), "HTTP/1.1 404 Not Found", "with the map switched off, /map/ isn't there")
+        let v10 = await get("/", cookie: signIn(viewer))
+        check(!body(v10).contains("/map/"), "and the plugin page doesn't link to it")
+    } catch { failures.append("map gateway threw: \(error)") }
+}
+
+/// The page for players, without a real server: who gets in, what they see and what's written down.
+@MainActor func linksWebChecks() async {
+    do {
+        let root = folder("links-web")
+        let paths = ServerPaths(root: root)
+        let allowed = "00000000-0000-4000-8000-00000000000a", outsider = "00000000-0000-4000-8000-00000000000b"
+        write("online-mode=true\n", paths.properties)
+        write(#"[{"uuid":"\#(allowed)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+        var settings = LinksPageSettings()
+        settings.address = "https://links.example.test/"
+        var shown = LinksPageContent(serverVersion: "Paper 1.21.11", plugins: [.init(name: "Shared<Plugin>", version: "1.2", link: "https://docs.example.test/a"), .init(name: "NoLink", version: nil, link: nil)])
+        let web = LinksWeb(paths: paths, settings: { settings }, content: { shown })
+        let host = ["host": "links.example.test"]
+        func get(_ path: String, _ extra: [String: String] = [:], now: Date = Date()) -> LinksWeb.Response {
+            web.handle(.init(method: "GET", path: path, headers: host.merging(extra) { $1 }, body: Data()), now: now)
+        }
+        func post(_ path: String, _ body: String, cookie: String? = nil, origin: String? = "https://links.example.test", now: Date = Date()) -> LinksWeb.Response {
+            var headers = host
+            headers["origin"] = origin
+            headers["cookie"] = cookie
+            return web.handle(.init(method: "POST", path: path, headers: headers, body: Data(body.utf8)), now: now)
+        }
+        func issue(_ uuid: String, name: String = "MadeUp", expires: Date = Date().addingTimeInterval(120), token: String = LinksWeb.randomSecret()) -> String {
+            write(#"{"uuid":"\#(uuid)","name":"\#(name)","expires":\#(Int(expires.timeIntervalSince1970))}"#, paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+            return token
+        }
+        func text(_ response: LinksWeb.Response) -> String { String(decoding: response.body, as: UTF8.self) }
+        func cookie(_ response: LinksWeb.Response) -> String? { response.headers["Set-Cookie"]?.split(separator: ";").first.map(String.init) }
+
+        // Addresses.
+        equal(settings.origin, "https://links.example.test", "an address is tidied")
+        for bad in ["", "http://links.example.test", "https://", "https://me@links.example.test", "https://links.example.test/page", "https://links.example.test?a=1", "javascript:alert(1)"] {
+            var other = LinksPageSettings(); other.address = bad
+            equal(other.origin, nil, "not an address for the page: \(bad)")
+        }
+        check(LinksPageSettings().on == false, "the page starts off"); check(LinksPageSettings().shared.isEmpty, "with nothing shared")
+
+        // Before signing in, nothing about the server shows.
+        let outside = text(get("/"))
+        check(outside.contains("/signin") && !outside.contains("Shared") && !outside.contains("Paper"), "signed out, the page says only how to sign in")
+        equal(web.handle(.init(method: "GET", path: "/", headers: ["host": "other.example.test"], body: Data())).status, 421, "another host is refused")
+        equal(web.handle(.init(method: "GET", path: "/", headers: [:], body: Data())).status, 421, "and so is none")
+        equal(get("/.leafjuice/server.json").status, 404, "files can't be asked for"); equal(get("/../whitelist.json").status, 404, "not even by climbing")
+        equal(web.handle(.init(method: "PUT", path: "/", headers: host, body: Data())).status, 405, "only the methods it uses")
+        let security = get("/").headers
+        check(security["Content-Security-Policy"]?.contains("default-src 'none'") == true, "strict content policy"); equal(security["Cache-Control"], "no-store", "never cached"); equal(security["X-Robots-Tag"], "noindex", "not for search engines")
+        equal(security["Referrer-Policy"], "same-origin", "a no-referrer policy would make browsers send Origin: null and refuse sign-in")
+        check(text(get("/signin")).contains("signin.js"), "the sign-in page reads the link in the browser"); equal(get("/signin.js").status, 200, "from its own script")
+
+        // Signing in.
+        let token = issue(allowed)
+        let pending = paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json")
+        equal(post("/signin", "token=\(token)", origin: "https://evil.example.test").status, 403, "another site can't use a link")
+        equal(post("/signin", "token=\(token)", origin: nil).status, 403, "or a request with no origin")
+        check(FileOps.exists(pending), "and that doesn't burn it")
+        equal(post("/signin", "token=short").status, 400, "a malformed link fails"); equal(post("/signin", "token=../../../../whitelist").status, 400, "and can't reach another file")
+        let signedIn = post("/signin", "token=\(token)")
+        equal(signedIn.status, 303, "a good link signs in"); check(!FileOps.exists(pending), "and is used up")
+        let flags = signedIn.headers["Set-Cookie"] ?? ""
+        check(flags.hasPrefix("__Host-leafjuice=") && flags.contains("Secure") && flags.contains("HttpOnly") && flags.contains("SameSite=Strict") && flags.contains("Max-Age=43200"), "the cookie is locked down, for 12 hours: \(flags.prefix(20))")
+        equal(post("/signin", "token=\(token)").status, 400, "a link works once")
+        equal(web.signedIn.map(\.name), ["MadeUp"], "the app knows who's signed in")
+        let session = ["cookie": cookie(signedIn) ?? ""]
+        let inside = text(get("/", session))
+        check(inside.contains("Shared&lt;Plugin&gt;") && !inside.contains("Shared<Plugin>"), "what's shared shows, escaped"); check(inside.contains("Paper 1.21.11"), "with the server's version"); check(inside.contains("docs.example.test"), "and the link"); check(inside.contains("No link yet"), "a plugin without one says so"); check(inside.contains("Signed in as MadeUp"), "and who you are")
+        shown.serverVersion = nil; shown.plugins[0].version = nil
+        check(!text(get("/", session)).contains("Paper") && !text(get("/", session)).contains("1.2"), "versions can be left out")
+        shown.plugins = []
+        check(text(get("/", session)).contains("Nothing has been shared"), "nothing shared, nothing shown")
+        check(text(get("/", ["cookie": "__Host-leafjuice=made-up"])).contains("/signin") , "a made-up cookie is nobody")
+        equal(web.signedIn.count, 1, "and doesn't count")
+
+        // Links that shouldn't work.
+        equal(post("/signin", "token=\(issue(allowed, expires: Date().addingTimeInterval(-1)))").status, 400, "an expired link fails")
+        equal(post("/signin", "token=\(issue(outsider, name: "Outsider"))").status, 403, "someone not on the allowlist is refused")
+        equal(post("/signin", "token=\(issue("not-a-uuid"))").status, 400, "a damaged file is refused")
+        check(!web.signedIn.contains { $0.name == "Outsider" }, "and gets no session")
+
+        // Access ends when it should.
+        let early = Date()
+        let late = post("/signin", "token=\(issue(allowed))", now: early)
+        let later = ["cookie": cookie(late) ?? ""]
+        equal(web.signedIn.count, 1, "signing in again replaces the old session")
+        check(text(get("/", session)).contains("/signin") , "and the old cookie stops working")
+        check(text(get("/", later, now: early.addingTimeInterval(LinksWeb.sessionLength - 60))).contains("Signed in as"), "still in, just under 12 hours")
+        check(!text(get("/", later, now: early.addingTimeInterval(LinksWeb.sessionLength + 1))).contains("Signed in as"), "out after 12 hours")
+        let ban = post("/signin", "token=\(issue(allowed))")
+        let banned = ["cookie": cookie(ban) ?? ""]
+        write(#"[{"uuid":"\#(allowed)","name":"MadeUp"}]"#, root.appendingPathComponent("banned-players.json"))
+        check(!text(get("/", banned)).contains("Signed in as"), "a ban ends it at once")
+        try FileManager.default.removeItem(at: root.appendingPathComponent("banned-players.json"))
+        let removed = ["cookie": cookie(post("/signin", "token=\(issue(allowed))")) ?? ""]
+        write("[]", root.appendingPathComponent("whitelist.json"))
+        check(!text(get("/", removed)).contains("Signed in as"), "leaving the allowlist ends it at once")
+        write("not json", root.appendingPathComponent("whitelist.json"))
+        equal(post("/signin", "token=\(issue(allowed))").status, 403, "an unreadable allowlist is a no")
+        write(#"[{"uuid":"\#(allowed)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+        write("online-mode=false\n", paths.properties)
+        equal(post("/signin", "token=\(issue(allowed))").status, 403, "with online-mode off, nobody gets in")
+        write("online-mode=true\n", paths.properties)
+
+        // Signing out.
+        let leaving = post("/signin", "token=\(issue(allowed))")
+        let leavingHeaders = ["cookie": cookie(leaving) ?? ""]
+        equal(post("/signout", "", cookie: leavingHeaders["cookie"], origin: "https://evil.example.test").status, 403, "another site can't sign you out")
+        equal(post("/signout", "", cookie: leavingHeaders["cookie"]).status, 303, "signing out works")
+        check(!text(get("/", leavingHeaders)).contains("Signed in as"), "and ends it")
+        let kicked = ["cookie": cookie(post("/signin", "token=\(issue(allowed))")) ?? ""]
+        web.signOut(uuid: allowed)
+        check(!text(get("/", kicked)).contains("Signed in as"), "the app can end a session too")
+
+        // The log holds account, time and event, and nothing else.
+        let raw = (try? String(contentsOf: web.logFile, encoding: .utf8)) ?? ""
+        check(web.log.contains { $0.kind == .signedIn } && web.log.contains { $0.kind == .refused } && web.log.contains { $0.kind == .removed } && web.log.contains { $0.kind == .signedOut } && web.log.contains { $0.kind == .expired }, "each kind of event is written")
+        check(!raw.contains(token) && !raw.contains("token") && !raw.contains("address") && !raw.contains("127.0.0.1"), "no secrets or addresses in the log")
+        let keys = Set((try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [[String: Any]] ?? []).flatMap(\.keys))
+        equal(keys, ["date", "uuid", "name", "kind"], "the log's fields")
+        let waiting = post("/signin", "token=\(issue(allowed))")
+        check(cookie(waiting) != nil, "one more session")
+        web.tidy(now: Date().addingTimeInterval(Double(LinksWeb.logDays + 1) * 24 * 60 * 60))
+        equal(web.signedIn.count, 0, "tidying closes what's run out")
+        check(web.log.allSatisfy { $0.kind == .expired }, "and forgets entries past 30 days")
+
+        // Reading requests.
+        func parsed(_ text: String) -> LinksWeb.Parsed { LinksWeb.parse(Data(text.utf8)) }
+        equal(parsed("GET / HTTP/1.1\r\nHost: a\r\n"), .incomplete, "waits for the rest")
+        if case let .ok(request) = parsed("POST /signin?x=1 HTTP/1.1\r\nHost: a\r\nContent-Length: 3\r\n\r\nabc") {
+            equal(request.path, "/signin", "the query is dropped"); equal(request.body, Data("abc".utf8), "the body is read"); equal(request.headers["host"], "a", "headers are read")
+        } else { check(false, "a normal request parses") }
+        equal(parsed("POST / HTTP/1.1\r\nContent-Length: 3\r\n\r\nab"), .incomplete, "waits for the body")
+        for bad in ["GET / HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n", "POST / HTTP/1.1\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nab", "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", "POST / HTTP/1.1\r\nContent-Length: 2000\r\n\r\n", "POST / HTTP/1.1\r\nContent-Length: -1\r\n\r\n", "GET x HTTP/1.1\r\n\r\n", "NONSENSE\r\n\r\n", "GET / HTTP/1.1\r\nno colon\r\n\r\n", "GET / HTTP/1.1\r\nBad Name: a\r\n\r\n", "GET / HTTP/2\r\n\r\n", "GET /" + String(repeating: "a", count: 9000)] {
+            equal(parsed(bad), .bad, "refused: \(bad.prefix(40).debugDescription)")
+        }
+
+        // Over a real socket, on this Mac only.
+        write(#"[{"uuid":"\#(allowed)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+        let listener = LinksListener(web: web)
+        try listener.start(port: 25597)
+        defer { listener.stop() }
+        await checkUntil(5, "listening") { listener.isListening }
+        let answer = await rawRequest(port: 25597, "GET / HTTP/1.1\r\nHost: links.example.test\r\n\r\n")
+        check(answer.hasPrefix("HTTP/1.1 200") && answer.contains("Connection: close") && answer.contains("/signin"), "a real request gets a real answer: \(answer.prefix(30))")
+        let headOnly = await rawRequest(port: 25597, "HEAD / HTTP/1.1\r\nHost: links.example.test\r\n\r\n")
+        check(headOnly.hasPrefix("HTTP/1.1 200") && !headOnly.contains("<html"), "HEAD has no body")
+        let nonsense = await rawRequest(port: 25597, "NONSENSE\r\n\r\n")
+        check(nonsense.hasPrefix("HTTP/1.1 400"), "nonsense is refused")
+        let realCheck = await rawRequest(port: 25597, "POST /signin HTTP/1.1\r\nHost: links.example.test\r\nOrigin: https://links.example.test\r\nContent-Length: 49\r\n\r\ntoken=\(issue(allowed))")
+        check(realCheck.hasPrefix("HTTP/1.1 303") && realCheck.contains("Set-Cookie: __Host-leafjuice="), "a sign-in works over the socket: \(realCheck.prefix(30))")
+        let reachable = localAddresses().filter { $0 != "127.0.0.1" }
+        for address in reachable.prefix(3) { check(!canConnect(address, port: 25597), "not reachable from \(address)") }
+        print("  checked unreachable from \(reachable.count) other local addresses")
+        listener.stop()
+        try? await Task.sleep(for: .milliseconds(200))
+        check(!canConnect("127.0.0.1", port: 25597), "stopping it closes the port")
+
+        // The switch from Settings stops it too.
+        var closing = true
+        let switched = LinksListener(web: web, allowed: { closing })
+        try switched.start(port: 25595)
+        await checkUntil(5, "listening again") { switched.isListening }
+        closing = false
+        _ = await rawRequest(port: 25595, "GET / HTTP/1.1\r\nHost: links.example.test\r\n\r\n")
+        try? await Task.sleep(for: .milliseconds(200))
+        check(!switched.isListening, "switching the module off stops it")
+        switched.stop()
+
+        // What the controller offers the page.
+        let c = ServerController(root: folder("links-controller"), profile: ServerProfile())
+        defer { c.stopTicker(); c.stopLinksPage() }
+        check(c.linksPageProblem != nil, "no address, no page")
+        do { try c.startLinksPage(); check(false, "starting with no address should fail") } catch { check(c.linksListener == nil, "and doesn't listen") }
+        var saved = c.linksPageSettings
+        saved.address = "https://links.example.test"; saved.port = 80
+        c.linksPageSettings = saved
+        check(c.linksPageProblem?.contains("port") == true, "a privileged port is refused")
+        saved.port = 25594; saved.showPluginVersions = false
+        c.linksPageSettings = saved
+        equal(c.linksPageContent.plugins.count, 0, "nothing's shared until ticked")
+        try c.startLinksPage()
+        await checkUntil(5, "the controller's page is up") { c.linksListener?.isListening == true }
+        c.stopLinksPage()
+        check(c.linksListener == nil, "and stops")
+    } catch { failures.append("links page threw: \(error)") }
+}
+
+func rawData(port: Int, _ text: String) async -> Data {
+    await withCheckedContinuation { (done: CheckedContinuation<Data, Never>) in
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        final class Box: @unchecked Sendable { var data = Data(); var ended = false }
+        let box = Box(), queue = DispatchQueue(label: "raw-data")
+        @Sendable func end() { guard !box.ended else { return }; box.ended = true; connection.cancel(); done.resume(returning: box.data) }
+        @Sendable func pull() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { data, _, finished, error in
+                if let data { box.data.append(data) }
+                if finished || error != nil { end() } else { pull() }
+            }
+        }
+        connection.start(queue: queue)
+        connection.send(content: Data(text.utf8), completion: .idempotent)
+        pull()
+        queue.asyncAfter(deadline: .now() + 30) { end() }
+    }
+}
+
+func canConnect(_ host: String, port: Int) -> Bool {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    defer { close(fd) }
+    var address = sockaddr_in()
+    address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = in_port_t(port).bigEndian; address.sin_addr.s_addr = inet_addr(host)
+    return withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } } == 0
+}
+
+func localAddresses() -> [String] {
+    var out: [String] = []
+    var first: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&first) == 0, let start = first else { return out }
+    defer { freeifaddrs(first) }
+    var next: UnsafeMutablePointer<ifaddrs>? = start
+    while let item = next {
+        if let found = item.pointee.ifa_addr, found.pointee.sa_family == sa_family_t(AF_INET) {
+            var name = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(found, socklen_t(found.pointee.sa_len), &name, socklen_t(name.count), nil, 0, NI_NUMERICHOST) == 0 { out.append(String(cString: name)) }
+        }
+        next = item.pointee.ifa_next
+    }
+    return out
+}
+
+/// Real Paper in a temp folder with the real plugin and a bot: `/signin` in game through to a signed-in page.
+/// Plugins on upgrade, for real, through Preflight's upgrade tool (downloaded and checked against its pinned hash): a
+/// made-up 26.2 server with made-up plugins (one fine, one with a bad api-version, one that hard-depends on it, one
+/// that depends on that, and a soft dependent) is checked against Paper 26.3. The made-up server never boots, so only
+/// the test copy runs.
+@MainActor func runRealUpgradePlugins(madeUp: String) async {
+    section("REAL PLUGINS ON UPGRADE (EULA accepted by the person running this)")
+    do {
+        let root = folder("real-upgrade-plugins")
+        write("server-port=25594\nonline-mode=false\nwhite-list=false\nview-distance=3\nsimulation-distance=3\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "Real upgrade test")
+        defer { c.forceStop(); c.stopTicker() }
+        try EULA.accept(c.paths)
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        c.runtimes = await JavaManager.discover()
+        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: "26.2")!)
+        try FileOps.ensureDir(c.paths.plugins)
+        for jar in FileOps.children(URL(fileURLWithPath: madeUp)) where jar.pathExtension == "jar" {
+            try FileManager.default.copyItem(at: jar, to: c.paths.plugins.appendingPathComponent(jar.lastPathComponent))
+        }
+        write(#"{"format":1,"neverOff":[],"recheck":[{"plugin":"MadeUpFine","note":"Made-up note."}]}"#, try c.ensureUpgradeRules())
+        await c.refreshPlugins()
+        func jars() -> Set<String> { Set(FileOps.children(c.paths.plugins).filter { $0.lastPathComponent.hasSuffix(".jar") || $0.lastPathComponent.hasSuffix(".disabled") }.map(\.lastPathComponent)) }
+        let before = jars()
+
+        let target = try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!
+        let plan = await c.checkPluginsForUpgrade(target)
+        check(plan.stop == nil, "the tool made a plan: \(plan.stop ?? "")")
+        print("  plan: \(plan.status), off \(plan.off.map(\.name)), warnings \(plan.warnings.count), not checked \(plan.notChecked.map(\.name))")
+        equal(plan.off.map(\.name), ["MadeUpBadApi", "MadeUpNeedsBad", "MadeUpNeedsNeeds"], "the bad one, the one Paper enables without it, and the one after that")
+        check(plan.off.first { $0.name == "MadeUpBadApi" }?.why.first?.contains("99.0") == true, "with Paper's own reason: \(plan.off.first?.why ?? [])")
+        check(plan.off.first { $0.name == "MadeUpNeedsBad" }?.why.contains { $0.contains("needs MadeUpBadApi") } == true, "missing a dependency counts, though Paper enabled it: \(plan.off.first { $0.name == "MadeUpNeedsBad" }?.why ?? [])")
+        check(plan.warnings.contains { $0.contains("MadeUpSoft") }, "the soft dependent is flagged: \(plan.warnings)")
+        check(!plan.off.contains { ["MadeUpFine", "MadeUpSoft"].contains($0.name) }, "nothing that works is offered")
+        equal(plan.recheck.map(\.plugin), ["MadeUpFine"], "the by-hand check is listed")
+        check(FileOps.children(root.deletingLastPathComponent().appendingPathComponent("LeafJuice/test-copies")).isEmpty, "the copy and the downloaded jar are gone")
+        check(!FileOps.children(root.deletingLastPathComponent()).contains { $0.lastPathComponent.contains("preflight-check") }, "and the tool left nothing beside the server")
+        equal(jars(), before, "the server itself wasn't touched")
+        check(!c.state.isLive, "and never started")
+
+        try await c.applyPluginPlan(plan)
+        for name in ["MadeUpBadApi", "MadeUpNeedsBad", "MadeUpNeedsNeeds"] {
+            check(FileOps.exists(c.paths.plugins.appendingPathComponent("\(name).jar.disabled")), "\(name) switched off")
+        }
+        check(FileOps.exists(c.paths.plugins.appendingPathComponent("MadeUpFine.jar")) && FileOps.exists(c.paths.plugins.appendingPathComponent("MadeUpSoft.jar")), "the rest stay on")
+        check(!FileOps.children(c.paths.upgradeFolder.appendingPathComponent("restore-points")).isEmpty, "the tool kept its own plugin restore point")
+        check(!c.backups.isEmpty, "after Leaf Juice's whole-server restore point")
+        equal(await c.switchedOffPlugins().entries.map(\.name).sorted(), ["MadeUpBadApi", "MadeUpNeedsBad", "MadeUpNeedsNeeds"], "the tool's status lists them")
+
+        try await c.switchBackOn(["MadeUpBadApi", "MadeUpNeedsBad", "MadeUpNeedsNeeds"])
+        equal(jars(), before, "switching back on puts every file back as it was")
+        equal(await c.switchedOffPlugins().entries.count, 0, "and nothing is listed as off")
+    } catch { failures.append("real plugins on upgrade threw: \(error)") }
+}
+
+@MainActor func runRealSignIn(jar: String) async {
+    section("REAL SIGN-IN (EULA accepted by the person running this)")
+    do {
+        let root = folder("real-signin")
+        write("server-port=25593\nonline-mode=false\nwhite-list=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nmotd=made up message\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "Real sign-in test")
+        defer { c.forceStop(); c.stopTicker(); c.stopLinksPage() }
+        try EULA.accept(c.paths)
+        let build = try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!
+        try await c.installSoftware(build)
+        try FileOps.ensureDir(c.paths.plugins)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: jar), to: c.paths.plugins.appendingPathComponent("Latchkey.jar"))
+        write("sign-in-page: \"https://links.example.test\"\n", c.paths.plugins.appendingPathComponent("Latchkey/config.yml"))
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        c.profile.launch.extraJVMArgs = "-Dlatchkey.allowOfflineForTesting=true"
+        await c.start()
+        await checkUntil(240, "real server up: \(c.state)") { c.state == .running }
+        check(c.console.contains { $0.text.contains("Enabling Latchkey") }, "the plugin loaded")
+        await c.refreshPlugins()
+        check(c.hasLatchkey, "the app sees it")
+
+        var saved = LinksPageSettings(); saved.address = "https://links.example.test"; saved.port = 25592
+        saved.shared = ["latchkey"]
+        c.linksPageSettings = saved
+        try c.startLinksPage()
+        c.linksWeb?.requireOnlineMode = false
+        await checkUntil(5, "page up") { c.linksListener?.isListening == true }
+
+        let java = c.resolvedJava()?.path ?? ""
+        let table = try await ProtocolTable.load(mc: realMC, cache: folder("signin-protocol"), java: java)
+        let bot = try Bot(name: "MadeUpBot", port: 25593, table: table)
+        defer { bot.leave() }
+        await checkUntil(60, "bot in game: \(bot.disconnectReason ?? "")") { bot.inGame }
+        let tokenPattern = try NSRegularExpression(pattern: #"/signin#([A-Za-z0-9_-]{43})"#)
+        func link() -> String? {
+            for text in bot.privateMessages.reversed() {
+                if let match = tokenPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), let range = Range(match.range(at: 1), in: text) { return String(text[range]) }
+            }
+            return nil
+        }
+        func sent(_ words: String) -> Bool { bot.privateMessages.contains { $0.contains(words) } }
+        func answer(_ cookie: String?) async -> String {
+            await rawRequest(port: 25592, "GET / HTTP/1.1\r\nHost: links.example.test\r\n\(cookie.map { "Cookie: \($0)\r\n" } ?? "")\r\n")
+        }
+        let pending = c.paths.plugins.appendingPathComponent("Latchkey/pending")
+
+        bot.command("signin")
+        try? await Task.sleep(for: .seconds(2))
+        check(link() == nil, "no permission, no link")
+        check(FileOps.children(pending).isEmpty, "and nothing saved")
+        c.send("op MadeUpBot")
+        try? await Task.sleep(for: .seconds(2))
+        bot.command("signin")
+        await checkUntil(10, "told it isn't on the allowlist") { sent("allowlist") }
+        check(link() == nil, "with permission but off the allowlist, no link")
+        c.send("whitelist add MadeUpBot")
+        try? await Task.sleep(for: .seconds(2))
+        bot.command("signin")
+        await checkUntil(10, "a link arrives in game") { link() != nil }
+        guard let token = link() else { throw LeafError("no link arrived") }
+        check(FileOps.children(pending).first?.lastPathComponent == "\(LinksWeb.hash(token)).json", "its hash is what's saved")
+        check(!c.console.contains { $0.text.contains(token) }, "the link isn't in the console")
+        let logs = (try? String(contentsOf: c.paths.root.appendingPathComponent("logs/latest.log"), encoding: .utf8)) ?? ""
+        check(!logs.isEmpty && !logs.contains(token), "or the server's log")
+
+        let form = "token=\(token)"
+        let signIn = await rawRequest(port: 25592, "POST /signin HTTP/1.1\r\nHost: links.example.test\r\nOrigin: https://links.example.test\r\nContent-Length: \(form.utf8.count)\r\n\r\n\(form)")
+        check(signIn.hasPrefix("HTTP/1.1 303"), "the real link signs in: \(signIn.prefix(40))")
+        check(FileOps.children(pending).isEmpty, "and is used up")
+        let again = await rawRequest(port: 25592, "POST /signin HTTP/1.1\r\nHost: links.example.test\r\nOrigin: https://links.example.test\r\nContent-Length: \(form.utf8.count)\r\n\r\n\(form)")
+        check(again.hasPrefix("HTTP/1.1 400"), "a second use fails")
+        let cookie = signIn.components(separatedBy: "\r\n").first { $0.hasPrefix("Set-Cookie: ") }?.dropFirst("Set-Cookie: ".count).split(separator: ";").first.map(String.init)
+        let inside = await answer(cookie)
+        check(inside.contains("Signed in as MadeUpBot"), "the page knows who it is")
+        check(inside.contains("Latchkey"), "and lists what's shared")
+        equal(c.linksWeb?.signedIn.first?.name, "MadeUpBot", "the app shows them signed in")
+        equal(c.linksWeb?.signedIn.first?.uuid, (try JSONSerialization.jsonObject(with: Data(contentsOf: c.paths.root.appendingPathComponent("whitelist.json"))) as? [[String: Any]])?.first?["uuid"] as? String, "by the same account the server knows")
+
+        // /execute as changes who runs a command, never who asked: nobody gets a link made for someone else.
+        let other = try Bot(name: "OtherBot", port: 25593, table: table)
+        defer { other.leave() }
+        await checkUntil(60, "second bot in game: \(other.disconnectReason ?? "")") { other.inGame }
+        c.send("whitelist add OtherBot")
+        try? await Task.sleep(for: .seconds(2))
+        func linkFor(_ name: String) -> Bool {
+            FileOps.children(pending).contains { ((try? String(contentsOf: $0, encoding: .utf8)) ?? "").contains("\"\(name)\"") }
+        }
+        c.send("execute as OtherBot run signin")
+        try? await Task.sleep(for: .seconds(3))
+        check(!linkFor("OtherBot"), "the console can't make a link for a player with execute as")
+        bot.command("execute as OtherBot run signin")
+        try? await Task.sleep(for: .seconds(3))
+        check(!linkFor("OtherBot"), "an op can't make one for a player without the permission")
+        check(!other.privateMessages.contains { $0.contains("/signin#") }, "and that player is never sent a link")
+        other.command("signin")
+        try? await Task.sleep(for: .seconds(2))
+        check(!linkFor("OtherBot") && !other.privateMessages.contains { $0.contains("/signin#") }, "nor can they ask themselves")
+        other.leave()
+
+        c.send("whitelist remove MadeUpBot")
+        await checkUntil(10, "removed from the allowlist on disk") { ((try? String(contentsOf: c.paths.root.appendingPathComponent("whitelist.json"), encoding: .utf8)) ?? "").contains("MadeUpBot") == false }
+        let afterRemoval = await answer(cookie)
+        check(!afterRemoval.contains("Signed in as"), "taking them off the allowlist ends it at once")
+        check(c.signInLog.contains { $0.kind == .removed && $0.name == "MadeUpBot" }, "and that's in the log")
+        bot.leave()
+        await c.stop()
+        await checkUntil(60, "real server stopped: \(c.state)") { !c.state.isLive }
+        check(FileOps.children(pending).isEmpty, "no links left waiting after a stop")
+    } catch { failures.append("real sign-in: \(error)") }
+}
+
 @MainActor func runLiveAPIs() async {
     section("LIVE: APIs")
     do {
+        let links = try await PluginLinks.lookUpModrinth(["luckperms", "viaversion"])
+        check(PluginLinks.clean(links["luckperms"]?.wiki ?? "") != nil, "Modrinth gives LuckPerms a wiki link")
+        check(PluginLinks.clean(links["viaversion"]?.code ?? "") != nil, "and ViaVersion its source code")
         let versions = try await SoftwareCatalog.versions(.paper)
         check(versions.first.map { gv($0) > gv("1.21") } == true, "paper versions newest first: \(versions.prefix(2))")
         let paper = try await SoftwareCatalog.latestBuild(.paper, mc: "1.21.11")
@@ -2349,6 +3335,95 @@ if CommandLine.arguments.contains("--real-paper") {
         } catch { blocked = error.localizedDescription }
         check(blocked.contains("can't go back"), "downgrade refused: \(blocked)")
     } catch { failures.append("live API: \(error)") }
+}
+
+/// Real Paper offering a pack this app serves, through a staged update and a restart. Bots stand in for the game,
+/// so this shows the offer and the download agree. It can't show the game accepting the pack.
+@MainActor func runRealPack() async {
+    section("REAL PACK SERVING (EULA accepted by the person running this)")
+    do {
+        let port = 25591, hostPort = 28770
+        let root = folder("real-pack")
+        write("server-port=\(port)\nonline-mode=false\nwhite-list=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "real-pack")
+        try EULA.accept(c.paths)
+        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!)
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        defer { c.stopPackHost(); c.forceStop(); c.stopTicker() }
+        let runtimes = await JavaManager.discover()
+        guard let java = JavaManager.best(for: 21, in: runtimes) else { failures.append("no Java 21"); return }
+        let table = try await ProtocolTable.load(mc: realMC, cache: folder("real-pack-protocol"), java: java.path)
+
+        let first = try await ResourcePacks.add(await makePack("Made Up First", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"first"}}"#, "assets/minecraft/textures/block/stone.png": "first"]))
+        let second = try await ResourcePacks.add(await makePack("Made Up Second", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"second"}}"#, "assets/minecraft/textures/block/stone.png": "second"]))
+        var recipe = PackRecipe()
+        recipe.name = "real-one"
+        recipe.entries = [PackRecipe.Entry(pack: first.id, version: first.latest!.sha1)]
+        let oldBuild = try await ResourcePacks.combine(recipe)
+        recipe.entries = [PackRecipe.Entry(pack: second.id, version: second.latest!.sha1)]
+        let newBuild = try await ResourcePacks.combine(recipe)
+
+        try c.setPackHost(address: "http://127.0.0.1:\(hostPort)", port: hostPort)
+        try c.startPackHost()
+        await checkUntil(5, "serving") { c.packHostIsListening }
+        let url = c.packAddress(recipe: recipe.name)!
+        equal(try await c.usePack(url: url, sha1: oldBuild.sha1, required: true, recipe: recipe.name), .saved, "set while stopped")
+
+        // Stopping the host here shows a server start brings it back.
+        c.stopPackHost(remember: false)
+        await c.start()
+        await checkUntil(240, "up: \(c.state)") { c.state == .running }
+        check(c.packHostIsListening, "starting the server starts serving")
+
+        func offered(_ name: String, expect sha1: String, _ label: String) async throws {
+            let bot = try await join(name, c, table, port: port)
+            equal(bot.packOffer?.url, url, "\(label): the server offers this address")
+            equal(bot.packOffer?.hash, sha1, "\(label): with this hash")
+            check(bot.packOffer?.required == true, "\(label): required")
+            let download = await PackHosting.check(url: bot.packOffer?.url ?? "", expected: bot.packOffer?.hash ?? "")
+            check(download.ok, "\(label): what the bot was offered downloads and matches: \(download.summary)")
+            await leave(bot, c)
+        }
+        try await offered("PackBotOne", expect: oldBuild.sha1, "first join")
+
+        // A new build while running: staged, and old file and old hash stay together.
+        await c.refreshPlugins()
+        equal(try await c.usePack(url: url, sha1: newBuild.sha1, required: true, recipe: recipe.name), .staged, "a running server stages it")
+        equal(c.servedPackSHA1(recipe: recipe.name), oldBuild.sha1, "the address still gives the old build")
+        try await offered("PackBotTwo", expect: oldBuild.sha1, "before the restart")
+
+        // Across the restart they switch together.
+        c.stop()
+        await checkUntil(90, "stopped: \(c.state)") { !c.state.isLive }
+        await c.start()
+        await checkUntil(240, "back up: \(c.state)") { c.state == .running }
+        equal(c.servedPackSHA1(recipe: recipe.name), newBuild.sha1, "after the restart the address gives the new build")
+        try await offered("PackBotThree", expect: newBuild.sha1, "after the restart")
+
+        // An exact pack, as a plugin exports it, set by its own address and hash.
+        let exportZip = await makePack("Made Up Export", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"export"}}"#, "assets/madeup/font/hud.json": "{}"])
+        let exact = try await ResourcePacks.addExact(exportZip, name: "real-export")
+        let exactURL = c.packBuildAddress(recipe: "real-export", sha1: exact.sha1)!
+        equal(exact.sha1, Hashing.sha1(try Data(contentsOf: exportZip)), "the exact pack keeps the export's own SHA-1")
+        equal(try await c.usePack(url: exactURL, sha1: exact.sha1, required: true, recipe: "real-export"), .staged, "set on the running server")
+        c.stop()
+        await checkUntil(90, "stopped for the exact pack: \(c.state)") { !c.state.isLive }
+        await c.start()
+        await checkUntil(240, "up with the exact pack: \(c.state)") { c.state == .running }
+        let exactBot = try await join("PackBotExact", c, table, port: port)
+        equal(exactBot.packOffer?.url, exactURL, "the server offers the exact pack's own address")
+        equal(exactBot.packOffer?.hash, exact.sha1, "with the export's hash")
+        let exactDownload = await PackHosting.check(url: exactBot.packOffer?.url ?? "", expected: exactBot.packOffer?.hash ?? "")
+        check(exactDownload.ok, "and the download matches it: \(exactDownload.summary)")
+        await leave(exactBot, c)
+
+        // A declining bot still gets Minecraft's own answer, and nothing here changes it.
+        let decliner = try Bot(name: "PackBotFour", port: port, table: table, packAnswer: 1)
+        await checkUntil(30, "a required pack declined disconnects") { decliner.packOffer != nil && !c.players.contains("PackBotFour") }
+        decliner.leave()
+        c.stop()
+        await checkUntil(90, "stopped at the end: \(c.state)") { !c.state.isLive }
+    } catch { failures.append("real pack serving threw: \(error)") }
 }
 
 @MainActor func runRealPaper() async {
@@ -3337,7 +4412,823 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
             do { _ = try ResourcePacks.applying(url: u, sha1: h, required: false, to: real) } catch { bad += 1 }
         }
         equal(bad, 3, "bad addresses and hashes are refused")
+        await packContributionChecks(recipe: recipe, top: a.id, lower: b.id, stone: stoneA)
     } catch { failures.append("resource packs threw: \(error)") }
+    await packHostingChecks()
+    await exactPackChecks()
+    await packSongChecks()
+    await pluginUpgradeChecks()
+    await serverIconChecks()
+}
+
+/// A made-up square or oblong image, with one corner pixel a different colour so scaling can be seen.
+func madeUpImage(_ w: Int, _ h: Int, to url: URL, type: CFString = "public.png" as CFString, blue: CGFloat = 0.3) {
+    let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(red: 0.2, green: 0.6, blue: blue, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    ctx.setFillColor(red: 1, green: 0, blue: 0, alpha: 1); ctx.fill(CGRect(x: 0, y: 0, width: max(1, w / 8), height: max(1, h / 8)))
+    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let dest = CGImageDestinationCreateWithURL(url as CFURL, type, 1, nil)!
+    CGImageDestinationAddImage(dest, ctx.makeImage()!, nil)
+    CGImageDestinationFinalize(dest)
+}
+
+@MainActor func serverIconChecks() async {
+    print("• Server icons")
+    do {
+        let root = folder("server-icons")
+        let paths = ServerPaths(root: root)
+        let incoming = folder("icons-incoming")
+        equal(ServerIcons.list(paths).count, 0, "no folder means no icons, and nothing is made just by looking")
+        check(!FileOps.exists(ServerIcons.folder(paths)), "the folder isn't created by looking")
+
+        // The icon in use isn't in the folder: it's kept before anything replaces it.
+        madeUpImage(64, 64, to: ServerIcons.active(paths))
+        let original = try Data(contentsOf: ServerIcons.active(paths))
+        check(ServerIcons.activeIsUnsaved(paths), "an icon in use that isn't in the folder is noticed")
+
+        madeUpImage(64, 64, to: incoming.appendingPathComponent("Made Up Emblem.png"))
+        madeUpImage(256, 256, to: incoming.appendingPathComponent("Big Square.png"), blue: 0.9)
+        madeUpImage(100, 64, to: incoming.appendingPathComponent("wide.png"))
+        madeUpImage(32, 32, to: incoming.appendingPathComponent("small.jpg"), type: "public.jpeg" as CFString, blue: 0.6)
+
+        let emblem = try ServerIcons.add(incoming.appendingPathComponent("Made Up Emblem.png"), paths: paths)
+        // The made-up 64 is identical to the one in use, so it's recognised as that.
+        if case let .added(file) = emblem { equal(file.lastPathComponent, "made-up-emblem.png", "added under a plain name") } else { failures.append("emblem: \(emblem)") }
+        check(!ServerIcons.activeIsUnsaved(paths), "once the same image is in the folder, the one in use is found by its contents")
+        equal(ServerIcons.list(paths).first { $0.inUse }?.name, "made-up-emblem", "and marked in use")
+        if case let .alreadyThere(file) = try ServerIcons.add(incoming.appendingPathComponent("Made Up Emblem.png"), paths: paths) { equal(file.lastPathComponent, "made-up-emblem.png", "adding the same image again adds nothing") } else { failures.append("the same image was added twice") }
+
+        let big = try ServerIcons.add(incoming.appendingPathComponent("Big Square.png"), paths: paths)
+        guard case let .scaled(bigFile, from) = big else { failures.append("big: \(big)"); return }
+        equal(from, 256, "a bigger square is scaled")
+        let bigChoice = ServerIcons.list(paths).first { $0.file.lastPathComponent == bigFile.lastPathComponent }
+        check(bigChoice?.fits == true, "to 64×64: \(bigChoice.map { "\($0.width)×\($0.height)" } ?? "missing")")
+        let small = try ServerIcons.add(incoming.appendingPathComponent("small.jpg"), paths: paths)
+        if case let .scaled(file, 32) = small { check(file.pathExtension == "png" && (ServerIcons.list(paths).first { $0.file.lastPathComponent == file.lastPathComponent }?.fits == true), "a small JPEG becomes a 64×64 PNG") } else { failures.append("small: \(small)") }
+        var refusal = ""
+        do { _ = try ServerIcons.add(incoming.appendingPathComponent("wide.png"), paths: paths) } catch { refusal = error.localizedDescription }
+        check(refusal.contains("100×64") && refusal.contains("square"), "an oblong image is refused, saying why: \(refusal)")
+        write("not an image", incoming.appendingPathComponent("fake.png"))
+        var unreadable = ""
+        do { _ = try ServerIcons.add(incoming.appendingPathComponent("fake.png"), paths: paths) } catch { unreadable = error.localizedDescription }
+        check(unreadable.contains("isn't an image"), "a file that isn't an image is refused")
+
+        // Picking copies over server-icon.png and touches nothing in the folder.
+        let before = Set(FileOps.children(ServerIcons.folder(paths)).map(\.lastPathComponent))
+        try ServerIcons.use(bigChoice!, paths: paths)
+        equal(try Data(contentsOf: ServerIcons.active(paths)), try Data(contentsOf: bigFile), "the picked icon is the one Paper reads")
+        equal(ServerIcons.list(paths).filter(\.inUse).map(\.name), [bigChoice!.name], "and only it is marked in use")
+        equal(Set(FileOps.children(ServerIcons.folder(paths)).map(\.lastPathComponent)), before, "nothing in the folder moved")
+        check(ServerIcons.list(paths).contains { (try? Data(contentsOf: $0.file)) == original }, "the earlier icon is still there to pick again")
+
+        // An oversized file dropped into the folder by hand is listed but can't be picked.
+        madeUpImage(128, 128, to: ServerIcons.folder(paths).appendingPathComponent("dropped-in.png"), blue: 0.1)
+        let dropped = ServerIcons.list(paths).first { $0.name == "dropped-in" }
+        check(dropped?.fits == false, "a wrong-size file in the folder is listed as not usable")
+        var wrongSize = ""
+        do { try ServerIcons.use(dropped!, paths: paths) } catch { wrongSize = error.localizedDescription }
+        check(wrongSize.contains("128×128"), "and picking it says why")
+
+        // An icon in use that matches nothing is kept as previous-icon before another is picked.
+        madeUpImage(48, 48, to: incoming.appendingPathComponent("odd.png"), blue: 0.5)
+        try FileManager.default.removeItem(at: ServerIcons.active(paths))
+        try FileManager.default.copyItem(at: incoming.appendingPathComponent("odd.png"), to: ServerIcons.active(paths))
+        let odd = try Data(contentsOf: ServerIcons.active(paths))
+        try ServerIcons.use(ServerIcons.list(paths).first { $0.name == "made-up-emblem" }!, paths: paths)
+        equal(try? Data(contentsOf: ServerIcons.folder(paths).appendingPathComponent("previous-icon.png")), odd, "the unsaved icon was kept as previous-icon before being replaced")
+    } catch { failures.append("server icons threw: \(error)") }
+}
+
+@MainActor func pluginUpgradeChecks() async {
+    print("• Plugins on upgrade")
+    // Real output from Preflight's upgrade tool 0.3.0 on Paper 26.3 with broken made-up plugins (fixtures/, from
+    // ExtantApe/Preflight's live run; the server path is replaced with a made-up one).
+    let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("fixtures")
+    let switchOff = (try? Data(contentsOf: fixtures.appendingPathComponent("upgrade-check-26.3.json"))) ?? Data()
+    let wait = (try? Data(contentsOf: fixtures.appendingPathComponent("upgrade-check-26.3-wait.json"))) ?? Data()
+    let plan = PluginUpgradePlan.decode(switchOff, target: "Paper 26.3")
+    equal(plan?.target, "Paper 26.3 build 244", "the tool's plan names the build it checked")
+    equal(plan?.off.map(\.name), ["BadApi", "BrokenEnable", "FailingTests", "MissingDep", "NeedsBadApi", "NoMainClass", "PaperDependsOnFailing"], "and what it would switch off")
+    check(plan?.off.first { $0.name == "NeedsBadApi" }?.why.contains { $0.contains("needs BadApi") } == true, "including the one Paper enabled without its dependency")
+    equal(plan?.notChecked.map(\.name), ["ChatAddon", "DiscordSRV"], "what couldn't be checked in the copy is listed apart")
+    check(plan?.warnings.contains { $0.contains("Corrupt.jar") } == true, "warnings come through")
+    check(plan?.canApply == true && plan?.stop == nil, "a switch-off plan can be applied")
+    let held = PluginUpgradePlan.decode(wait, target: "Paper 26.3")
+    check(held?.blocked.contains { $0.name == "FailingTests" } == true && held?.canApply == false, "a wait plan can't be applied")
+    let shared = PluginUpgradePlan.decode(Data(#"{"format":1,"status":"stop","stop":"MadeUpStats uses an outside database. Run the check again with --allow-shared-database if that's fine.","target":{"file":"paper.jar"}}"#.utf8), target: "Paper 26.3")
+    check(shared?.stop != nil && shared?.sharedDatabase == true && shared?.canApply == false, "a shared-database stop offers to check anyway")
+    let newer = PluginUpgradePlan.decode(Data(#"{"format":2,"status":"switch-off"}"#.utf8), target: "x")
+    check(newer?.stop?.contains("format 2") == true && newer?.canApply == false, "a newer format is refused")
+    check(PluginUpgradePlan.decode(Data("Exception in thread main".utf8), target: "x") == nil, "output that isn't JSON isn't a plan")
+    check(PluginUpgradePlan.decode(Data(#"{"format":1,"status":"maybe"}"#.utf8), target: "x")?.canApply == false, "an unknown status can't be applied")
+
+    // Calling the tool, with it stood in for, on a made-up stopped server.
+    defer { UpgradeTool.runOverride = nil }
+    do {
+        let root = folder("plugin-upgrade")
+        write("server-port=25601\n", root.appendingPathComponent("server.properties"))
+        write("made up", root.appendingPathComponent("plugins/BadApi.jar"))
+        let c = try await ServerController.adopt(root: root, name: "plugin-upgrade")
+        defer { c.stopTicker() }
+        var calls: [[String]] = []
+        var planSent = Data()
+        var reply = ToolResult(code: 0, out: "", err: "")
+        UpgradeTool.runOverride = { args in
+            calls.append(args)
+            if args.first == "apply", let i = args.firstIndex(of: "--plan") { planSent = (try? Data(contentsOf: URL(fileURLWithPath: args[i + 1]))) ?? Data() }
+            return reply
+        }
+        c.runtimes = []
+        var noJava = ""
+        do { try await c.applyPluginPlan(plan!) } catch { noJava = error.localizedDescription }
+        check(noJava.contains("Java 25"), "without Java 25 it says so: \(noJava)")
+        c.runtimes = [JavaRuntime(path: "/made/up/java", version: "25", major: 25, vendor: nil, managed: false)]
+
+        var refused = ""
+        do { try await c.applyPluginPlan(held!) } catch { refused = error.localizedDescription }
+        check(!refused.isEmpty && calls.isEmpty, "a wait plan never reaches the tool")
+
+        let backupsBefore = c.backups.count
+        try await c.applyPluginPlan(plan!)
+        let apply = calls.last ?? []
+        check(apply.first == "apply" && apply.contains("--yes") && apply.contains(root.path), "apply passes the server and --yes, after the person confirmed: \(apply)")
+        equal(planSent, switchOff, "the tool gets back the plan exactly as it gave it")
+        check(!FileOps.children(c.paths.meta).contains { $0.lastPathComponent.hasPrefix("upgrade-plan-") }, "and the plan file is cleaned up")
+        check(c.backups.count > backupsBefore, "after Leaf Juice's own restore point")
+
+        reply = ToolResult(code: 13, out: "", err: "Refused: BadApi.jar has changed since the check.\n")
+        var changed = ""
+        do { try await c.applyPluginPlan(plan!) } catch { changed = error.localizedDescription }
+        check(changed.contains("Nothing was switched off") && changed.contains("has changed since the check"), "a refusal says what the tool said: \(changed)")
+
+        reply = ToolResult(code: 0, out: "", err: "")
+        try await c.switchBackOn(["BadApi", "NoMainClass"])
+        let restore = calls.last ?? []
+        check(restore.starts(with: ["restore", "--server", root.path]) && restore.filter { $0 == "--plugin" }.count == 2 && restore.last == "--yes", "restore names each plugin: \(restore)")
+        reply = ToolResult(code: 13, out: "BadApi: a newer BadApi.jar is in place, so it was left off.\n", err: "")
+        var partly = ""
+        do { try await c.switchBackOn(["BadApi"]) } catch { partly = error.localizedDescription }
+        check(partly.contains("newer BadApi.jar"), "a plugin left off says why: \(partly)")
+
+        equal(await c.switchedOffPlugins().entries.count, 0, "with no record from the tool, nothing is listed")
+        write("{}", c.paths.switchedOffFile)
+        reply = ToolResult(code: 0, out: #"{"format":1,"server":"x","running":false,"switchedOff":[{"name":"BadApi","files":["BadApi.jar"],"why":["It didn't load."],"date":"2026-11-08T16:00:00Z","target":"Paper 26.3"}],"restorePoints":[]}"#, err: "")
+        equal(await c.switchedOffPlugins().entries.map(\.name), ["BadApi"], "what's switched off comes from the tool's status")
+        equal(calls.last?.prefix(2).map { $0 }, ["status", "--server"], "asked with status")
+
+        let rules = try c.ensureUpgradeRules()
+        check(rules.path.hasSuffix("plugins/Preflight/upgrade/rules.json") && (try? String(contentsOf: rules, encoding: .utf8))?.contains(#""neverOff": []"#) == true, "an empty rules file is made where the tool reads it")
+        write(#"{"format":1,"neverOff":[{"plugin":"Kept","why":"made up"}],"recheck":[]}"#, rules)
+        _ = try c.ensureUpgradeRules()
+        check((try? String(contentsOf: rules, encoding: .utf8))?.contains("Kept") == true, "and an existing one is never overwritten")
+
+        // The whole check, with Paper fetched from a stand-in web server on this Mac.
+        let webPort = 28797
+        let web = try FakeBlueMap(port: webPort)
+        defer { web.listener.cancel() }
+        let paperBytes = Data("made up paper jar".utf8)
+        web.answers["/paper-26.3-244.jar"] = (head: "", body: paperBytes)
+        let paperFile = folder("plugin-upgrade-paper").appendingPathComponent("p.jar")
+        try paperBytes.write(to: paperFile)
+        let paperSHA = try Hashing.digests(of: paperFile).sha256
+        func build(_ sha256: String) -> SoftwareBuild {
+            SoftwareBuild(flavor: .paper, mcVersion: "26.3", build: 244, channel: "STABLE", downloadURL: "http://127.0.0.1:\(webPort)/paper-26.3-244.jar",
+                          fileName: "paper-26.3-244.jar", hashes: ExpectedHashes(sha256: sha256))
+        }
+        let testCopies = root.deletingLastPathComponent().appendingPathComponent(AppPaths.ownFolderName).appendingPathComponent("test-copies")
+        func leftOver() -> [String] { FileOps.children(testCopies).map(\.lastPathComponent).filter { $0.hasPrefix("upgrade-check-plugin-upgrade") } }
+        var sawCopy = false, sawPaper = false
+        reply = ToolResult(code: 10, out: String(decoding: switchOff, as: UTF8.self), err: "")
+        UpgradeTool.runOverride = { args in
+            calls.append(args)
+            if let i = args.firstIndex(of: "--copy") {
+                let copy = URL(fileURLWithPath: args[i + 1])
+                sawCopy = FileOps.exists(copy.appendingPathComponent("server.properties")) && copy.standardizedFileURL != root.standardizedFileURL
+            }
+            if let i = args.firstIndex(of: "--paper") { sawPaper = (try? Data(contentsOf: URL(fileURLWithPath: args[i + 1]))) == paperBytes }
+            return reply
+        }
+        let checked = await c.checkPluginsForUpgrade(build(paperSHA))
+        check(checked.canApply && checked.stop == nil, "a full check gives back the tool's plan: \(checked.stop ?? "")")
+        check(sawCopy && sawPaper, "the tool is given a copy of the server, never the server, and the Paper that passed its hash")
+        check(calls.last?.contains("--allow-shared-database") == false, "a shared database isn't allowed unless asked")
+        equal(leftOver(), [], "the copy and the download are deleted afterwards")
+        _ = await c.checkPluginsForUpgrade(build(paperSHA), allowSharedDatabase: true)
+        check(calls.last?.contains("--allow-shared-database") == true, "Check Anyway passes the shared-database allowance on")
+        let callsBefore = calls.count
+        let tampered = await c.checkPluginsForUpgrade(build(String(repeating: "0", count: 64)))
+        check(tampered.stop?.contains("checksum") == true && !tampered.canApply, "a Paper download that fails its hash stops the check: \(tampered.stop ?? "")")
+        equal(calls.count, callsBefore, "and the tool never runs")
+        equal(leftOver(), [], "and nothing is left behind")
+
+        // Every download goes through the same hash check: server jars, plugins, packs and the upgrade tool.
+        let saved = folder("plugin-upgrade-download").appendingPathComponent("got.jar")
+        var refusal = ""
+        do { try await HTTP.download(HTTP.url("http://127.0.0.1:\(webPort)/paper-26.3-244.jar"), to: saved, expect: ExpectedHashes(sha1: String(repeating: "0", count: 40))) } catch { refusal = error.localizedDescription }
+        check(refusal.contains("checksum") && !FileOps.exists(saved), "a download that fails its hash is discarded, not saved: \(refusal)")
+        try await HTTP.download(HTTP.url("http://127.0.0.1:\(webPort)/paper-26.3-244.jar"), to: saved, expect: ExpectedHashes(sha256: paperSHA))
+        equal(try Data(contentsOf: saved), paperBytes, "one that passes is saved as it came")
+    } catch { failures.append("plugins on upgrade threw: \(error)") }
+}
+
+@MainActor func packSongChecks() async {
+    print("• Songs in a pack")
+    do {
+        let meta = #"{"pack":{"pack_format":75,"description":"songs"}}"#
+        let calm = "assets/minecraft/sounds/music/game/calm1.ogg", calm2 = "assets/minecraft/sounds/music/game/calm2.ogg"
+        let hal = "assets/minecraft/sounds/music/game/hal1.ogg", stone = "assets/minecraft/textures/block/stone.png"
+        func songsJSON(_ songs: String, format: Int = 1) -> String { #"{"format":\#(format),"songs":[\#(songs)]}"# }
+        let good = songsJSON(#"""
+            {"id":"made-up-calm","title":"Made Up Calm","credit":"Nobody, made up for tests","files":[
+              {"path":"\#(calm)","replaces":"music/game/calm1","bytes":8},
+              {"path":"\#(calm2)","replaces":"music/game/calm2"}]},
+            {"id":"made-up-hal","title":"Made Up Hal","files":[{"path":"\#(hal)","replaces":"music/game/hal1","bytes":999}]}
+            """#)
+        let zip = await makePack("Made Up Songs", ["pack.mcmeta": meta, "songs.json": good, calm: "calm-one", calm2: "calm-two", hal: "hal-one", stone: "stone"])
+        let pack = try await ResourcePacks.add(zip)
+        var recipe = PackRecipe()
+        recipe.name = "made-up-songs"
+        recipe.entries = [PackRecipe.Entry(pack: pack.id, version: pack.latest!.sha1)]
+        defer { ResourcePacks.deleteRecipe(recipe.name) }
+
+        let list = await ResourcePacks.songList(for: recipe.entries[0])
+        check(list?.usable == true, "a good songs.json is usable: \(list?.problems ?? [])")
+        equal(list?.songs.map(\.id), ["made-up-calm", "made-up-hal"], "both songs, in order")
+        equal(list?.songs.first?.standsInFor, ["calm1", "calm2"], "and which vanilla tracks each stands in for")
+        equal(list?.sizes["made-up-calm"], Int64("calm-one".utf8.count + "calm-two".utf8.count), "sizes are measured from the pack")
+        check(list?.notes.contains { $0.contains(hal) && $0.contains("999") } == true, "a wrong size is noted: \(list?.notes ?? [])")
+        check(list?.notes.contains { $0.contains(calm) } == false, "a right size isn't")
+
+        let all = try await ResourcePacks.combine(recipe)
+        let allLock = ResourcePacks.loadLock(sha1: all.sha1, recipe: recipe.name)
+        check(allLock?.files.contains { $0.path == calm } == true && allLock?.files.contains { $0.path == hal } == true, "with every song on, every song is in the build")
+        check(allLock?.files.contains { $0.path == "songs.json" } == false, "the song list itself isn't a ranked file")
+        let allZip = ResourcePacks.buildFile(all, recipe: recipe.name)
+        let names = (try? await Tool.run("/usr/bin/unzip", ["-Z1", allZip.path]))?.out ?? ""
+        check(!names.contains("songs.json"), "and it isn't copied into the build")
+        let credits = (try? await Tool.run("/usr/bin/unzip", ["-p", allZip.path, "CREDITS.txt"]))?.out ?? ""
+        check(credits.contains("Made Up Calm: Nobody, made up for tests") && credits.contains("Made Up Hal"), "included songs are credited")
+
+        recipe.entries[0].songsOff = ["made-up-calm"]
+        ResourcePacks.saveRecipe(recipe)
+        equal(ResourcePacks.loadRecipe(recipe.name).entries.first?.songsOff, ["made-up-calm"], "the choice is saved with the recipe")
+        let less = try await ResourcePacks.combine(recipe)
+        check(less.sha1 != all.sha1, "switching a song off makes a different build, with its own SHA-1")
+        let lessLock = ResourcePacks.loadLock(sha1: less.sha1, recipe: recipe.name)
+        check(lessLock?.files.contains { $0.path == calm || $0.path == calm2 } == false, "every file of the song is left out, so vanilla plays")
+        check(lessLock?.files.contains { $0.path == hal } == true && lessLock?.files.contains { $0.path == stone } == true, "and nothing else is")
+        let lessCredits = (try? await Tool.run("/usr/bin/unzip", ["-p", ResourcePacks.buildFile(less, recipe: recipe.name).path, "CREDITS.txt"]))?.out ?? ""
+        check(!lessCredits.contains("Made Up Calm") && lessCredits.contains("Made Up Hal"), "and only songs still in are credited")
+        check(less.warnings.isEmpty, "no warning for a clean choice: \(less.warnings)")
+        let again = try await ResourcePacks.combine(recipe)
+        equal(again.sha1, less.sha1, "the same choice gives the same SHA-1")
+
+        // The per-build address follows the build.
+        let root = folder("pack-songs-server")
+        write("server-port=25599\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "pack-songs")
+        try c.setPackHost(address: "http://127.0.0.1:28769", port: 28769)
+        let before = c.packBuildAddress(recipe: recipe.name, sha1: all.sha1)!, after = c.packBuildAddress(recipe: recipe.name, sha1: less.sha1)!
+        check(before != after && after.hasSuffix("/\(less.sha1).zip"), "the per-build address changes with the choice")
+
+        // A recipe saved before songs existed still loads.
+        let old = #"{"name":"made-up-old","entries":[{"pack":"\#(pack.id)","version":"\#(pack.latest!.sha1)","enabled":true,"excluded":[]}],"categoryWinners":{},"winners":{}}"#
+        write(old, ResourcePacks.recipes.appendingPathComponent("made-up-old.json"))
+        let loaded = ResourcePacks.loadRecipe("made-up-old")
+        check(loaded.entries.count == 1 && loaded.entries[0].songsOff == nil, "an older recipe loads with every song on")
+        ResourcePacks.deleteRecipe("made-up-old")
+
+        // A song the pack no longer lists is reported, not ignored.
+        recipe.entries[0].songsOff = ["made-up-calm", "made-up-gone"]
+        let gone = try await ResourcePacks.combine(recipe)
+        check(gone.warnings.contains { $0.contains("made-up-gone") }, "a switched-off song the pack no longer lists is warned about: \(gone.warnings)")
+        equal(gone.sha1, less.sha1, "and changes nothing else")
+
+        // A broken list: no toggles, every song stays in, and the build says why.
+        func problems(_ text: String, files: [String: String] = [calm: "calm-one"]) -> [String] {
+            let work = folder("songs-\(UUID().uuidString.prefix(8))")
+            write(text, work.appendingPathComponent("songs.json"))
+            for (path, body) in files { write(body, work.appendingPathComponent(path)) }
+            return ResourcePacks.songList(root: work)?.problems ?? ["no list"]
+        }
+        let one = #"{"id":"a","title":"A","files":[{"path":"\#(calm)","replaces":"music/game/calm1"}]}"#
+        check(!problems(songsJSON(one + "," + one)).isEmpty, "two songs with one id are refused")
+        check(!problems(songsJSON(one + "," + #"{"id":"b","title":"B","files":[{"path":"\#(calm)","replaces":"x"}]}"#)).isEmpty, "a file claimed twice is refused")
+        check(!problems(songsJSON(#"{"id":"a","title":"A","files":[{"path":"assets/minecraft/sounds/none.ogg","replaces":"x"}]}"#)).isEmpty, "a file the pack doesn't have is refused")
+        check(!problems(songsJSON(#"{"id":"a","title":"A","files":[{"path":"assets/../pack.mcmeta","replaces":"x"}]}"#)).isEmpty, "a path that climbs out is refused")
+        check(!problems(songsJSON(#"{"id":"a","title":"A","files":[{"path":"pack.mcmeta","replaces":"x"}]}"#)).isEmpty, "a path outside assets/ is refused")
+        check(!problems(songsJSON(#"{"id":"Not OK","title":"A","files":[{"path":"\#(calm)","replaces":"x"}]}"#)).isEmpty, "an id that isn't lowercase with hyphens is refused")
+        check(problems(songsJSON(one, format: 2)).first?.contains("format 2") == true, "a newer format says so")
+        check(!problems("not json").isEmpty, "unreadable JSON is refused")
+        check(problems(songsJSON(one)).isEmpty, "while a good one passes")
+
+        let brokenZip = await makePack("Made Up Broken Songs", ["pack.mcmeta": meta, "songs.json": songsJSON(one + "," + one), calm: "calm-one", stone: "stone"])
+        let broken = try await ResourcePacks.add(brokenZip)
+        var b = PackRecipe()
+        b.name = "made-up-broken-songs"
+        b.entries = [PackRecipe.Entry(pack: broken.id, version: broken.latest!.sha1)]
+        b.entries[0].songsOff = ["a"]
+        defer { ResourcePacks.deleteRecipe(b.name) }
+        let brokenBuild = try await ResourcePacks.combine(b)
+        check(ResourcePacks.loadLock(sha1: brokenBuild.sha1, recipe: b.name)?.files.contains { $0.path == calm } == true, "with a broken list, nothing is left out on a guess")
+        check(brokenBuild.warnings.contains { $0.contains("every song is included") }, "and the build says so: \(brokenBuild.warnings)")
+        try await ResourcePacks.remove(broken)
+        try await ResourcePacks.remove(pack)
+    } catch { failures.append("songs in a pack threw: \(error)") }
+}
+
+@MainActor func exactPackChecks() async {
+    print("• Exact packs")
+    do {
+        let root = folder("exact-packs")
+        write("server-port=25598\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "exact-packs")
+        defer { c.stopPackHost() }
+        let port = 28767
+        // A plugin's own export, zipped its way: odd order, extra fields, a comment. Leaf Juice mustn't touch it.
+        let made = await makePack("Plugin Export", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"export"}}"#, "assets/madeup/font/hud.json": "{}"])
+        _ = try? await Tool.run("/usr/bin/zip", ["-q", "-z", made.path], cwd: nil)
+        let original = try Data(contentsOf: made)
+        let ownSHA = Hashing.sha1(original)
+        let build = try await ResourcePacks.addExact(made, name: "madeup-hud")
+        equal(build.sha1, ownSHA, "stored under the file's own SHA-1")
+        check(ResourcePacks.isExact("madeup-hud") && ResourcePacks.exactNames() == ["madeup-hud"], "and listed as exact")
+        equal(try Data(contentsOf: ResourcePacks.buildFile(build, recipe: "madeup-hud")), original, "byte for byte")
+        check(build.warnings.isEmpty, "a real pack raises no warning: \(build.warnings)")
+        let again = try await ResourcePacks.addExact(made, name: "madeup-hud")
+        equal(again.sha1, build.sha1, "adding the same file again changes nothing"); equal(ResourcePacks.history("madeup-hud").count, 1, "and adds nothing")
+        var refusals = 0
+        let notZip = folder("exact-bad").appendingPathComponent("x.zip"); write("not a zip", notZip)
+        do { _ = try await ResourcePacks.addExact(notZip, name: "bad") } catch { refusals += 1 }
+        ResourcePacks.saveRecipe({ var r = PackRecipe(); r.name = "taken"; return r }())
+        do { _ = try await ResourcePacks.addExact(made, name: "taken") } catch { refusals += 1 }
+        do { _ = try await ResourcePacks.addExact(made, name: "  ") } catch { refusals += 1 }
+        equal(refusals, 3, "not a zip, a recipe's name, or no name are refused")
+        ResourcePacks.deleteRecipe("taken")
+        let loose = folder("exact-loose")
+        write("hello", loose.appendingPathComponent("readme.txt"))
+        _ = try await Tool.run("/usr/bin/zip", ["-q", loose.appendingPathComponent("loose.zip").path, "readme.txt"], cwd: loose)
+        let odd = try await ResourcePacks.addExact(loose.appendingPathComponent("loose.zip"), name: "not-a-pack")
+        check(odd.warnings.contains { $0.contains("pack.mcmeta") }, "a zip that isn't a pack is still served, with a warning")
+
+        try c.setPackHost(address: "http://127.0.0.1:\(port)", port: port)
+        try c.startPackHost()
+        await checkUntil(5, "listening") { c.packHostIsListening }
+        let template = c.packAddressTemplate(recipe: "madeup-hud")!
+        check(template.hasSuffix("/{sha1}.zip"), "an address a plugin can fill in: \(template)")
+        let address = template.replacingOccurrences(of: "{sha1}", with: build.sha1)
+        equal(address, c.packBuildAddress(recipe: "madeup-hud", sha1: build.sha1), "filled in, it's the build's own address")
+        try? await Task.sleep(for: .milliseconds(100))
+        let served = await PackHosting.check(url: address, expected: ownSHA)
+        check(served.ok, "served with the file's own SHA-1: \(served.summary)")
+
+        // A new export: its own address, and the old one keeps giving the old file.
+        let newer = await makePack("Plugin Export Two", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"export two"}}"#, "assets/madeup/font/hud.json": "{\"v\":2}"])
+        let second = try await ResourcePacks.addExact(newer, name: "madeup-hud")
+        check(second.sha1 != build.sha1, "a new version gets its own hash")
+        try? await Task.sleep(for: .milliseconds(100))
+        let newServed = await PackHosting.check(url: template.replacingOccurrences(of: "{sha1}", with: second.sha1), expected: second.sha1)
+        check(newServed.ok, "at its own address")
+        let oldServed = await PackHosting.check(url: address, expected: ownSHA)
+        check(oldServed.ok, "and the old address still gives the old file")
+
+        // New Address breaks every old one, which the app warns about.
+        c.newPackPath(recipe: "madeup-hud")
+        try? await Task.sleep(for: .milliseconds(100))
+        let afterNew = await PackHosting.check(url: address, expected: ownSHA)
+        equal(afterNew.outcome, .status(404), "after New Address, a plugin still using the old one gets nothing")
+        // Quitting, renaming the server's folder and opening it again, as the app does at launch: the same address answers.
+        let kept = c.packAddressTemplate(recipe: "madeup-hud")!.replacingOccurrences(of: "{sha1}", with: second.sha1)
+        c.stopPackHost(remember: false)
+        let quit = await PackHosting.check(url: kept, expected: second.sha1)
+        check(!quit.ok, "with the app closed, nothing answers")
+        let renamed = root.deletingLastPathComponent().appendingPathComponent("exact-packs-renamed", isDirectory: true)
+        try FileManager.default.moveItem(at: root, to: renamed)
+        guard let reopened = ServerController.open(root: renamed) else { failures.append("the renamed folder didn't open"); return }
+        defer { reopened.stopPackHost(); reopened.stopTicker() }
+        reopened.startPackHostIfWanted()
+        await checkUntil(5, "serving again after the rename: \(reopened.packHostError ?? "no error")") { reopened.packHostIsListening }
+        equal(reopened.packAddressTemplate(recipe: "madeup-hud")!.replacingOccurrences(of: "{sha1}", with: second.sha1), kept, "the address is the same after the rename")
+        try? await Task.sleep(for: .milliseconds(100))
+        let back = await PackHosting.check(url: kept, expected: second.sha1)
+        check(back.ok, "and it gives the same file: \(back.summary)")
+        // Stopping serving: nothing answers.
+        reopened.stopPackHost()
+        let closed = await PackHosting.check(url: kept, expected: second.sha1)
+        check(!closed.ok, "with serving stopped, nothing answers")
+    } catch { failures.append("exact packs threw: \(error)") }
+}
+
+@MainActor func packContributionChecks(recipe: PackRecipe, top: String, lower: String, stone: String) async {
+    print("• What each pack contributes")
+    do {
+        var byRank = recipe
+        byRank.winners = [:]; byRank.categoryWinners = [:]
+        let lock = try await ResourcePacks.resolve(byRank)
+        let counts = ResourcePacks.contributions(lock, order: [(top, "Top"), (lower, "Lower")])
+        let topCount = counts.first { $0.pack == top }!, lowerCount = counts.first { $0.pack == lower }!
+        equal(counts.first?.pack, top, "listed in ranking order")
+        equal(topCount.wins + lowerCount.wins + topCount.merged, lock.files.filter { $0.reason != .merged }.count + topCount.merged, "every file not merged has one winner")
+        check(topCount.winsByCategory["Blocks", default: 0] > 0, "wins are counted by kind")
+        equal(lock.files.first { $0.path == stone }?.role(of: top), .wins, "the top pack wins a shared file")
+        equal(lock.files.first { $0.path == stone }?.role(of: lower), .loses, "and the lower one loses it")
+        let lost = ResourcePacks.files(lock, pack: lower, show: .loses)
+        equal(lost.count, lowerCount.loses, "the file list and the count agree on what's lost")
+        check(lost.contains { $0.path == stone }, "and name it")
+        equal(ResourcePacks.files(lock, pack: lower, show: .only).count, lowerCount.only, "and on what only it has")
+        check(ResourcePacks.files(lock, show: .loses).allSatisfy(\.canChoose), "across every pack, 'replaced' only lists real choices")
+        check(ResourcePacks.files(lock, search: "STONE").contains { $0.path == stone }, "search ignores case")
+        check(ResourcePacks.files(lock, imagesOnly: true).allSatisfy(\.isImage), "images only")
+        check(ResourcePacks.files(lock, category: "Blocks").allSatisfy { ResourcePacks.category(of: $0.path) == "Blocks" }, "one kind only")
+        check(lock.files.filter { $0.reason == .merged }.allSatisfy { !$0.canChoose }, "merged files offer no choice")
+
+        // Over the 200 the old list stopped at.
+        var many: [String: String] = ["pack.mcmeta": #"{"pack":{"pack_format":46,"description":"many"}}"#]
+        var alsoMany = many
+        for index in 0..<260 {
+            many["assets/minecraft/textures/block/made_up_\(index).png"] = "one-\(index)"
+            alsoMany["assets/minecraft/textures/block/made_up_\(index).png"] = "two-\(index)"
+        }
+        let first = try await ResourcePacks.add(await makePack("Many One", many))
+        let second = try await ResourcePacks.add(await makePack("Many Two", alsoMany))
+        var big = ResourcePacks.reconcile(PackRecipe(), with: [first, second])
+        big.name = "many-files"
+        big.entries = big.entries.filter { $0.pack == first.id || $0.pack == second.id }
+        let bigLock = try await ResourcePacks.resolve(big)
+        equal(ResourcePacks.files(bigLock, pack: second.id, show: .loses).count, 260, "every differing file is listed, not just 200")
+
+        // A choice in the list changes the count and the build the same way.
+        let pickedPath = "assets/minecraft/textures/block/made_up_7.png"
+        big.winners[pickedPath] = second.id
+        let picked = try await ResourcePacks.resolve(big)
+        let pickedCounts = ResourcePacks.contributions(picked, order: [(first.id, "One"), (second.id, "Two")])
+        equal(pickedCounts.first { $0.pack == second.id }?.wins, 1, "choosing a file counts for that pack")
+        let builtDir = try await ResourcePacks.unpack(ResourcePacks.buildFile(try await ResourcePacks.combine(big), recipe: big.name))
+        equal(try? String(contentsOf: builtDir.appendingPathComponent(pickedPath), encoding: .utf8), "two-7", "and the build agrees")
+        let locator = try await ResourcePacks.locator(big)
+        equal(locator.url(path: pickedPath, pack: first.id).flatMap { try? String(contentsOf: $0, encoding: .utf8) }, "one-7", "each copy can be found to look at")
+        equal(locator.url(path: pickedPath, pack: second.id).flatMap { try? String(contentsOf: $0, encoding: .utf8) }, "two-7", "both of them")
+        try await ResourcePacks.remove(first)
+        try await ResourcePacks.remove(second)
+    } catch { failures.append("pack contributions threw: \(error)") }
+}
+
+/// A raw request, for things a normal web client won't send.
+func rawRequest(port: Int, _ text: String) async -> String {
+    await withCheckedContinuation { (done: CheckedContinuation<String, Never>) in
+        let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        let queue = DispatchQueue(label: "raw")
+        final class Box: @unchecked Sendable { var data = Data(); var ended = false }
+        let box = Box()
+        @Sendable func end() {
+            guard !box.ended else { return }
+            box.ended = true
+            connection.cancel()
+            done.resume(returning: String(decoding: box.data, as: UTF8.self))
+        }
+        @Sendable func pull() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, finished, error in
+                if let data { box.data.append(data) }
+                if finished || error != nil { end() } else { pull() }
+            }
+        }
+        connection.stateUpdateHandler = { state in
+            if case .failed = state { end() }
+        }
+        connection.start(queue: queue)
+        if !text.isEmpty { connection.send(content: Data(text.utf8), completion: .idempotent) }
+        pull()
+        queue.asyncAfter(deadline: .now() + 15) { end() }
+    }
+}
+
+func residentBytes() -> UInt64 {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) { $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count) } }
+    return result == KERN_SUCCESS ? info.resident_size : 0
+}
+
+@MainActor func packHostingChecks() async {
+    print("• Serving packs")
+    // The pure parts.
+    equal(PackHosting.cleanAddress(" https://Packs.Example.net/ "), "https://packs.example.net", "an address is tidied")
+    equal(PackHosting.cleanAddress("http://127.0.0.1:8766"), "http://127.0.0.1:8766", "with its port")
+    for bad in ["packs.example.net", "ftp://x", "https://x/path", "https://x?a=1", "https://u:p@x", "https://x#y"] { equal(PackHosting.cleanAddress(bad), nil, "refused: \(bad)") }
+    check(PackHosting.isOnlyThisMac("http://localhost:1") && PackHosting.isOnlyThisMac("http://127.0.0.1") && !PackHosting.isOnlyThisMac("https://packs.example.net"), "an address only this Mac can use is noticed")
+    let tokens = (0..<20).map { _ in PackHosting.newToken() }
+    equal(Set(tokens).count, 20, "paths differ"); check(tokens.allSatisfy { $0.count == 64 }, "and are long")
+    equal(PackHosting.parse(Data("GET /a HTTP/1.1\r\nHost: x\r\n\r\n".utf8)), .ok(method: "GET", path: "/a"), "a request is read")
+    equal(PackHosting.parse(Data("GET /a HTTP/1.1\r\nHost".utf8)), .incomplete, "a partial one waits")
+    equal(PackHosting.parse(Data("GARBAGE\r\n\r\n".utf8)), .bad, "nonsense is refused")
+    equal(PackHosting.parse(Data(repeating: 65, count: 9000)), .bad, "so is one that never ends")
+    let oneHash = String(repeating: "a", count: 40), twoHash = String(repeating: "b", count: 40), threeHash = String(repeating: "c", count: 40)
+    let route = PackRoute(token: "tok", recipe: "r", url: "https://p/tok/pack.zip", published: oneHash, followsProperties: true)
+    equal(PackHosting.match(path: "/tok/pack.zip", routes: [route])?.asked, .pack, "the pack's path")
+    equal(PackHosting.match(path: "/tok/pack.zip.sha1", routes: [route])?.asked, .hash, "the hash's path")
+    equal(PackHosting.match(path: "/tok/\(oneHash).zip", routes: [route])?.asked, .build(oneHash), "a build's own path")
+    for wrong in ["/", "/tok", "/tok/", "/tok/other.zip", "/tok/\(oneHash.uppercased()).zip", "/tok/\(oneHash).zip.sha1", "/tok/../\(oneHash).zip", "/nope/pack.zip", "/tok/pack.zip?x=1", "/tok/../tok/pack.zip", "//tok/pack.zip", "/tok/pack.zip/"] { check(PackHosting.match(path: wrong, routes: [route]) == nil, "no match: \(wrong)") }
+    let pointing = "resource-pack=https\\://p/tok/pack.zip\nresource-pack-sha1=\(twoHash)\n"
+    equal(ResourcePacks.current(pointing).url, "https://p/tok/pack.zip", "properties escape their colons")
+    equal(PackHosting.servedSHA1(route, properties: pointing), twoHash, "the server's own hash decides when it points here")
+    equal(PackHosting.servedSHA1(route, properties: "resource-pack=https\\://other/x.zip\nresource-pack-sha1=\(twoHash)\n"), oneHash, "not when it points elsewhere")
+    equal(PackHosting.servedSHA1(route, properties: "resource-pack=https\\://p/tok/pack.zip\nresource-pack-sha1=../../secret\n"), oneHash, "a hash that isn't one is ignored")
+    var butlerRoute = route; butlerRoute.followsProperties = false
+    equal(PackHosting.servedSHA1(butlerRoute, properties: pointing), oneHash, "with Butler, server.properties decides nothing")
+    var unset = butlerRoute; unset.published = nil
+    equal(PackHosting.servedSHA1(unset, properties: pointing), nil, "nothing chosen means nothing served")
+
+    do {
+        let root = folder("pack-hosting")
+        write("server-port=25599\nmotd=keep\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "pack-hosting")
+        defer { c.stopPackHost() }
+        let port = 28766
+
+        // Two recipes, as for two worlds.
+        let oneZip = try await ResourcePacks.add(await makePack("World One", ["pack.mcmeta": #"{"pack":{"pack_format":46,"description":"one"}}"#, "assets/minecraft/textures/block/stone.png": "world-one"]))
+        let twoZip = try await ResourcePacks.add(await makePack("World Two", ["pack.mcmeta": #"{"pack":{"pack_format":46,"description":"two"}}"#, "assets/minecraft/textures/block/stone.png": "world-two"]))
+        func recipe(_ name: String, _ pack: LibraryPack) -> PackRecipe {
+            var out = PackRecipe()
+            out.name = name
+            out.entries = [PackRecipe.Entry(pack: pack.id, version: pack.latest!.sha1)]
+            ResourcePacks.saveRecipe(out)
+            return out
+        }
+        let firstBuild = try await ResourcePacks.combine(recipe("world-one", oneZip))
+        let otherBuild = try await ResourcePacks.combine(recipe("world-two", twoZip))
+        check(firstBuild.sha1 != otherBuild.sha1, "two recipes, two builds")
+
+        // Off by default, and refuses to start without an address.
+        check(!c.packHostSettings.enabled && !c.packHostIsListening, "serving is off by default")
+        var refusedStart = false
+        do { try c.startPackHost() } catch { refusedStart = true }
+        check(refusedStart, "it needs an address first")
+        try c.setPackHost(address: "http://127.0.0.1:\(port)/", port: port)
+        var badPort = false
+        do { try c.setPackHost(address: "http://127.0.0.1", port: 80) } catch { badPort = true }
+        check(badPort, "a low port is refused")
+        try c.startPackHost()
+        await checkUntil(5, "listening") { c.packHostIsListening }
+        check(c.packHostSettings.enabled, "and it's remembered")
+        let networkAddresses = localAddresses().filter { !$0.hasPrefix("127.") }
+        check(networkAddresses.allSatisfy { !canConnect($0, port: port) }, "only this Mac can connect, not the network (tried \(networkAddresses))")
+
+        let oneURL = c.packAddress(recipe: "world-one")!, twoURL = c.packAddress(recipe: "world-two")!
+        check(oneURL != twoURL, "each recipe has its own address")
+        check(oneURL.hasPrefix("http://127.0.0.1:\(port)/") && oneURL.hasSuffix("/pack.zip"), "in the right form: \(oneURL)")
+        let token = c.packHostSettings.recipes["world-one"]!.token
+        func status(_ text: String) -> String { String(text.split(separator: "\r\n").first ?? "") }
+
+        // Nothing is served until it's chosen, and the answer gives nothing away.
+        let notYet = await PackHosting.check(url: oneURL, expected: firstBuild.sha1)
+        equal(notYet.outcome, .status(404), "nothing's served until a build is chosen")
+        try c.serveBuild(sha1: firstBuild.sha1, recipe: "world-one")
+        try c.serveBuild(sha1: otherBuild.sha1, recipe: "world-two")
+        var missing = false
+        do { try c.serveBuild(sha1: threeHash, recipe: "world-one") } catch { missing = true }
+        check(missing, "a build that isn't there can't be chosen")
+        try? await Task.sleep(for: .milliseconds(100))
+        let oneCheck = await PackHosting.check(url: oneURL, expected: firstBuild.sha1)
+        check(oneCheck.ok, "the first recipe's address gives its own build: \(oneCheck.summary)")
+        let twoCheck = await PackHosting.check(url: twoURL, expected: otherBuild.sha1)
+        check(twoCheck.ok, "and the second its own: \(twoCheck.summary)")
+        let crossed = await PackHosting.check(url: oneURL, expected: otherBuild.sha1)
+        check({ if case .differs = crossed.outcome { return true } else { return false } }(), "a wrong file is noticed: \(crossed.summary)")
+        let hashText = await rawRequest(port: port, "GET /\(token)/pack.zip.sha1 HTTP/1.1\r\nHost: x\r\n\r\n")
+        check(hashText.hasSuffix("\(firstBuild.sha1)\n"), "the hash can be read for Butler's use")
+
+        // Everything else gets the same nothing.
+        let wrongPath = await rawRequest(port: port, "GET /\(String(repeating: "0", count: 64))/pack.zip HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(wrongPath), "HTTP/1.1 404 Not Found", "a wrong path")
+        let listing = await rawRequest(port: port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(listing), "HTTP/1.1 404 Not Found", "no listing")
+        let climbing = await rawRequest(port: port, "GET /\(token)/../../../server.properties HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(climbing), "HTTP/1.1 404 Not Found", "no climbing out")
+        let posted = await rawRequest(port: port, "POST /\(token)/pack.zip HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+        equal(status(posted), "HTTP/1.1 405 Method Not Allowed", "read only")
+        let nonsense = await rawRequest(port: port, "NOT HTTP\r\n\r\n")
+        equal(status(nonsense), "HTTP/1.1 400 Bad Request", "nonsense is refused")
+        let headOnly = await rawRequest(port: port, "HEAD /\(token)/pack.zip HTTP/1.1\r\nHost: x\r\n\r\n")
+        check(headOnly.contains("Content-Length: \(firstBuild.size)") && headOnly.hasSuffix("\r\n\r\n"), "HEAD gives the size and no file")
+        let getOne = await rawRequest(port: port, "HEAD /\(token)/pack.zip HTTP/1.1\r\nHost: x\r\nCookie: a=b\r\n\r\n")
+        check(!getOne.lowercased().contains("set-cookie"), "no cookies either way")
+        check(getOne.contains("X-Content-Type-Options: nosniff"), "and the browser isn't left to guess")
+
+        // A connection that never asks gets dropped, and doesn't block others.
+        let silent = await rawRequest(port: port, "")
+        equal(silent, "", "a silent connection is closed")
+        let silentThenFine = await PackHosting.check(url: oneURL, expected: firstBuild.sha1)
+        check(silentThenFine.ok, "and others carry on")
+
+        // A large file, several at once, without holding it in memory.
+        let largeSHA: String
+        do {
+            let large = "large-test"
+            let temp = folder("large-pack").appendingPathComponent("large.zip")
+            FileManager.default.createFile(atPath: temp.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: temp)
+            let block = Data((0..<(1 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+            for _ in 0..<300 { try handle.write(contentsOf: block) }
+            try handle.close()
+            largeSHA = try Hashing.digests(of: temp).sha1
+            let target = ResourcePacks.buildFile(sha1: largeSHA, recipe: large)
+            try FileOps.ensureDir(target.deletingLastPathComponent())
+            try FileOps.move(temp, to: target)
+            try c.serveBuild(sha1: largeSHA, recipe: large)
+            try? await Task.sleep(for: .milliseconds(100))
+            let url = c.packAddress(recipe: large)!
+            // Downloaded by another process, so the memory measured here is only the server's.
+            let before = residentBytes()
+            let peak = Task { @MainActor () -> UInt64 in
+                var most: UInt64 = 0
+                while !Task.isCancelled {
+                    most = max(most, residentBytes())
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                return most
+            }
+            let curls = await withTaskGroup(of: String.self, returning: [String].self) { group in
+                for _ in 0..<4 {
+                    group.addTask {
+                        let out = try? await Tool.run("/bin/sh", ["-c", "/usr/bin/curl -s --fail \"$0\" | /usr/bin/shasum -a 1", url])
+                        return String(out?.out.prefix(40) ?? "")
+                    }
+                }
+                var out: [String] = []
+                for await item in group { out.append(item) }
+                return out
+            }
+            peak.cancel()
+            let most = await peak.value
+            equal(curls, Array(repeating: largeSHA, count: 4), "4 downloads of 300 MB at once all match")
+            print("    memory while serving 4 x 300 MB: \((Int64(most) - Int64(before)) / 1_000_000) MB more at its peak")
+            check(Int64(most) - Int64(before) < 60_000_000, "the file isn't held in memory")
+            let oneLarge = await PackHosting.check(url: url, expected: largeSHA)
+            check(oneLarge.ok && oneLarge.summary.contains("may not accept"), "the check warns about the size: \(oneLarge.summary)")
+            try? FileManager.default.removeItem(at: target)
+            let gone = await PackHosting.check(url: url, expected: largeSHA)
+            equal(gone.outcome, .status(404), "a build that's gone is a 404, not another file")
+        }
+
+        // More connections than allowed: extras are dropped, nothing breaks.
+        var crowd: [NWConnection] = []
+        for _ in 0..<(PackHost.maxConnections + 5) {
+            let connection = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+            connection.start(queue: .global())
+            crowd.append(connection)
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        let crowded = await rawRequest(port: port, "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(crowded, "", "a full house turns newcomers away")
+        for connection in crowd { connection.cancel() }
+        try? await Task.sleep(for: .milliseconds(300))
+        let cleared = await PackHosting.check(url: oneURL, expected: firstBuild.sha1)
+        check(cleared.ok, "and recovers once they've gone: \(cleared.summary)")
+
+        // The server's own setting decides, so a staged change holds until the restart.
+        await c.refreshPlugins()
+        let required = try await c.usePack(url: oneURL, sha1: firstBuild.sha1, required: true, recipe: "world-one")
+        equal(required, .saved, "a stopped server saves straight away")
+        let onServer = ResourcePacks.current(try String(contentsOf: c.paths.properties, encoding: .utf8))
+        equal(onServer.url, oneURL, "the address is set"); equal(onServer.sha1, firstBuild.sha1, "with its hash"); check(onServer.required, "and required")
+        check((try String(contentsOf: c.paths.properties, encoding: .utf8)).contains("motd=keep"), "other settings stay")
+
+        // A new address means the old one's dead straight away.
+        c.newPackPath(recipe: "world-two")
+        try? await Task.sleep(for: .milliseconds(100))
+        let oldAddress = await PackHosting.check(url: twoURL, expected: otherBuild.sha1)
+        equal(oldAddress.outcome, .status(404), "the old address stops working")
+        let newAddress = await PackHosting.check(url: c.packAddress(recipe: "world-two")!, expected: otherBuild.sha1)
+        check(newAddress.ok, "and the new one gives the same build")
+
+        // Hosted elsewhere: the address is theirs, and nothing's served from here.
+        let elsewhereToken = c.packHostSettings.recipes["world-two"]!.token
+        try c.setPackElsewhere("https://example.invalid/pack.zip", recipe: "world-two")
+        equal(c.packAddress(recipe: "world-two"), "https://example.invalid/pack.zip", "another host's address can be used")
+        try? await Task.sleep(for: .milliseconds(100))
+        let notHere = await rawRequest(port: port, "GET /\(elsewhereToken)/pack.zip HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(notHere), "HTTP/1.1 404 Not Found", "and this Mac stops serving it")
+        var badElsewhere = false
+        do { try c.setPackElsewhere("not an address", recipe: "world-two") } catch { badElsewhere = true }
+        check(badElsewhere, "a bad address is refused")
+        try c.setPackElsewhere("", recipe: "world-two")
+        check(c.packAddress(recipe: "world-two")?.contains("127.0.0.1") == true, "and it can come back")
+
+        // Butler on the server: Leaf Juice keeps its hands off.
+        let before = try String(contentsOf: c.paths.properties, encoding: .utf8)
+        try FileOps.ensureDir(c.paths.plugins)
+        makeJar(c.paths.plugins.appendingPathComponent("ResourcePackButler.jar"), yaml: "name: ResourcePackButler\nversion: 0.0.1\nmain: x.Y\napi-version: '1.21'\n")
+        await c.refreshPlugins()
+        equal(c.perWorldPackPlugin, "Packmule", "Packmule under its old name, ResourcePackButler, is noticed")
+        var butlerRefused = ""
+        do { _ = try await c.usePack(url: oneURL, sha1: otherBuild.sha1, required: true, recipe: "world-one") } catch { butlerRefused = error.localizedDescription }
+        check(butlerRefused.contains("Packmule"), "with it, the pack settings can't be written: \(butlerRefused)")
+        equal(try String(contentsOf: c.paths.properties, encoding: .utf8), before, "and aren't")
+        _ = try await ResourcePacks.combine(recipe("world-one", twoZip))
+        try c.serveBuild(sha1: otherBuild.sha1, recipe: "world-one")
+        try? await Task.sleep(for: .milliseconds(100))
+        equal(c.servedPackSHA1(recipe: "world-one"), otherBuild.sha1, "with Butler, the chosen build is served even though server.properties says otherwise")
+        let butlerServed = await PackHosting.check(url: oneURL, expected: otherBuild.sha1)
+        check(butlerServed.ok, "and that's what the address gives")
+        try FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("ResourcePackButler.jar"))
+        await c.refreshPlugins()
+        try? await Task.sleep(for: .milliseconds(100))
+        equal(c.servedPackSHA1(recipe: "world-one"), firstBuild.sha1, "without it, server.properties decides again")
+
+        // Packmule 0.2.0 and later, under its new name.
+        makeJar(c.paths.plugins.appendingPathComponent("Packmule-0.2.0.jar"), yaml: "name: Packmule\nversion: 0.2.0\nmain: x.Y\napi-version: '26.1'\n")
+        await c.refreshPlugins()
+        equal(c.perWorldPackPlugin, "Packmule", "Packmule is noticed")
+        var packmuleRefused = ""
+        do { _ = try await c.usePack(url: oneURL, sha1: otherBuild.sha1, required: true, recipe: "world-one") } catch { packmuleRefused = error.localizedDescription }
+        check(packmuleRefused.contains("Packmule"), "and the pack settings can't be written: \(packmuleRefused)")
+        equal(try String(contentsOf: c.paths.properties, encoding: .utf8), before, "and aren't")
+        try FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("Packmule-0.2.0.jar"))
+        await c.refreshPlugins()
+
+        // WorldResourcepacks, installed on real servers today, gets the same treatment.
+        makeJar(c.paths.plugins.appendingPathComponent("WorldResourcepacks.jar"), yaml: "name: WorldResourcepacks\nversion: 2.0\nmain: x.Y\napi-version: '1.21'\n")
+        await c.refreshPlugins()
+        equal(c.perWorldPackPlugin, "WorldResourcepacks", "WorldResourcepacks is noticed")
+        var worldPacksRefused = ""
+        do { _ = try await c.usePack(url: oneURL, sha1: otherBuild.sha1, required: true, recipe: "world-one") } catch { worldPacksRefused = error.localizedDescription }
+        check(worldPacksRefused.contains("WorldResourcepacks"), "and the pack settings are left alone: \(worldPacksRefused)")
+        equal(try String(contentsOf: c.paths.properties, encoding: .utf8), before, "unchanged")
+
+        // Each build has its own address, which keeps giving that build whatever else changes.
+        let oldPinned = c.packBuildAddress(recipe: "world-one", sha1: firstBuild.sha1)!
+        let newPinned = c.packBuildAddress(recipe: "world-one", sha1: otherBuild.sha1)!
+        check(oldPinned.hasSuffix("/\(firstBuild.sha1).zip") && oldPinned != newPinned, "a build's address names its hash: \(oldPinned)")
+        try c.serveBuild(sha1: otherBuild.sha1, recipe: "world-one")
+        try? await Task.sleep(for: .milliseconds(100))
+        let stillOld = await PackHosting.check(url: oldPinned, expected: firstBuild.sha1)
+        check(stillOld.ok, "the old build's address still gives the old build after a switch: \(stillOld.summary)")
+        let pinnedNew = await PackHosting.check(url: newPinned, expected: otherBuild.sha1)
+        check(pinnedNew.ok, "and the new one's the new: \(pinnedNew.summary)")
+        let otherRecipe = await rawRequest(port: port, "GET /\(token)/\(String(repeating: "f", count: 40)).zip HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(otherRecipe), "HTTP/1.1 404 Not Found", "a hash that isn't this recipe's build is a 404")
+        let crossRecipe = await rawRequest(port: port, "GET /\(c.packHostSettings.recipes["world-two"]!.token)/\(firstBuild.sha1).zip HTTP/1.1\r\nHost: x\r\n\r\n")
+        equal(status(crossRecipe), "HTTP/1.1 404 Not Found", "and one recipe's path can't reach another's builds")
+        try FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("WorldResourcepacks.jar"))
+        await c.refreshPlugins()
+        try c.serveBuild(sha1: firstBuild.sha1, recipe: "world-one")
+
+        // Stopping stops, the module switch stops, and a new start comes back by itself.
+        Modules.shared.set(.resourcePacks, on: false)
+        var moduleRefused = false
+        do { try c.startPackHost() } catch { moduleRefused = true }
+        check(moduleRefused, "with the module off it won't start")
+        Modules.shared.set(.resourcePacks, on: true)
+        try c.startPackHost()
+        await checkUntil(5, "listening again: \(c.packHostError ?? "no error")") { c.packHostIsListening }
+        Modules.shared.set(.resourcePacks, on: false)
+        _ = await rawRequest(port: port, "GET /\(token)/pack.zip.sha1 HTTP/1.1\r\nHost: x\r\n\r\n")
+        Modules.shared.set(.resourcePacks, on: true)
+        await checkUntil(5, "module switch stops it") { c.packHost?.isListening != true }
+        c.stopPackHost()
+        check(!c.packHostSettings.enabled, "stopping is remembered")
+        let afterStop = await PackHosting.check(url: oneURL, expected: firstBuild.sha1)
+        check(!afterStop.ok, "and nothing answers")
+        var servingOff = ""
+        do { _ = try await c.usePack(url: oneURL, sha1: firstBuild.sha1, required: true, recipe: "world-one") } catch { servingOff = error.localizedDescription }
+        check(servingOff.contains("serving is off"), "a required pack can't be pointed at a stopped address: \(servingOff)")
+        var wanted = c.packHostSettings
+        wanted.enabled = true
+        c.packHostSettings = wanted
+        c.startPackHostIfWanted()
+        await checkUntil(5, "comes back") { c.packHostIsListening }
+        let trial = try await ServerController.adopt(root: folder("pack-hosting-trial"), name: "trial")
+        var trialSettings = trial.packHostSettings
+        trialSettings.enabled = true; trialSettings.address = "http://127.0.0.1"; trialSettings.port = port + 1
+        trial.packHostSettings = trialSettings
+        trial.isTrialCopy = true
+        trial.startPackHostIfWanted()
+        check(!trial.packHostIsListening && trial.packHost == nil, "a test copy never serves")
+
+        // A port in use is reported rather than silent.
+        let rival = try await ServerController.adopt(root: folder("pack-hosting-rival"), name: "rival")
+        try rival.setPackHost(address: "http://127.0.0.1", port: port)
+        try rival.startPackHost()
+        await checkUntil(5, "a taken port is reported") { rival.packHostError != nil || rival.packHostIsListening }
+        check(rival.packHostError?.contains("\(port)") == true, "and says which: \(rival.packHostError ?? "listening anyway")")
+        rival.stopPackHost()
+
+        // A folder rename keeps the address, so the one players and plugins have saved still works.
+        let movingRoot = folder("pack-hosting-moving")
+        write("server-port=25597\n", movingRoot.appendingPathComponent("server.properties"))
+        let moving = try await ServerController.adopt(root: movingRoot, name: "moving")
+        try moving.setPackHost(address: "http://127.0.0.1", port: port + 2)
+        let beforeMove = moving.packAddress(recipe: "world-one")
+        check(beforeMove != nil && beforeMove == moving.packAddress(recipe: "world-one"), "asking twice gives the same address")
+        _ = try moving.rename(to: "Moved", moveFolderTo: "pack-hosting-moved")
+        check(moving.paths.root.lastPathComponent == "pack-hosting-moved", "the folder moved")
+        equal(moving.packAddress(recipe: "world-one"), beforeMove, "and the address came with it")
+
+        // Addresses and paths never travel with a shared recipe.
+        let exported = String(decoding: try ResourcePacks.exportRecipe(recipe("world-one", oneZip)), as: UTF8.self)
+        check(!exported.contains(token) && !exported.contains("127.0.0.1"), "an exported recipe holds no address")
+    } catch { failures.append("serving packs threw: \(error)") }
 }
 
 /// A hang should fail a check, not stop the suite forever.
@@ -3836,7 +5727,7 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
 }
 
 try? await Task.sleep(for: .seconds(1))
-try? FileManager.default.removeItem(at: scratch)
+cleanUpScratch()
 print("\n\(passed) passed, \(failures.count) failed")
 for failure in failures { print("  - \(failure)") }
 exit(failures.isEmpty ? 0 : 1)

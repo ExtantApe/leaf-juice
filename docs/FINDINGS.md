@@ -114,6 +114,17 @@ Tested with real Modrinth packs, including the official TARDIS packs, and a real
 - **An optional pack:** declining gets in, but saying nothing still never finishes joining.
 - **A malformed SHA-1:** it doesn't stop the server. It only logs `Invalid sha1 for resource-pack-sha1`.
 
+## Serving packs
+
+Tested with made-up packs, on throwaway servers with a real Paper 1.21.11 and bots. **No real game client has downloaded a served pack, and no real tunnel or Caddy has carried one.**
+
+- **Memory:** 4 downloads of a 300 MB file at once, by another process, added about 2 MB at the peak, and all 4 matched.
+- **A staged update:** with a required pack on a running server, a new build stays staged, and new joiners are still offered the old hash and get the old file. After a restart they're offered the new hash and get the new file. The bot's offered address and hash matched the download each time.
+- **Starting a server** starts serving if it was left on, so a required pack doesn't point at nothing after the app reopens.
+- **Clicked through in the built app,** on a throwaway folder: the contributions list with both copies side by side, starting serving, Serve This Build with its license warning, Check, and Use on This Server. Choosing a winner from the list's menu is only covered by tests on the core, because the menu can't be opened from the background.
+- **Exact packs:** a made-up plugin export, with a zip comment Leaf Juice would never write, was stored and served byte for byte under its own SHA-1. On a throwaway Paper 1.21.11, a bot was offered its own address and hash, and the download matched. BlueMapHUD itself hasn't been tried with it.
+- **Size limit:** the app warns at 250,000,000 bytes, a number not confirmed against a real client.
+
 ## How much of a pack a version uses
 
 Mojang's client jar lists every texture a version uses, so fit can be measured rather than guessed. Measured on 1.21.11 (format 75, 3,682 textures) and 26.3 (format 97, 4,182 textures):
@@ -145,6 +156,8 @@ Merging two offline profiles left `playernames.json` and the old `players/<uuid>
 
 `lp export <name> --without-users` writes groups, weights, prefixes, inheritance and contexts to `plugins/LuckPerms/<name>.json.gz`, with no players in it. Its default H2 database can't be read directly, so the wiki asks while the server runs and keeps a copy.
 
+On 1.21.11 with LuckPerms 5.5, `lp user <uuid> parent add <group>` works for an account that has never joined, with or without dashes, while `lp user <name>` says the user can't be found. Groups set that way survive a restart. A bot's first join on an offline-mode server kept them too. A real first join on online mode hasn't been seen, because bots can't do one. `whitelist add` matches any capitals and stores the account's own spelling and ID, and says "That player does not exist" for a name with no account. Mojang's `users/profiles/minecraft/<name>` does the same, with a 404 for no account.
+
 ## An audit of what deletes things
 
 Reading every delete, move and shell call found these, all now fixed and tested:
@@ -172,6 +185,25 @@ Also found while verifying:
 ## Real servers need more room
 
 Real plugins can have 68 settings files, past an earlier limit of 40. `bStats` and `spark` folders belong to no plugin of that name, so they aren't leftovers. Plugin files that are only comments, such as Magic's templates, give no form fields, which is expected.
+
+## World access and BlueMap
+
+Observed on a throwaway Paper 1.21.11 with Multiverse-Core 5.8.2, LuckPerms 5.5.71 and BlueMap 5.16, with made-up worlds and bots:
+
+- **`enforce-access`** is off by default. `mv config enforce-access true` writes `enforce-access: true` into `plugins/Multiverse-Core/config.yml`.
+- **The permission** is `multiverse.access.<world>`. `lp user <uuid> permission check` gives `Result: true` when set, and `Result: false` for someone without it, through Bukkit's default rather than `undefined`.
+- **Enforced:** with it on, a player without the permission is refused by `mv tp` with "You do not have permissions to access the world". The same command from the console moves them anyway.
+- **BlueMap's maps:** BlueMap writes one `plugins/BlueMap/maps/<id>.conf` per world when it first starts, with `world: "<folder>"`. A world created afterwards gets no map until a file is added.
+- **BlueMap's web server:** it binds to every interface by default. Adding `ip: "127.0.0.1"` to `webserver.conf` binds it to loopback, and BlueMap logs `WebServer bound to: /127.0.0.1:<port>`.
+- **The map list:** `settings.json` in the web root lists map ids under `maps`, with `mapDataRoot` and `liveDataRoot` both `"maps"`.
+- **Tiles and live data:** each map has `textures.json.gz`, `settings.json`, `tiles/`, `live/` and `rstate`. Tiles are served chunked, with `Cache-Control: public, max-age=86400`. Live player positions come from `/maps/<id>/live/players.json` and include names and coordinates.
+- **Downloads:** BlueMap downloads Mojang's client jar once its `accept-download` is set to true.
+
+## Paper 26.x for the real tests
+
+- **The allowlist:** with no `white-list` line in `server.properties`, Paper 26.3 refused a bot that wasn't on the allowlist ("You are not whitelisted on this server!"). On 1.21.11 the same file let it in. The real tests now set `white-list=false` themselves. Not checked: whether 26.1.2 and 26.2 do the same, or what 26.3 wrote into the file.
+- **Latchkey on 26.x:** the `--real-signin` test passed on Paper 26.1.2, 26.2 and 26.3 with Latchkey built for 26.1, with `paper-plugin.yml` and a Brigadier `/signin`. `/execute as` from the console or an op made no link for another player.
+- **Restarting the pack server:** a restart on the same port sometimes found the old socket still open, and failed in 3 of 6 test runs. It now tries again every 0.2 s for up to 2 s. It passed 6 of 6 runs after that.
 
 ## Not known yet
 

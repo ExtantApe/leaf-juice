@@ -1,0 +1,125 @@
+{
+  "format": 1,
+  "tool": "0.3.0",
+  "server": "/made/up/server",
+  "checkedAt": "2026-11-08T15:42:07Z",
+  "target": {
+    "file": "paper-26.3.jar",
+    "brand": "Paper",
+    "minecraft": "26.3",
+    "build": 244,
+    "version": "26.3-244-35a2d15 (MC: 26.3)"
+  },
+  "status": "wait",
+  "off": [
+    {
+      "name": "BadApi",
+      "files": [
+        "BadApi.jar"
+      ],
+      "sha256": {
+        "BadApi.jar": "027f4c0de24d5c6ed4570b0bd6db52ff724a2e1e5651311683dd9f7fc2633dbd"
+      },
+      "why": [
+        "It didn't load. Could not load plugin 'BadApi.jar' in folder 'plugins': org.bukkit.plugin.InvalidPluginException: Unsupported API version 99.0"
+      ]
+    },
+    {
+      "name": "BrokenEnable",
+      "files": [
+        "BrokenEnable.jar"
+      ],
+      "sha256": {
+        "BrokenEnable.jar": "6b474d8f84f7129fa308237988974912b68b7c72ba65b88eac0a0b548f1b744a"
+      },
+      "why": [
+        "It didn't start. Error occurred while enabling BrokenEnable v1 (Is it up to date?): java.lang.IllegalStateException: deliberately broken",
+        "It failed Preflight:all-plugins-enabled: AssertionError: Plugins failed to enable: [BrokenEnable]"
+      ]
+    },
+    {
+      "name": "MissingDep",
+      "files": [
+        "MissingDep.jar"
+      ],
+      "sha256": {
+        "MissingDep.jar": "4c85107d3acd96b8e97299cd84700cece82f6843fbf476a6cfa74fec79e6b2a6"
+      },
+      "why": [
+        "It didn't load. Could not load 'plugins/MissingDep.jar' in 'plugins': org.bukkit.plugin.UnknownDependencyException: Unknown/missing dependency plugins: [NotInstalled]. Please download and install these plugins to run 'MissingDep'.",
+        "It needs NotInstalled, which didn't load."
+      ]
+    },
+    {
+      "name": "NeedsBadApi",
+      "files": [
+        "NeedsBadApi.jar"
+      ],
+      "sha256": {
+        "NeedsBadApi.jar": "8d44e7a34becbb4fb5c4282fb02fb1f70fb6266984e2e5a7d60fa8191e470b9c"
+      },
+      "why": [
+        "It needs BadApi, which didn't load.",
+        "Off because BadApi is off."
+      ]
+    },
+    {
+      "name": "NoMainClass",
+      "files": [
+        "NoMainClass.jar"
+      ],
+      "sha256": {
+        "NoMainClass.jar": "4e6be851ce2c817af9953fa26317bcb9062f8927723be9bc0e1e5ab220acafb5"
+      },
+      "why": [
+        "It didn't load. Could not load plugin 'NoMainClass.jar' in folder 'plugins': java.lang.ClassNotFoundException: fx.DoesNotExist"
+      ]
+    },
+    {
+      "name": "PaperDependsOnFailing",
+      "files": [
+        "PaperDependsOnFailing.jar"
+      ],
+      "sha256": {
+        "PaperDependsOnFailing.jar": "87bd9e44974bd7019764563096407e6a7e65e0c71fc8c1d53f1435fa5c38f640"
+      },
+      "why": [
+        "Off because FailingTests is off."
+      ]
+    }
+  ],
+  "blocked": [
+    {
+      "name": "FailingTests",
+      "rule": "Made-up protection.",
+      "why": [
+        "It failed FailingTests:always-fails: AssertionError: deliberate failure"
+      ]
+    }
+  ],
+  "notChecked": [
+    {
+      "name": "ChatAddon",
+      "why": "It needs DiscordSRV, which is off in the test copy, so it couldn't be checked."
+    },
+    {
+      "name": "DiscordSRV",
+      "why": "Off in the test copy, so it can't reach anything outside. It wasn't checked."
+    }
+  ],
+  "warnings": [
+    "Corrupt.jar isn't a readable plugin jar, on any version. Remove it or replace it by hand.",
+    "Preflight:plugins-loaded warned: AssertionError: couldn't read [Corrupt.jar]; BadApi (BadApi.jar) didn't load; ChatAddon (ChatAddon.jar) didn't load; MissingDep (MissingDep.jar) didn't load; NeedsBadApi needs [BadApi], which isn't running; NoMainClass (NoMainClass.jar) didn't load"
+  ],
+  "recheck": [
+    {
+      "plugin": "PreflightExample",
+      "note": "Run its command by hand."
+    }
+  ],
+  "preflight": {
+    "version": "0.3.0",
+    "onFailure": "WARN",
+    "serverChecks": "passed"
+  }
+}

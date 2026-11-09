@@ -21,6 +21,17 @@ public struct ReadinessRow: Identifiable, Equatable, Sendable {
 /// One server: its process, settings and everything that happens to it. All state lives on the main actor.
 @MainActor @Observable
 public final class ServerController: Identifiable {
+    @ObservationIgnored var accessApplying = false
+    /// Only tests turn this on, because bots can't join an online-mode server.
+    @ObservationIgnored var accessAllowsOffline = false
+    /// The plugin links page, when it's being served. Sessions live here and nowhere else.
+    @ObservationIgnored var linksTidying: Task<Void, Never>?
+    public internal(set) var linksWeb: LinksWeb?
+    public internal(set) var linksListener: LinksListener?
+    public var linksPageError: String?
+    @ObservationIgnored var mapAccessCache: [String: (date: Date, task: Task<MapAccess, Never>)] = [:]
+    /// The last reason someone was shown no maps, for the app to explain.
+    public internal(set) var mapAccessNote: String?
     public nonisolated let id: UUID
     public private(set) var paths: ServerPaths
     public var profile: ServerProfile { didSet { if profile != oldValue { saveProfile() } } }
@@ -96,6 +107,8 @@ public final class ServerController: Identifiable {
     public var runtimes: [JavaRuntime] = []
 
     var process: ServerProcess?
+    var packHost: PackHost?
+    public internal(set) var packHostError: String?
     private let sampler = MetricsSampler()
     private let analyzer = IssueAnalyzer()
     private var lineBuffer: [String] = []
@@ -315,6 +328,7 @@ public final class ServerController: Identifiable {
         blockers = await preflight()
         guard blockers.isEmpty else { return }
         await applyPending()
+        startPackHostIfWanted()
         launch()
     }
 
@@ -862,6 +876,7 @@ public final class ServerController: Identifiable {
         tickCount += 1
         if tickCount % 12 == 1 { tickDisk() }
         if isTrialCopy { return }
+        if state == .running { await applyWaitingAccess() }
         tickAnalytics(now: now)
         if let pid = process?.pid { metrics = sampler.sample(pid: pid) }
         analyzer.setPlugins(plugins)
@@ -1034,6 +1049,7 @@ public final class ServerController: Identifiable {
         plugins = await PluginScanner.scan(paths)
         analyzer.setPlugins(plugins)
         refreshConfigs()
+        syncPackRoutes()
         await identifySources()
     }
 

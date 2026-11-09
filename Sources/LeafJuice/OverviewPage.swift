@@ -53,6 +53,7 @@ struct OverviewPage: View {
                 pluginsCard
                 backupsCard
                 issuesCard
+                if !server.isLab { ServerIconCard(server: server) }
             }
         }
         .confirmationDialog("Remove \(server.profile.name) from Leaf Juice?", isPresented: $confirmRemove) {
@@ -199,5 +200,107 @@ struct ConnectCheckRow: View {
             defer { checking = false }
             try await server.checkConnection()
         }
+    }
+}
+
+
+/// Icons to rotate between: the ones in the server's server-icons folder, with the one in use marked.
+struct ServerIconCard: View {
+    let server: ServerController
+    @State private var icons: [ServerIconChoice] = []
+    @State private var unsaved = false
+    @State private var message: String?
+    @State private var error: String?
+
+    var body: some View {
+        Card(title: "Server icon", systemImage: "photo") {
+            if icons.isEmpty {
+                Text(unsaved ? "The icon in use isn't in the icon folder yet." : "No icons in the icon folder yet.").foregroundStyle(Juice.ink)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), alignment: .top)], alignment: .leading, spacing: 10) {
+                    ForEach(icons) { icon in tile(icon) }
+                }
+            }
+            if unsaved {
+                HStack {
+                    Hint("The icon in use isn't one of these. It's saved into the folder before another is picked.")
+                    Button("Keep It Now") { act { _ = try ServerIcons.keepCurrent(server.paths) } }.buttonStyle(.juice)
+                }
+            }
+            Hint("Minecraft reads the icon when the server starts, so a new one shows in players' server lists after the next restart. Icons are 64×64 PNGs.")
+            if let message { Callout(tone: .good, title: message) }
+            if let error { Callout(tone: .warning, title: error) }
+            HStack {
+                Button("Add Icon…") { add() }.buttonStyle(.juice)
+                Button("Open Icon Folder") {
+                    try? FileOps.ensureDir(ServerIcons.folder(server.paths))
+                    NSWorkspace.shared.open(ServerIcons.folder(server.paths))
+                }
+                .buttonStyle(.juice)
+                Button("Refresh") { reload() }.buttonStyle(.juice)
+            }
+        }
+        .onAppear { reload() }
+    }
+
+    private func tile(_ icon: ServerIconChoice) -> some View {
+        Button {
+            act {
+                try ServerIcons.use(icon, paths: server.paths)
+                message = "\(icon.name) is the icon now" + (server.state.isLive ? ". Players see it after the next restart." : ".")
+            }
+        } label: {
+            VStack(spacing: 4) {
+                Group {
+                    if let image = NSImage(contentsOf: icon.file) {
+                        Image(nsImage: image).interpolation(.none).resizable().frame(width: 64, height: 64)
+                    } else {
+                        Color.clear.frame(width: 64, height: 64)
+                    }
+                }
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(icon.inUse ? Juice.pulp : Juice.muted.opacity(0.3), lineWidth: icon.inUse ? 3 : 1))
+                Text(icon.name).font(.caption).foregroundStyle(Juice.ink).lineLimit(2).multilineTextAlignment(.center).frame(width: 76)
+                if icon.inUse { Text("In use").font(.caption.weight(.semibold)).foregroundStyle(Juice.pulp) }
+                else if !icon.fits { Text("\(icon.width)×\(icon.height)").font(.caption).foregroundStyle(Juice.warning) }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(icon.inUse || !icon.fits)
+        .accessibilityLabel("\(icon.name)\(icon.inUse ? ", in use" : "")\(icon.fits ? "" : ", \(icon.width) by \(icon.height), not usable")")
+        .accessibilityHint(icon.inUse || !icon.fits ? "" : "Makes this the server icon")
+        .help(icon.fits ? (icon.inUse ? "In use" : "Use this icon") : "Minecraft needs 64×64. Add it again to have it scaled.")
+    }
+
+    private func add() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.png, .jpeg, .gif, .bmp, .tiff, .heic]
+        panel.prompt = "Add"
+        guard panel.runModal() == .OK else { return }
+        act {
+            var notes: [String] = []
+            for url in panel.urls {
+                switch try ServerIcons.add(url, paths: server.paths) {
+                case let .added(file): notes.append("Added \(file.deletingPathExtension().lastPathComponent).")
+                case let .scaled(file, from): notes.append("Added \(file.deletingPathExtension().lastPathComponent), scaled from \(from)×\(from) to 64×64.")
+                case let .alreadyThere(file): notes.append("\(url.lastPathComponent) is already there as \(file.deletingPathExtension().lastPathComponent).")
+                }
+            }
+            message = notes.joined(separator: " ")
+        }
+    }
+
+    private func act(_ work: () throws -> Void) {
+        error = nil
+        message = nil
+        do { try work() } catch { self.error = error.localizedDescription }
+        reload()
+    }
+
+    private func reload() {
+        icons = ServerIcons.list(server.paths)
+        unsaved = ServerIcons.activeIsUnsaved(server.paths)
     }
 }

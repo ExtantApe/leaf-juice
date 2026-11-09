@@ -5,17 +5,17 @@ import SwiftUI
 import UserNotifications
 
 enum PageID: String, CaseIterable, Identifiable, Hashable {
-    case overview, console, history, players, worlds, plugins, software, configs, resourcePacks, wiki, advisor, launch, backups, changes, cleanup
+    case overview, console, history, players, allowlist, worlds, plugins, software, configs, resourcePacks, links, advisor, launch, backups, changes, cleanup
     var id: String { rawValue }
     /// The module a page belongs to. Nil for the essentials, which are always there.
     var module: LeafModule? {
         switch self {
         case .worlds: .worlds
-        case .players: .players
+        case .players, .allowlist: .players
         case .history: .history
         case .cleanup: .cleanup
         case .resourcePacks: .resourcePacks
-        case .wiki: .wiki
+        case .links: .links
         case .advisor: .advisor
         default: nil
         }
@@ -27,11 +27,12 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         case .console: "Console"
         case .history: "History"
         case .players: "Players"
+        case .allowlist: "Allowlist"
         case .worlds: "Worlds"
         case .cleanup: "Cleanup"
         case .plugins: "Plugins"
         case .resourcePacks: "Resource Packs"
-        case .wiki: "Wiki"
+        case .links: "Plugin Links"
         case .advisor: "Advisor"
         case .software: "Software"
         case .configs: "Configs"
@@ -46,11 +47,12 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         case .console: "terminal"
         case .history: "chart.xyaxis.line"
         case .players: "person.2"
+        case .allowlist: "person.badge.plus"
         case .worlds: "globe.americas"
         case .cleanup: "sparkles"
         case .plugins: "puzzlepiece.extension"
         case .resourcePacks: "photo.stack"
-        case .wiki: "book"
+        case .links: "link"
         case .advisor: "sparkle.magnifyingglass"
         case .software: "shippingbox"
         case .configs: "slider.horizontal.3"
@@ -104,6 +106,15 @@ final class AppModel {
         selectedID = UserDefaults.standard.string(forKey: "selectedServer").flatMap(UUID.init) ?? servers.first?.id
         for server in servers where server.profile.launch.startWithApp && !AdvisorTrial.isOn {
             Task { await server.start() }
+        }
+        // Its own switch, off until someone turns it on. A snapshot only draws screens.
+        if ProcessInfo.processInfo.environment["LEAFJUICE_SNAPSHOT"] == nil {
+            servers.forEach { $0.tidySignInLog() }
+            for server in servers where server.linksPageSettings.on && !server.isLab {
+                do { try server.startLinksPage() } catch { server.linksPageError = error.localizedDescription }
+            }
+            // A server can be running when the app opens, and its players still need the pack's address to answer.
+            servers.forEach { $0.startPackHostIfWanted() }
         }
         servers.forEach(Alerts.connect)
         if !AdvisorTrial.isOn { Alerts.ask() }

@@ -3,7 +3,7 @@ import Foundation
 
 public enum LeafJuice {
     public static let version = "0.1.0"
-    public static let repository = "mgilardi/leaf-juice"
+    public static let repository = "ExtantApe/leaf-juice"
     public static let userAgent = "LeafJuice/\(version) (https://github.com/\(repository))"
 }
 
@@ -265,6 +265,7 @@ public struct ExpectedHashes: Codable, Equatable, Sendable {
 // MARK: - Running tools
 
 public struct ToolResult: Sendable {
+    public init(code: Int32, out: String, err: String) { self.code = code; self.out = out; self.err = err }
     public let code: Int32
     public let out: String
     public let err: String

@@ -89,6 +89,18 @@ final class Bot: @unchecked Sendable {
         thread.start()
     }
 
+    /// Text the server sent this player privately, as raw bytes read as text. Links survive this; formatting doesn't.
+    var privateMessages: [String] {
+        lock.lock(); defer { lock.unlock() }
+        return received
+    }
+    private var received: [String] = []
+
+    /// Types a command, as a player would.
+    func command(_ text: String) {
+        if let id = table.id("play", "serverbound", "chat_command") { send(id, Self.string(text)) }
+    }
+
     func leave() {
         lock.lock(); defer { lock.unlock() }
         if alive { alive = false; shutdown(fd, SHUT_RDWR); close(fd) }
@@ -195,6 +207,10 @@ final class Bot: @unchecked Sendable {
         default:
             // Either route shows text over the hotbar, so both count: a dedicated packet, or system chat marked as overlay.
             if `is`("set_action_bar_text") || (`is`("system_chat") && body.last == 1) { actionBars += 1 }
+            if `is`("system_chat") {
+                let text = String(decoding: body, as: UTF8.self)
+                lock.lock(); received.append(text); lock.unlock()
+            }
             if `is`("keep_alive") {
                 reply("keep_alive", body)
             } else if `is`("ping") {
