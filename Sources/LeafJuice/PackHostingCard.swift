@@ -34,7 +34,7 @@ struct PackHostingCard: View {
             serving
             HStack {
                 Button("Add an Exact Pack…") { addExact(to: nil) }.buttonStyle(.juice)
-                Hint("Serves a zip exactly as it is, such as BlueMapHUD's /bmhud pack export, so its SHA-1 doesn't change.")
+                Hint("Serves a zip exactly as it is, such as BlueMinimap's /blueminimap pack export, so its SHA-1 doesn't change.")
             }
             if built.isEmpty {
                 Hint("Build a recipe, and its address shows here.")

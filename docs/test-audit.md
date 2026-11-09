@@ -2,6 +2,10 @@
 
 Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-09: BlueMinimap rename
+
+BlueMapHUD became BlueMinimap 0.2.0. Leaf Juice never looks for this plugin by name or folder: an exact pack is whatever zip you add, stored under its own SHA-1. So no check changes. Only the README and the Exact Pack hint now name `/blueminimap pack export`. The new export has a new SHA-1, so it needs adding again as a new exact pack. Leaf Juice already handles that (a new export gets a new address, old ones keep serving). Built clean; the default run was not repeated, because no code path changed.
+
 ## 2026-11-09: Packmule rename
 
 Resource Pack Butler became Packmule 0.2.0. Serving packs now checks that Packmule is noticed under both names, `Packmule` and `ResourcePackButler` (0.1.x), and that the pack settings are refused under each. Nothing else needed: Leaf Juice reads only the plugin's name, never its folder, so the window where both `plugins/ResourcePackButler/` and `plugins/Packmule/` exist doesn't matter here. 1829 passed, 0 failed.
