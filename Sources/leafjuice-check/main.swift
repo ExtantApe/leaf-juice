@@ -5107,10 +5107,10 @@ func residentBytes() -> UInt64 {
         try FileOps.ensureDir(c.paths.plugins)
         makeJar(c.paths.plugins.appendingPathComponent("ResourcePackButler.jar"), yaml: "name: ResourcePackButler\nversion: 0.0.1\nmain: x.Y\napi-version: '1.21'\n")
         await c.refreshPlugins()
-        equal(c.perWorldPackPlugin, "Resource Pack Butler", "Butler is noticed")
+        equal(c.perWorldPackPlugin, "Packmule", "Packmule under its old name, ResourcePackButler, is noticed")
         var butlerRefused = ""
         do { _ = try await c.usePack(url: oneURL, sha1: otherBuild.sha1, required: true, recipe: "world-one") } catch { butlerRefused = error.localizedDescription }
-        check(butlerRefused.contains("Butler"), "with Butler, the pack settings can't be written: \(butlerRefused)")
+        check(butlerRefused.contains("Packmule"), "with it, the pack settings can't be written: \(butlerRefused)")
         equal(try String(contentsOf: c.paths.properties, encoding: .utf8), before, "and aren't")
         _ = try await ResourcePacks.combine(recipe("world-one", twoZip))
         try c.serveBuild(sha1: otherBuild.sha1, recipe: "world-one")
@@ -5122,6 +5122,17 @@ func residentBytes() -> UInt64 {
         await c.refreshPlugins()
         try? await Task.sleep(for: .milliseconds(100))
         equal(c.servedPackSHA1(recipe: "world-one"), firstBuild.sha1, "without it, server.properties decides again")
+
+        // Packmule 0.2.0 and later, under its new name.
+        makeJar(c.paths.plugins.appendingPathComponent("Packmule-0.2.0.jar"), yaml: "name: Packmule\nversion: 0.2.0\nmain: x.Y\napi-version: '26.1'\n")
+        await c.refreshPlugins()
+        equal(c.perWorldPackPlugin, "Packmule", "Packmule is noticed")
+        var packmuleRefused = ""
+        do { _ = try await c.usePack(url: oneURL, sha1: otherBuild.sha1, required: true, recipe: "world-one") } catch { packmuleRefused = error.localizedDescription }
+        check(packmuleRefused.contains("Packmule"), "and the pack settings can't be written: \(packmuleRefused)")
+        equal(try String(contentsOf: c.paths.properties, encoding: .utf8), before, "and aren't")
+        try FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("Packmule-0.2.0.jar"))
+        await c.refreshPlugins()
 
         // WorldResourcepacks, installed on real servers today, gets the same treatment.
         makeJar(c.paths.plugins.appendingPathComponent("WorldResourcepacks.jar"), yaml: "name: WorldResourcepacks\nversion: 2.0\nmain: x.Y\napi-version: '1.21'\n")

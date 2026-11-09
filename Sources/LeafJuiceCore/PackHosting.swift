@@ -6,7 +6,7 @@ import Security
 public struct HostedRecipe: Codable, Equatable, Sendable {
     /// The long random part of the address. The game can't sign in, so this is all that keeps strangers from stumbling on it.
     public var token: String
-    /// The build to send when server.properties doesn't decide, as with Resource Pack Butler.
+    /// The build to send when server.properties doesn't decide, as with Packmule.
     public var published: String?
     /// A full address on another host, in place of serving it from here.
     public var elsewhere: String?
@@ -33,7 +33,7 @@ public struct PackRoute: Equatable, Sendable {
     public var recipe: String
     public var url: String?
     public var published: String?
-    /// False when Butler is on the server, because server.properties then says nothing about this pack.
+    /// False when Packmule is on the server, because server.properties then says nothing about this pack.
     public var followsProperties: Bool
     public init(token: String, recipe: String, url: String?, published: String?, followsProperties: Bool) {
         self.token = token
@@ -69,7 +69,8 @@ public struct PackURLCheck: Equatable, Sendable {
 
 public enum PackHosting {
     /// Plugins that send packs per world. With one present, server.properties isn't how packs reach players.
-    public static let perWorldPlugins: [String: String] = ["resourcepackbutler": "Resource Pack Butler", "worldresourcepacks": "WorldResourcepacks"]
+    /// Packmule was called ResourcePackButler before 0.2.0; servers still on 0.1.x keep the old name.
+    public static let perWorldPlugins: [String: String] = ["packmule": "Packmule", "resourcepackbutler": "Packmule", "worldresourcepacks": "WorldResourcepacks"]
     public static let fileName = "pack.zip"
     static let tokenBytes = 32
 

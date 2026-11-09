@@ -57,7 +57,7 @@ struct PackHostingCard: View {
                 reload()
             }
         } message: {
-            Text("The old address stops working straight away. Anything using it, including this server or Butler, needs the new one, or players can't load the pack.")
+            Text("The old address stops working straight away. Anything using it, including this server or Packmule, needs the new one, or players can't load the pack.")
         }
     }
 
