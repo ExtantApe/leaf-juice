@@ -66,6 +66,10 @@ private let head = "[12:00:00 INFO]: "
     let json = #"{"id":"abc","ok":true}"#
     check(PluginCommandWire.answerLine("\(head)ea-result abc \(json)").map { $0.id == "abc" && $0.json == json } ?? false, "a console answer is read")
     check(PluginCommandWire.answerLine("[12:00:00] [Server thread/INFO]: ea-result abc \(json)") != nil, "so is the log-file form")
+    // The exact shapes a plugin's console reply took on real Paper 26.1.2, 26.2 and 26.3 (Plugins Lead, 2026-11-09).
+    check(PluginCommandWire.answerLine("[04:36:31 INFO]: ea-result probe-1 {\"id\":\"probe-1\",\"ok\":true}")?.id == "probe-1", "Paper 26.x's console form, as seen on real servers")
+    check(PluginCommandWire.answerLine("[04:36:31] [Server thread/INFO]: ea-result probe-1 {\"id\":\"probe-1\",\"ok\":true}")?.id == "probe-1", "and its latest.log form")
+    check(PluginCommandWire.answerLine("[04:36:31 INFO]: [Usher] ea-result probe-1 {\"id\":\"probe-1\",\"ok\":true}") == nil, "an answer sent through the plugin's logger isn't read")
     let spoofs = [
         "\(head)<Griefer77> ea-result abc \(json)",
         "\(head)[Not Secure] <Griefer77> ea-result abc \(json)",

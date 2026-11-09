@@ -20,7 +20,7 @@ Covered:
 
 Gaps skipped:
 
-- **A real Paper plugin.** None speaks format 1 yet. Whether Paper 26.x writes a plugin's console message as `]: ea-result …` or with a `System chat: ` label is unconfirmed. If it's the label, Leaf Juice reads nothing (fail closed), and the parser needs one agreed change. Asked of the Plugins Lead, who has the real servers.
+- **A real Paper plugin.** None speaks format 1 yet. The console line's shape is settled, though. On throwaway Paper 26.1.2, 26.2 and 26.3, a plugin's plain console reply came out as `[hh:mm:ss INFO]: <text>`, and in `latest.log` as `[hh:mm:ss] [Server thread/INFO]: <text>`, with no `System chat:` label (checked by the Plugins Lead, 2026-11-09). Those exact shapes are now checks, and so is a reply sent through a plugin's logger, which isn't read.
 - **Screens.** There are none yet. The Players page invite flow comes after Latchkey 0.2.0.
 
 ## 2026-11-09: BlueMinimap rename
