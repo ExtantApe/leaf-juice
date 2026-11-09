@@ -1332,6 +1332,14 @@ do {
         equal(LabFiles.saveName(date: when, software: soft, note: "Before 26 upgrade!"), "2026-11-03_20-15_paper-1.21.11-build132_before-26-upgrade.tar.gz", "save names read well")
         equal(LabFiles.saveName(date: when, software: soft, note: "../../etc"), "2026-11-03_20-15_paper-1.21.11-build132_etc.tar.gz", "notes can't reach outside the folder")
         equal(LabFiles.saveName(date: when, software: soft, note: ""), "2026-11-03_20-15_paper-1.21.11-build132.tar.gz", "the note is optional")
+        // Wiping needs both the mark and the exact folder.
+        var marked = ServerProfile(); marked.isLab = true
+        let plain = ServerProfile()
+        check(LabFiles.isLab(root: LabFiles.root, profile: marked), "the marked Lab in its own folder can be wiped")
+        check(!LabFiles.isLab(root: LabFiles.root, profile: plain), "a server in the lab folder without the mark can't")
+        check(!LabFiles.isLab(root: LabFiles.root.deletingLastPathComponent().appendingPathComponent("lab-2"), profile: marked), "nor a marked one anywhere else")
+        check(!LabFiles.isLab(root: LabFiles.root.appendingPathComponent("worlds"), profile: marked), "nor a folder inside it")
+        check(LabFiles.isLab(root: LabFiles.root.appendingPathComponent("../lab"), profile: marked), "a roundabout path to the same folder is still the Lab")
         func path(_ title: String, _ outcomes: [LabCheck.Outcome]) -> RehearsalPath {
             var p = RehearsalPath(title: title, route: ""); p.checks = outcomes.enumerated().map { LabCheck("c\($0.offset)", $0.element) }; return p
         }
@@ -4560,6 +4568,53 @@ func madeUpImage(_ w: Int, _ h: Int, to url: URL, type: CFString = "public.png" 
         write(#"{"format":1,"neverOff":[{"plugin":"Kept","why":"made up"}],"recheck":[]}"#, rules)
         _ = try c.ensureUpgradeRules()
         check((try? String(contentsOf: rules, encoding: .utf8))?.contains("Kept") == true, "and an existing one is never overwritten")
+
+        // The whole check, with Paper fetched from a stand-in web server on this Mac.
+        let webPort = 28797
+        let web = try FakeBlueMap(port: webPort)
+        defer { web.listener.cancel() }
+        let paperBytes = Data("made up paper jar".utf8)
+        web.answers["/paper-26.3-244.jar"] = (head: "", body: paperBytes)
+        let paperFile = folder("plugin-upgrade-paper").appendingPathComponent("p.jar")
+        try paperBytes.write(to: paperFile)
+        let paperSHA = try Hashing.digests(of: paperFile).sha256
+        func build(_ sha256: String) -> SoftwareBuild {
+            SoftwareBuild(flavor: .paper, mcVersion: "26.3", build: 244, channel: "STABLE", downloadURL: "http://127.0.0.1:\(webPort)/paper-26.3-244.jar",
+                          fileName: "paper-26.3-244.jar", hashes: ExpectedHashes(sha256: sha256))
+        }
+        let testCopies = root.deletingLastPathComponent().appendingPathComponent(AppPaths.ownFolderName).appendingPathComponent("test-copies")
+        func leftOver() -> [String] { FileOps.children(testCopies).map(\.lastPathComponent).filter { $0.hasPrefix("upgrade-check-plugin-upgrade") } }
+        var sawCopy = false, sawPaper = false
+        reply = ToolResult(code: 10, out: String(decoding: switchOff, as: UTF8.self), err: "")
+        UpgradeTool.runOverride = { args in
+            calls.append(args)
+            if let i = args.firstIndex(of: "--copy") {
+                let copy = URL(fileURLWithPath: args[i + 1])
+                sawCopy = FileOps.exists(copy.appendingPathComponent("server.properties")) && copy.standardizedFileURL != root.standardizedFileURL
+            }
+            if let i = args.firstIndex(of: "--paper") { sawPaper = (try? Data(contentsOf: URL(fileURLWithPath: args[i + 1]))) == paperBytes }
+            return reply
+        }
+        let checked = await c.checkPluginsForUpgrade(build(paperSHA))
+        check(checked.canApply && checked.stop == nil, "a full check gives back the tool's plan: \(checked.stop ?? "")")
+        check(sawCopy && sawPaper, "the tool is given a copy of the server, never the server, and the Paper that passed its hash")
+        check(calls.last?.contains("--allow-shared-database") == false, "a shared database isn't allowed unless asked")
+        equal(leftOver(), [], "the copy and the download are deleted afterwards")
+        _ = await c.checkPluginsForUpgrade(build(paperSHA), allowSharedDatabase: true)
+        check(calls.last?.contains("--allow-shared-database") == true, "Check Anyway passes the shared-database allowance on")
+        let callsBefore = calls.count
+        let tampered = await c.checkPluginsForUpgrade(build(String(repeating: "0", count: 64)))
+        check(tampered.stop?.contains("checksum") == true && !tampered.canApply, "a Paper download that fails its hash stops the check: \(tampered.stop ?? "")")
+        equal(calls.count, callsBefore, "and the tool never runs")
+        equal(leftOver(), [], "and nothing is left behind")
+
+        // Every download goes through the same hash check: server jars, plugins, packs and the upgrade tool.
+        let saved = folder("plugin-upgrade-download").appendingPathComponent("got.jar")
+        var refusal = ""
+        do { try await HTTP.download(HTTP.url("http://127.0.0.1:\(webPort)/paper-26.3-244.jar"), to: saved, expect: ExpectedHashes(sha1: String(repeating: "0", count: 40))) } catch { refusal = error.localizedDescription }
+        check(refusal.contains("checksum") && !FileOps.exists(saved), "a download that fails its hash is discarded, not saved: \(refusal)")
+        try await HTTP.download(HTTP.url("http://127.0.0.1:\(webPort)/paper-26.3-244.jar"), to: saved, expect: ExpectedHashes(sha256: paperSHA))
+        equal(try Data(contentsOf: saved), paperBytes, "one that passes is saved as it came")
     } catch { failures.append("plugins on upgrade threw: \(error)") }
 }
 
@@ -4903,6 +4958,8 @@ func residentBytes() -> UInt64 {
         try c.startPackHost()
         await checkUntil(5, "listening") { c.packHostIsListening }
         check(c.packHostSettings.enabled, "and it's remembered")
+        let networkAddresses = localAddresses().filter { !$0.hasPrefix("127.") }
+        check(networkAddresses.allSatisfy { !canConnect($0, port: port) }, "only this Mac can connect, not the network (tried \(networkAddresses))")
 
         let oneURL = c.packAddress(recipe: "world-one")!, twoURL = c.packAddress(recipe: "world-two")!
         check(oneURL != twoURL, "each recipe has its own address")
@@ -5132,6 +5189,17 @@ func residentBytes() -> UInt64 {
         await checkUntil(5, "a taken port is reported") { rival.packHostError != nil || rival.packHostIsListening }
         check(rival.packHostError?.contains("\(port)") == true, "and says which: \(rival.packHostError ?? "listening anyway")")
         rival.stopPackHost()
+
+        // A folder rename keeps the address, so the one players and plugins have saved still works.
+        let movingRoot = folder("pack-hosting-moving")
+        write("server-port=25597\n", movingRoot.appendingPathComponent("server.properties"))
+        let moving = try await ServerController.adopt(root: movingRoot, name: "moving")
+        try moving.setPackHost(address: "http://127.0.0.1", port: port + 2)
+        let beforeMove = moving.packAddress(recipe: "world-one")
+        check(beforeMove != nil && beforeMove == moving.packAddress(recipe: "world-one"), "asking twice gives the same address")
+        _ = try moving.rename(to: "Moved", moveFolderTo: "pack-hosting-moved")
+        check(moving.paths.root.lastPathComponent == "pack-hosting-moved", "the folder moved")
+        equal(moving.packAddress(recipe: "world-one"), beforeMove, "and the address came with it")
 
         // Addresses and paths never travel with a shared recipe.
         let exported = String(decoding: try ResourcePacks.exportRecipe(recipe("world-one", oneZip)), as: UTF8.self)
