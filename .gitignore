@@ -4,3 +4,8 @@ dist/
 *.log
 .DS_Store
 .lab-sandbox/
+# SwiftPM sometimes writes objects to the root when a new file joins a target
+/*.o
+/*.d
+/*.swiftdeps
+/*.swiftdeps~
