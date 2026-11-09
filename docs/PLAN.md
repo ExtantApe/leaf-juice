@@ -51,6 +51,7 @@ Settled by the owner. Follow them without asking again.
 | 2026-11-09 | Commands are the API. Plugins work without Leaf Juice in any combination. Leaf Juice sends the same commands through the console of a server it started (`<plugin> <subcommand> … --json <id>`, answered by one `ea-result <id> <json>` line), and no secret ever goes through the console: it comes in a one-time file the plugin writes and Leaf Juice deletes. Screens are decided per feature. |
 | 2026-11-09 | The Players page invite flow is built by hand and filled from each plugin's `describe`. It says plainly that invites from the app only work while Leaf Juice is running that server. |
 | 2026-11-09 | The links page and map gateway check a player's session through a file per session that Latchkey keeps, named by the cookie's hash and deleted on revoke. |
+| 2026-11-09 | A session lasts one day and is extended by a day while its player is playing: at most 7 days in a row, and never past 30 days from sign-in. Latchkey's session file gains `since`, the sign-in time, and rewrites `expires` atomically when it extends. Leaf Juice rereads the file rather than keeping `expires`, and refuses a file whose `expires` isn't after `since` or is more than 30 days after it. |
 | 2026-11-09 | The Advisor is merged into `main` now, off by default, after one more independent review against `docs/ADVISOR-SECURITY.md`, instead of waiting for the real-data trial. The trial (Check Now on the overhauled server after its first boot) and encrypting the key file come later. |
 
 ## The Change Queue
