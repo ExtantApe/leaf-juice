@@ -109,6 +109,12 @@ Worlds and Multiverse, Players, History, Cleanup, Test copies, Backup drills, th
 on by default. Off hides the feature and stops its background work. Nothing it saved is deleted, and turning it back on picks up where it left off.
 These are built in: Leaf Juice doesn't load third-party code.
 
+## Advisor (optional, uses AI)
+
+Off until you turn it on in **Settings**, unlike everything above, because it sends data outside your Mac. It reads what Leaf Juice has noticed about a server you choose and suggests, in plain words, what's wrong and what to do first. It uses your own Claude account through [Claude Code](https://claude.com/claude-code), and in testing a check took about half a minute and about 8 cents if you pay per use.
+
+It can't change anything. Chat, log messages, passwords, player names and addresses aren't shared, and **See Exactly What Would Be Shared** shows the real text before you decide. [ADVISOR-SECURITY.md](docs/ADVISOR-SECURITY.md) explains what this does and doesn't protect against.
+
 ## Resource packs
 
 Add packs by file, or from a Modrinth or GitHub page. Every version is kept, unchanged, and the page lets you look through a pack's textures.

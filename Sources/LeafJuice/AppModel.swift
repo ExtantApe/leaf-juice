@@ -5,7 +5,7 @@ import SwiftUI
 import UserNotifications
 
 enum PageID: String, CaseIterable, Identifiable, Hashable {
-    case overview, console, history, players, allowlist, worlds, plugins, software, configs, resourcePacks, links, launch, backups, changes, cleanup
+    case overview, console, history, players, allowlist, worlds, plugins, software, configs, resourcePacks, links, advisor, launch, backups, changes, cleanup
     var id: String { rawValue }
     /// The module a page belongs to. Nil for the essentials, which are always there.
     var module: LeafModule? {
@@ -16,6 +16,7 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         case .cleanup: .cleanup
         case .resourcePacks: .resourcePacks
         case .links: .links
+        case .advisor: .advisor
         default: nil
         }
     }
@@ -32,6 +33,7 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         case .plugins: "Plugins"
         case .resourcePacks: "Resource Packs"
         case .links: "Plugin Links"
+        case .advisor: "Advisor"
         case .software: "Software"
         case .configs: "Configs"
         case .launch: "Launch"
@@ -51,6 +53,7 @@ enum PageID: String, CaseIterable, Identifiable, Hashable {
         case .plugins: "puzzlepiece.extension"
         case .resourcePacks: "photo.stack"
         case .links: "link"
+        case .advisor: "sparkle.magnifyingglass"
         case .software: "shippingbox"
         case .configs: "slider.horizontal.3"
         case .launch: "bolt"
@@ -88,7 +91,7 @@ final class AppModel {
 
     var selected: ServerController? { listed.first { $0.id == selectedID } ?? listed.first }
     /// The Lab stays on disk when its module is off, but isn't shown.
-    var listed: [ServerController] { Modules.shared.isOn(.lab) ? servers : servers.filter { !$0.isLab } }
+    var listed: [ServerController] { Modules.shared.isOn(.lab) && !AdvisorTrial.isOn ? servers : servers.filter { !$0.isLab } }
     /// The page to show, in case the one asked for belongs to a module that's off.
     var visiblePage: PageID { page.module.map(Modules.shared.isOn) ?? true ? page : .overview }
     var anyLive: Bool { servers.contains { $0.state.isLive || $0.trialIsLive } }
@@ -101,7 +104,7 @@ final class AppModel {
         if let found = lab.server, !opened.contains(where: { $0.id == found.id }) { opened.append(found) }
         servers = opened
         selectedID = UserDefaults.standard.string(forKey: "selectedServer").flatMap(UUID.init) ?? servers.first?.id
-        for server in servers where server.profile.launch.startWithApp {
+        for server in servers where server.profile.launch.startWithApp && !AdvisorTrial.isOn {
             Task { await server.start() }
         }
         // Its own switch, off until someone turns it on. A snapshot only draws screens.
@@ -114,8 +117,8 @@ final class AppModel {
             servers.forEach { $0.startPackHostIfWanted() }
         }
         servers.forEach(Alerts.connect)
-        Alerts.ask()
-        if checkAppUpdates { Task { await lookForAppUpdate() } }
+        if !AdvisorTrial.isOn { Alerts.ask() }
+        if checkAppUpdates, !AdvisorTrial.isOn { Task { await lookForAppUpdate() } }
         // A wipe or restore makes a new controller for the Lab's folder.
         lab.onServerChanged = { [weak self] old, new in
             guard let self else { return }
@@ -166,6 +169,7 @@ final class AppModel {
     /// Forgets a server. Its folder stays exactly where it is.
     func remove(_ controller: ServerController) {
         guard !controller.isLab else { return }
+        AdvisorCenter.shared.share(controller, false)
         controller.stopTicker()
         servers.removeAll { $0.id == controller.id }
         if selectedID == controller.id { selectedID = servers.first?.id }
@@ -348,13 +352,17 @@ struct LeafJuiceApp: App {
                 .preferredColorScheme(scheme)
         }
         .defaultSize(width: 1280, height: 820)
-        .commands { ServerCommands(model: model) }
+        .commands { if !AdvisorTrial.isOn { ServerCommands(model: model) } }
 
         Settings {
-            SettingsView(model: model).tint(Juice.pulp).preferredColorScheme(scheme)
+            if AdvisorTrial.isOn {
+                Text("This trial has no settings.").padding(40)
+            } else {
+                SettingsView(model: model).tint(Juice.pulp).preferredColorScheme(scheme)
+            }
         }
 
-        MenuBarExtra {
+        MenuBarExtra(isInserted: .constant(!AdvisorTrial.isOn)) {
             StatusMenu(model: model)
         } label: {
             Image(systemName: model.anyLive ? "leaf.fill" : "leaf")
@@ -446,7 +454,11 @@ struct SettingsView: View {
             Hint("Add your own log rules as JSON files in that folder. See the README for the format.")
             Section {
                 ForEach(LeafModule.allCases) { module in
-                    Toggle(isOn: Binding(get: { Modules.shared.isOn(module) }, set: { Modules.shared.set(module, on: $0) })) {
+                    Toggle(isOn: Binding(get: { Modules.shared.isOn(module) }, set: { on in
+                        Modules.shared.set(module, on: on)
+                        // Off means off straight away, including a check that's already running.
+                        if module == .advisor, !on { AdvisorCenter.shared.cancelAll() }
+                    })) {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(module.title).foregroundStyle(Juice.ink)

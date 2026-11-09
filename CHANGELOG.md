@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- The Advisor, an optional page that asks Claude Code for suggestions about a server, using your own Claude account. It's
+  off until you turn it on in Settings, each server has to be shared, and the first check asks before sending. Only
+  recognised log lines, stack traces and a fixed list of settings are sent, with players and addresses replaced by code
+  names. See `docs/ADVISOR-SECURITY.md` for what's sent and its known gaps. Tested with made-up servers and a stand-in for
+  Claude Code. It hasn't been run on a real server yet.
+
 ## 0.1.0
 
 The first release. Tested against real Paper servers started for the tests, with made-up data. Not yet tested by

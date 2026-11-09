@@ -4,7 +4,7 @@ import Observation
 /// Major features that can be switched off. All compiled in and all on by default: there's no third-party code here.
 /// Off hides a feature and stops its background work. Its data stays where it is.
 public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
-    case worlds, players, history, cleanup, testCopies, backupDrill, lab, resourcePacks, links
+    case worlds, players, history, cleanup, testCopies, backupDrill, lab, resourcePacks, links, advisor
 
     public var id: String { rawValue }
     public var title: String {
@@ -18,8 +18,11 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .lab: "Lab"
         case .resourcePacks: "Resource packs"
         case .links: "Plugin links"
+        case .advisor: "Advisor"
         }
     }
+    /// Sends data to an outside service, so unlike everything else this stays off until you turn it on.
+    public var startsOff: Bool { self == .advisor }
     public var summary: String {
         switch self {
         case .worlds: "Create, rename and manage worlds, with Multiverse built in."
@@ -31,6 +34,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .lab: "A practice server with bot players, the status board and upgrade rehearsals."
         case .resourcePacks: "Look through resource packs, and combine them into one."
         case .links: "Each plugin, its version and a link to its documentation."
+        case .advisor: "Optional AI suggestions, using your own Claude account. Off until you turn it on, and shares nothing until you choose a server."
         }
     }
     public var icon: String {
@@ -44,6 +48,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .lab: "flask"
         case .resourcePacks: "photo.stack"
         case .links: "link"
+        case .advisor: "sparkle.magnifyingglass"
         }
     }
 }
@@ -57,10 +62,20 @@ public final class Modules {
 
     init() { off = JSONStore.load(AppPaths.home.appendingPathComponent("modules.json"), defaults: []) }
 
-    public func isOn(_ module: LeafModule) -> Bool { !off.contains(module.rawValue) }
+    public func isOn(_ module: LeafModule) -> Bool {
+        // The trial shares this file with the real app, so it doesn't save its own choice here.
+        if module == .advisor, AdvisorTrial.isOn { return true }
+        return module.startsOff ? off.contains("on:\(module.rawValue)") : !off.contains(module.rawValue)
+    }
 
     public func set(_ module: LeafModule, on: Bool) {
-        if on { off.remove(module.rawValue) } else { off.insert(module.rawValue) }
+        if module.startsOff {
+            if on { off.insert("on:\(module.rawValue)") } else { off.remove("on:\(module.rawValue)") }
+        } else if on {
+            off.remove(module.rawValue)
+        } else {
+            off.insert(module.rawValue)
+        }
         try? JSONStore.save(off, to: file)
     }
 

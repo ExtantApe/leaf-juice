@@ -15,6 +15,13 @@ public struct LeafError: LocalizedError, Equatable {
 
 // MARK: - Locations
 
+/// The separately packaged trial of the Advisor, made by `scripts/build-advisor-trial.sh`. It looks at real servers
+/// while leaving them alone: it starts nothing, runs no schedules or update checks and writes nothing to their folders.
+/// Normal builds don't have the key, so this is always false for them.
+public enum AdvisorTrial {
+    public static let isOn = Bundle.main.object(forInfoDictionaryKey: "LeafJuiceAdvisorTrial") as? Bool == true
+}
+
 public enum AppPaths {
     /// `LEAFJUICE_HOME` redirects app data, for tests and demos.
     public static var home: URL {
@@ -184,6 +191,7 @@ public enum JSONStore {
     }
 
     public static func save<T: Encodable>(_ value: T, to url: URL) throws {
+        guard !AdvisorTrial.isOn else { throw LeafError("The Advisor trial doesn't save anything.") }
         try FileOps.ensureDir(url.deletingLastPathComponent())
         try encoder.encode(value).write(to: url, options: .atomic)
     }
@@ -199,7 +207,7 @@ public enum JSONStore {
             let out = try JSONSerialization.data(withJSONObject: merged, options: [.fragmentsAllowed])
             return try decoder.decode(T.self, from: out)
         } catch {
-            try? FileOps.move(url, to: url.appendingPathExtension("corrupt"))
+            if !AdvisorTrial.isOn { try? FileOps.move(url, to: url.appendingPathExtension("corrupt")) }
             return defaults
         }
     }
