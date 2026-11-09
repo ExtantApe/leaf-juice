@@ -2,6 +2,27 @@
 
 Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-09: plugin commands, format 1
+
+Leaf Juice's side of the shared plugin command format (ops `briefs/plugin-commands-spec.md`), behind a new module, Plugin commands, that starts off. 2463 passed, 0 failed (111 new).
+
+Covered:
+
+- **The wire.** Every type is written the agreed way. Uuids go lowercase. Free text is quoted, escaped and last. `--yes` comes before `--json`. Sixteen bad inputs are refused before anything is typed, among them a word that's a flag (`--yes` could answer a question for you), a line break in free text, and an invisible character.
+- **Spoofing (fail closed).** An answer counts only when `ea-result ` comes straight after an INFO log header. Thirteen spoof lines are refused: chat, `[Not Secure]` chat, the chat thread, `/say`, `/me`, a logged player command, a Discord bridge, WARN, no header, and junk before the header. Ids are 32 secure random hex characters and never repeat. A second answer, a reused id, an unknown id, a mismatched id inside the JSON, an answer over 8 KB and a refusal with no reason are each refused.
+- **Confirm questions.** Nothing goes ahead until every question id is sent back.
+- **Timeouts.** No answer is "not confirmed", not "failed". A late answer is passed on once, under its id.
+- **Switched off, or not Leaf Juice's own console.** Nothing is typed, and the refusal says why.
+- **describe.** It is read. Unknown keys are ignored, and unknown types are marked rather than guessed. A newer format is refused. No format, format 0 or a plugin name that's a path is unreadable.
+- **Once-files (fail closed).** A secret is read once and deleted. These are refused, and the file is still deleted: one others could read, one in a folder others could look in, one for another request, and an expired one. A link to another file isn't followed, and its target is kept. A plugin folder that's a link elsewhere isn't read, and nothing is deleted through it. A path or another request's file named in the answer is refused.
+- **End to end.** A fake server in Java with a format-1 plugin runs through Leaf Juice's real console. A player's chat answer with the same id comes first, and the real answer is still read. Free text with quotes and backslashes survives. describe comes through. An invite code reaches only the once-file, never the console. A plugin that never answers gives "not confirmed". Switched off, nothing is typed into a running server.
+- **Proved by breaking it.** Loosening the parser to accept the prefix anywhere in a line failed 11 checks, including the end-to-end one. Then it was put back.
+
+Gaps skipped:
+
+- **A real Paper plugin.** None speaks format 1 yet. Whether Paper 26.x writes a plugin's console message as `]: ea-result …` or with a `System chat: ` label is unconfirmed. If it's the label, Leaf Juice reads nothing (fail closed), and the parser needs one agreed change. Asked of the Plugins Lead, who has the real servers.
+- **Screens.** There are none yet. The Players page invite flow comes after Latchkey 0.2.0.
+
 ## 2026-11-09: BlueMinimap rename
 
 BlueMapHUD became BlueMinimap 0.2.0. Leaf Juice never looks for this plugin by name or folder: an exact pack is whatever zip you add, stored under its own SHA-1. So no check changes. Only the README and the Exact Pack hint now name `/blueminimap pack export`. The new export has a new SHA-1, so it needs adding again as a new exact pack. Leaf Juice already handles that (a new export gets a new address, old ones keep serving). Built clean; the default run was not repeated, because no code path changed.

@@ -4454,6 +4454,7 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     await packSongChecks()
     await pluginUpgradeChecks()
     await serverIconChecks()
+    await pluginCommandChecks()
 }
 
 /// A made-up square or oblong image, with one corner pixel a different colour so scaling can be seen.

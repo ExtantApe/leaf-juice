@@ -29,6 +29,10 @@ public final class ServerController: Identifiable {
     public internal(set) var linksWeb: LinksWeb?
     public internal(set) var linksListener: LinksListener?
     public var linksPageError: String?
+    /// Plugin commands in the shared format, for servers Leaf Juice started. Off unless the module is on.
+    @ObservationIgnored public private(set) lazy var commands = PluginCommandRunner(
+        isEnabled: { Modules.shared.isOn(.pluginCommands) },
+        send: { [weak self] line in self?.sendPluginCommand(line) ?? false })
     @ObservationIgnored var mapAccessCache: [String: (date: Date, task: Task<MapAccess, Never>)] = [:]
     /// The last reason someone was shown no maps, for the app to explain.
     public internal(set) var mapAccessNote: String?
@@ -511,6 +515,14 @@ public final class ServerController: Identifiable {
         process.send(bare)
     }
 
+    /// Types a plugin command, only into a running server this app started.
+    func sendPluginCommand(_ line: String) -> Bool {
+        guard state == .running, let process else { return false }
+        append(">\u{00A0}\(line)", level: .info, origin: .command)
+        process.send(line)
+        return true
+    }
+
     public func clearConsole() { console.removeAll() }
 
     private func bufferLine(_ line: String) {
@@ -552,6 +564,7 @@ public final class ServerController: Identifiable {
                 if failedJoins.count > 100 { failedJoins.removeLast() }
                 recordEvent(.player, "\(refused.name) couldn't join", detail: refused.meaning)
             }
+            commands.ingest(line)
             append(line, level: parsed.level, origin: .server)
             analyzer.ingest(line)
             changedIssues = changedIssues || parsed.level >= .warn || analyzer.dirty

@@ -4,7 +4,7 @@ import Observation
 /// Major features that can be switched off. All compiled in and all on by default: there's no third-party code here.
 /// Off hides a feature and stops its background work. Its data stays where it is.
 public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
-    case worlds, players, history, cleanup, testCopies, backupDrill, lab, resourcePacks, links, advisor
+    case worlds, players, history, cleanup, testCopies, backupDrill, lab, resourcePacks, links, advisor, pluginCommands
 
     public var id: String { rawValue }
     public var title: String {
@@ -19,10 +19,12 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .resourcePacks: "Resource packs"
         case .links: "Plugin links"
         case .advisor: "Advisor"
+        case .pluginCommands: "Plugin commands"
         }
     }
-    /// Sends data to an outside service, so unlike everything else this stays off until you turn it on.
-    public var startsOff: Bool { self == .advisor }
+    /// The Advisor sends data to an outside service, and plugin commands wait for plugins that speak the
+    /// shared format, so unlike everything else these stay off until you turn them on.
+    public var startsOff: Bool { self == .advisor || self == .pluginCommands }
     public var summary: String {
         switch self {
         case .worlds: "Create, rename and manage worlds, with Multiverse built in."
@@ -35,6 +37,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .resourcePacks: "Look through resource packs, and combine them into one."
         case .links: "Each plugin, its version and a link to its documentation."
         case .advisor: "Optional AI suggestions, using your own Claude account. Off until you turn it on, and shares nothing until you choose a server."
+        case .pluginCommands: "Lets Leaf Juice talk to plugins through the shared command format, on servers it started. A preview: off until plugins support it."
         }
     }
     public var icon: String {
@@ -49,6 +52,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .resourcePacks: "photo.stack"
         case .links: "link"
         case .advisor: "sparkle.magnifyingglass"
+        case .pluginCommands: "terminal"
         }
     }
 }
