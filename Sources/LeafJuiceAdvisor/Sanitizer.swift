@@ -369,12 +369,39 @@ public final class ProblemLog {
     }
 
     /// A frame or an exception's class, and nothing else. Only the code's own parts are checked, not the words added here.
+    /// Java's own naming: lowercase packages, then one class, then for a frame one method, in the file named after
+    /// the class. A chat bridge or a quoted message can put a multi-line text in the log, so a line shaped like code
+    /// isn't enough by itself. This makes such text much harder to pass, though not impossible: see the security doc.
+    static func javaShaped(_ code: String, file: String?) -> Bool {
+        let name = code.split(separator: "/").last.map(String.init) ?? code
+        var parts = name.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        if parts.last == "<init>" || parts.last == "<clinit>" { parts.removeLast(); parts.append("init") }
+        guard parts.allSatisfy({ !$0.isEmpty }) else { return false }
+        func lower(_ s: String) -> Bool { s.first.map { $0.isLowercase || $0 == "_" } ?? false }
+        let method: String?
+        if file != nil {
+            guard parts.count >= 2 else { return false }
+            method = parts.removeLast()
+        } else {
+            method = nil
+        }
+        guard let className = parts.last else { return false }
+        let packages = parts.dropLast()
+        guard packages.allSatisfy(lower) else { return false }
+        if let method, !(lower(method) || method.hasPrefix("lambda$") || method.hasPrefix("access$")) { return false }
+        // Obfuscated code has lowercase class names, so those are allowed in frames that name their file.
+        guard !lower(className) || file != nil else { return false }
+        let outer = className.split(separator: "$").first.map(String.init) ?? className
+        guard let file, file.hasSuffix(".java") || file.contains(".java:") else { return true }
+        return file.split(separator: ".").first.map(String.init) == outer
+    }
+
     func traceLine(_ line: String) throws -> String? {
-        if let g = Self.groups(Self.frame, line), Self.looksLikeCode(g[1]) {
+        if let g = Self.groups(Self.frame, line), Self.looksLikeCode(g[1]), Self.javaShaped(g[1], file: g[2]) {
             guard let code = try sanitizer.codeText(g[1]), let place = try sanitizer.codeText(g[2]) else { return nil }
             return "  at \(code)(\(place))"
         }
-        if let g = Self.groups(Self.exception, line), Self.looksLikeCode(g[2]) {
+        if let g = Self.groups(Self.exception, line), Self.looksLikeCode(g[2]), Self.javaShaped(g[2], file: nil) {
             return try sanitizer.codeText(g[2]).map { "\(g[1])\($0)" }
         }
         if let g = Self.groups(Self.moreFrames, line) { return "  ... \(g[1]) more" }

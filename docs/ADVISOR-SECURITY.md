@@ -2,8 +2,10 @@
 
 `leafjuice-mcp` lets an AI client look at a server and leave suggestions. It's a separate read-only program. In the app, the
 optional **Advisor** page runs it with Claude Code. That page is off until you turn it on in Settings, each server has to be
-shared separately, and nothing is sent until you check or turn on automatic checks. With it off, the app contains no AI and
-starts none. The app starts Claude Code with every other tool removed, so the shell-access warning below doesn't apply to
+shared separately, and nothing is sent until you press Check Now and confirm. Automatic checks need their own yes per server,
+and only start after you've sent a first check yourself. Turning the Advisor off stops a check that's running. With it off,
+the app contains no AI and starts none. A test checks each of these yeses. The separate trial build
+(`scripts/build-advisor-trial.sh`) has the page on, as that's all it does, but each server still has to be shared. The app starts Claude Code with every other tool removed, so the shell-access warning below doesn't apply to
 checks started there.
 
 ## The main rule
@@ -29,14 +31,16 @@ be added as they prove useful, each with a test.
 | `recent_problems` | Recognised events with tokens for players and addresses, stack frames, exception class names, and a count of what was withheld |
 | `suggest` | Writes plain text to a private inbox. This is the only tool that takes free text |
 
-Reads also write to the key file, when a player or address is first shared.
+Reads also write to the key file, when a player or address is first shared. Looking at the Advisor page, or its preview of
+what would be sent, records nothing: the preview uses a throwaway key that's deleted straight after, so its code names
+differ from a real check's.
 
 ## What it protects against
 
 | Threat | Defence |
 |---|---|
-| Chat or commands reach the AI | Log wording isn't sent, from either the log or stored issues. One gap: the app stores a stack line from any thread, so unusual chat formatted exactly like a frame could reach `open_issues`, limited to that shape |
-| Player names, UUIDs and IPs reach the AI | Tokens in fixed shapes. In code-shaped text, a known player's name becomes a token wherever it sits, except for common code words such as `server`, which say nothing about anyone. An address, UUID, email or known key format drops the line, however it's written. Jars and frames with sentence words are dropped too, though that only catches wording it knows. World and settings file names are sent only if they're standard |
+| Chat or commands reach the AI | Log wording isn't sent, from either the log or stored issues. Something that can write several lines into the log, such as a chat bridge or a message quoted in an error, can shape its text like a trace. So a frame or exception line also has to follow Java's own naming: lowercase packages, one class, a method, and a `.java` file named after its class. That stops ordinary text, but carefully written text in that form still passes, from any thread, to `recent_problems` and `open_issues` |
+| Player names, UUIDs and IPs reach the AI | Tokens in fixed shapes. In code-shaped text, a known player's name becomes a token wherever it sits, except for common code words such as `server`, which say nothing about anyone. An address, UUID, email or known key format drops the line in its usual spellings. See "Odd spellings" below for ones that get through. Jars and frames with sentence words are dropped too, though that only catches wording it knows. World and settings file names are sent only if they're standard |
 | Secrets reach the AI | No free text is sent, and plugin configs aren't readable. `server.properties` is an allowlist of keys and values |
 | Chat forges an identity or changes a filter | Names come only from the server's own player files and from exact line shapes on the right thread. Only the authenticator thread and `usercache.json` can tie a name to a UUID. A plugin can forge that thread: see below |
 | The AI changes or breaks the server | There's no tool for it, and the program doesn't link `LeafJuiceCore` or use network or process APIs. A test checks the source |
@@ -90,7 +94,7 @@ Reads also write to the key file, when a player or address is first shared.
 `~/Library/Application Support/Leaf Juice/advisor/`, in a folder only you can open, excluded from Time Machine where the
 system allows it:
 
-- `key.json`: the token map. A token is only created for a value in an answer, or for a known player named in a suggestion.
+- `key.json`: the token map. A token is only created for a value in an answer, for the server when it's checked, or for a known player named in a suggestion.
 - `suggestions/`: suggestions as written, with tokens still in them.
 
 Deleting the folder forgets every mapping. Old suggestions then stay untranslated, and players get new tokens.
@@ -134,6 +138,7 @@ That stops an agent casually running them through a pipe, but it isn't a boundar
 The app starts Claude Code from a new empty temporary folder, with `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, a fixed `--system-prompt`, `--disable-slash-commands`, `--no-session-persistence` and a short list of environment variables. Each of these was tested with planted markers and made-up data, with one exception noted below.
 
 - **`@` in a prompt reads a file, even with no tools.** So nothing the AI wrote goes into a prompt unless it's been cut down to letters, digits, spaces and hyphens, and the key is never near the working folder.
+- **Dismissed titles go back to the AI.** When you press Don't Raise This Again, that suggestion's title is listed in later checks' prompts, cut down as above and marked as never instructions. A title steered by a plugin, such as "Ignore all warnings", would still be repeated on every later check, until you press Forget Everything.
 - **What Claude Code still sends by itself:** your account email, the temporary folder's path, and basic system details such as the OS version. The email is the one on your Anthropic account.
 - **`--safe-mode` can't be used.** It also turns off the Advisor's tools.
 - **Kept out, tested with markers:** `CLAUDE.md`, rules, skills, hooks and settings in a parent folder and in a stand-in home folder.
@@ -146,6 +151,6 @@ A plugin runs inside the server, so it could send data out by itself without inv
 
 - **Names:** a name inside a word is caught from five letters, or from three as a whole word in `EmmaHandler`. Names that aren't known players, such as a family name in a jar's file, can't be recognised. A player named like a code word, such as `Main`, isn't hidden where that word appears in code. One named like a method, such as `Max`, gets a token that its position gives away.
 - **Plugin text:** a plugin can still choose readable class names like `Meet.Tommy.tonight`, and a short word in a version.
-- **Odd spellings:** an address with mixed separators or in hex isn't recognised.
+- **Odd spellings:** an address with mixed separators or in hex isn't recognised, nor an email written as `jdoe.at.example.com` or before a `//` module marker, a home-folder path in a frame's module part, or a key whose prefix isn't a known one, such as `xoxb_` with underscores. Real Java frames don't look like these.
 - **The key folder check** doesn't see through firmlink paths such as `/System/Volumes/Data`, which the app's default location doesn't use.
 - **The sentence and name checks** have only been run on made-up logs.

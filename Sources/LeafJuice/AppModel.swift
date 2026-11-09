@@ -454,7 +454,11 @@ struct SettingsView: View {
             Hint("Add your own log rules as JSON files in that folder. See the README for the format.")
             Section {
                 ForEach(LeafModule.allCases) { module in
-                    Toggle(isOn: Binding(get: { Modules.shared.isOn(module) }, set: { Modules.shared.set(module, on: $0) })) {
+                    Toggle(isOn: Binding(get: { Modules.shared.isOn(module) }, set: { on in
+                        Modules.shared.set(module, on: on)
+                        // Off means off straight away, including a check that's already running.
+                        if module == .advisor, !on { AdvisorCenter.shared.cancelAll() }
+                    })) {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(module.title).foregroundStyle(Juice.ink)

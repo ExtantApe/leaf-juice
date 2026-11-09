@@ -205,6 +205,12 @@ public final class PrivacyKey {
         try token(.server, lookup: folder.resolvingSymlinksInPath().standardizedFileURL.path, display: display)
     }
 
+    /// The server's token if it already has one. Never writes, so looking at a page records nothing.
+    public func knownServer(folder: URL) throws -> String? {
+        try reload()
+        return byLookup["\(Kind.server.rawValue)|\(folder.resolvingSymlinksInPath().standardizedFileURL.path)"]
+    }
+
     /// A UUID is the person, and a name is just what they're called today. So a UUID decides the token. A name that
     /// has passed to someone else moves to them, and never makes two people share one token.
     public func player(name: String, uuid: String?) throws -> String {

@@ -1425,6 +1425,41 @@ do {
         a.ingest("[01:19:35] [Server thread/WARN]: \tat ActionHealth-3.5.9-all.jar//com.zeshanaslam.actionhealth.utils.HealthUtil.sendHealth(HealthUtil.java:1)")
         equal(a.sorted.first?.plugin, "ActionHealth", "the plugin in the stack trace gets the blame")
     }
+    do { // The Advisor on a fresh install: nothing can send until every yes is given, in any order.
+        let suite = "leafjuice-check-\(UUID().uuidString)"
+        let fresh = UserDefaults(suiteName: suite)!
+        defer { fresh.removePersistentDomain(forName: suite) }
+        let consents = AdvisorConsent(defaults: fresh)
+        let store = Modules.shared
+        let modulesFile = AppPaths.home.appendingPathComponent("modules.json")
+        let savedModules = try? Data(contentsOf: modulesFile)
+        defer { if let savedModules { try? savedModules.write(to: modulesFile) } else { try? FileManager.default.removeItem(at: modulesFile) }; store.reload() }
+        try? FileManager.default.removeItem(at: modulesFile)
+        store.reload()
+        let id = UUID(), place = folder("advisor-consent")
+        func refused(_ automatic: Bool) -> Bool { consents.refusal(id: id, folder: place, name: "Made Up", automatic: automatic) != nil }
+        check(!store.isOn(.advisor) && !consents.isShared(id: id, folder: place) && !consents.isAutomatic(id: id, folder: place), "a fresh install has the Advisor off and nothing shared")
+        check(refused(false) && refused(true), "a fresh install sends nothing, by button or automatically")
+        consents.set(AdvisorConsent.sharedList, AdvisorConsent.key(id: id, folder: place), true)
+        check(refused(false), "sharing a server isn't enough while the Advisor is off")
+        consents.set(AdvisorConsent.sharedList, AdvisorConsent.key(id: id, folder: place), false)
+        store.set(.advisor, on: true)
+        check(refused(false) && refused(true), "turning the Advisor on isn't enough until a server is shared")
+        consents.set(AdvisorConsent.sharedList, AdvisorConsent.key(id: id, folder: place), true)
+        check(!refused(false), "with both, pressing Check Now may send")
+        check(refused(true), "but automatic checks still need their own yes")
+        consents.set(AdvisorConsent.automaticList, AdvisorConsent.key(id: id, folder: place), true)
+        check(refused(true), "and don't start until the first check was sent by hand")
+        consents.recordCheck(id: id, folder: place)
+        check(!refused(true), "after which they may run")
+        check(consents.refusal(id: UUID(), folder: place, name: "Made Up", automatic: false) != nil && consents.lastCheck(id: UUID(), folder: place) == nil, "a different server in the same folder needs its own yes and its own first check")
+        check(consents.refusal(id: id, folder: folder("advisor-consent-moved"), name: "Made Up", automatic: false) != nil, "so does the same server in another folder")
+        store.set(.advisor, on: false)
+        check(refused(false) && refused(true), "turning the Advisor off stops everything, with the yeses kept")
+        try FileManager.default.removeItem(at: place)
+        store.set(.advisor, on: true)
+        check(refused(false), "a folder that's gone sends nothing")
+    }
     do { // Modules: on by default, remembered, and off means off.
         let store = Modules.shared
         store.reload()

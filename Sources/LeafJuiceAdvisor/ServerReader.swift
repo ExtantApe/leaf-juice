@@ -242,9 +242,13 @@ public final class ServerReader {
             if let count = issue["count"] as? Int { item["count"] = count }
             if let stack = issue["stack"] as? [String] {
                 let trace = try stack.prefix(60).filter { $0.utf16.count <= ProblemLog.maxLine }.compactMap { try log.traceLine(Scrub.controls($0)) }
-                if !trace.isEmpty {
-                    item["stack"] = Array(trace.prefix(30))
-                    characters += trace.prefix(30).reduce(0) { $0 + $1.count }
+                let kept = Array(trace.prefix(ProblemLog.maxFramesPerTrace))
+                let size = kept.reduce(0) { $0 + $1.count }
+                // Checked before adding, so no answer goes past the limit.
+                if characters + size > ProblemLog.maxReportCharacters { break }
+                if !kept.isEmpty {
+                    item["stack"] = kept
+                    characters += size
                 }
             }
             out.append(item)

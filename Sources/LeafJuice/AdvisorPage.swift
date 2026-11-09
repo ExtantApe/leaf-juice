@@ -43,32 +43,31 @@ final class AdvisorCenter {
     /// UserDefaults can't tell SwiftUI that a value changed, so a page reading only a choice would never redraw.
     /// Every read of a saved choice reads this as well, and every write changes it.
     private var savedChoices = 0
-    private func set(_ key: String) -> Set<String> {
-        _ = savedChoices
-        return Set(defaults.stringArray(forKey: key) ?? [])
-    }
-    private func write(_ value: Bool, _ path: String, _ key: String) {
-        var current = set(key)
-        if value { current.insert(path) } else { current.remove(path) }
-        defaults.set(Array(current), forKey: key)
+    private let consents = AdvisorConsent()
+    private func write(_ value: Bool, _ server: ServerController, _ list: String) {
+        consents.set(list, AdvisorConsent.key(id: server.id, folder: server.paths.root), value)
         savedChoices += 1
     }
-    /// This server in this folder. Moving it, or putting a different server there, needs a new yes.
-    private func consent(_ server: ServerController) -> String { "\(server.id.uuidString)|\(server.paths.root.path)" }
-    func isShared(_ server: ServerController) -> Bool { set("advisorShared").contains(consent(server)) }
+    func isShared(_ server: ServerController) -> Bool {
+        _ = savedChoices
+        return consents.isShared(id: server.id, folder: server.paths.root)
+    }
     func share(_ server: ServerController, _ on: Bool) {
-        write(on, consent(server), "advisorShared")
+        write(on, server, AdvisorConsent.sharedList)
         if !on {
             cancel(server)
-            write(false, consent(server), "advisorAutomatic")
+            write(false, server, AdvisorConsent.automaticList)
         }
         refresh(server)
     }
-    func isAutomatic(_ server: ServerController) -> Bool { set("advisorAutomatic").contains(consent(server)) }
-    func setAutomatic(_ server: ServerController, _ on: Bool) { write(on, consent(server), "advisorAutomatic") }
+    func isAutomatic(_ server: ServerController) -> Bool {
+        _ = savedChoices
+        return consents.isAutomatic(id: server.id, folder: server.paths.root)
+    }
+    func setAutomatic(_ server: ServerController, _ on: Bool) { write(on, server, AdvisorConsent.automaticList) }
     func lastCheck(_ server: ServerController) -> Date? {
         _ = savedChoices
-        return defaults.object(forKey: "advisorLast:\(server.paths.root.path)") as? Date
+        return consents.lastCheck(id: server.id, folder: server.paths.root)
     }
 
     // MARK: Saying what a click did
@@ -157,7 +156,8 @@ final class AdvisorCenter {
         do {
             let key = try PrivacyKey()
             let inbox = try SuggestionInbox(sanitizer: nil)
-            let token = try key.server(folder: server.paths.root, display: server.profile.name)
+            // A server that has never been checked has no suggestions, and looking shouldn't give it a code name.
+            guard let token = try key.knownServer(folder: server.paths.root) else { items[path] = []; return }
             items[path] = try inbox.all().suggestions.filter { $0.server == token }.map { suggestion in
                 let readable = try SuggestionInbox.readable(suggestion, key: key)
                 return Item(id: suggestion.id, severity: suggestion.severity, title: readable.title, details: readable.details, rawTitle: suggestion.title)
@@ -191,14 +191,19 @@ final class AdvisorCenter {
     }
 
     /// Runs here, and sends nothing: this is the same text a check would give the AI, from the same functions at their largest limits.
+    /// Its code names come from a throwaway key, so looking records nothing about a server you haven't shared.
+    /// They're made the same way, so only the letters and numbers in each code name differ from a real check.
     func loadPreview(_ server: ServerController) async {
         let root = server.paths.root, display = server.profile.name
         let text = await Task.detached(priority: .userInitiated) { () -> String in
             guard !AdvisorPaths.homeIsInside(server: root) else { return "The Advisor's private folder is inside this server's folder, so nothing would be shared." }
+            let scratch = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("leafjuice-preview-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: scratch) }
             do {
-                let key = try PrivacyKey()
+                let key = try PrivacyKey(directory: scratch)
                 let reader = ServerReader(root: root, sanitizer: Sanitizer(key: key))
-                return SharedPreview.text(serverToken: try key.server(folder: root, display: display), summary: try reader.summary(), issues: try reader.openIssues(limit: 100), report: try reader.recentProblems(limit: 500), dismissed: try SuggestionInbox(sanitizer: nil).neverRaised(server: root.path))
+                let dismissed = FileManager.default.fileExists(atPath: AdvisorPaths.home.path) ? try SuggestionInbox(sanitizer: nil).neverRaised(server: root.path) : []
+                return SharedPreview.text(serverToken: try key.server(folder: root, display: display), summary: try reader.summary(), issues: try reader.openIssues(limit: 100), report: try reader.recentProblems(limit: 500), dismissed: dismissed)
             } catch {
                 return (error as? AdvisorError)?.description ?? "This server's files couldn't be read safely, so nothing would be shared."
             }
@@ -209,12 +214,12 @@ final class AdvisorCenter {
     func forgetEverything(servers: [ServerController]) {
         for server in servers { cancel(server); share(server, false) }
         // Everything, including servers no longer on the list.
-        defaults.removeObject(forKey: "advisorShared")
-        defaults.removeObject(forKey: "advisorAutomatic")
+        defaults.removeObject(forKey: AdvisorConsent.sharedList)
+        defaults.removeObject(forKey: AdvisorConsent.automaticList)
         let forgotten = SuggestionInbox.forgetEverything()
         previews.removeAll()
         for server in servers {
-            defaults.removeObject(forKey: "advisorLast:\(server.paths.root.path)")
+            consents.forgetCheck(id: server.id, folder: server.paths.root)
             items[server.paths.root.path] = []
             phases[server.paths.root.path] = forgotten ? .idle : .failed("Some of what the Advisor stored couldn't be deleted. Sharing is off.")
             notices[server.paths.root.path] = forgotten ? Notice(tone: .good, title: "The Advisor's suggestions and code names are deleted", detail: "Sharing is off for every server. Your servers weren't touched.") : nil
@@ -224,6 +229,13 @@ final class AdvisorCenter {
 
     // MARK: Checking
 
+    func cancelAll() {
+        for (path, process) in running {
+            stopping.insert(path)
+            process.terminate()
+        }
+    }
+
     func cancel(_ server: ServerController) {
         let path = server.paths.root.path
         guard let process = running[path] else { return }
@@ -231,13 +243,15 @@ final class AdvisorCenter {
         process.terminate()
     }
 
-    func check(_ server: ServerController) async {
+    /// `automatic` is for checks nobody pressed a button for, which need their own yes.
+    func check(_ server: ServerController, automatic: Bool = false) async {
         let path = server.paths.root.path
         guard phase(server) != .checking else { return }
         notices[path] = nil
-        guard Modules.shared.isOn(.advisor) else { fail(server, "The Advisor is turned off, so nothing was sent."); return }
-        guard isShared(server) else { fail(server, "This server isn't shared any more, so nothing was sent."); return }
-        guard FileManager.default.fileExists(atPath: path) else { fail(server, "\(server.profile.name) isn't in \(Self.shown(server.paths.root)) any more, so nothing was sent."); return }
+        if let refusal = consents.refusal(id: server.id, folder: server.paths.root, name: server.profile.name, automatic: automatic) {
+            fail(server, refusal)
+            return
+        }
         findClaude()
         guard let claude = claudePath else { phases[path] = .failed("Claude Code isn't installed on this Mac."); return }
         guard let program = advisorProgram else { phases[path] = .failed("This build of Leaf Juice is missing its Advisor program."); return }
@@ -261,7 +275,10 @@ final class AdvisorCenter {
             defer { try? FileManager.default.removeItem(at: setup) }
             let config = setup.appendingPathComponent("client.json")
             let receipt = setup.appendingPathComponent("read")
-            let client: [String: Any] = ["mcpServers": ["leafjuice": ["command": program, "args": ["--server", path, "--receipt", receipt.path]]]]
+            var helper: [String: Any] = ["command": program, "args": ["--server", path, "--receipt", receipt.path]]
+            // The helper must use the same private folder as the app, whether or not Claude Code passes its environment on.
+            if let override = ProcessInfo.processInfo.environment["LEAFJUICE_HOME"] { helper["env"] = ["LEAFJUICE_HOME": override] }
+            let client: [String: Any] = ["mcpServers": ["leafjuice": helper]]
             try JSONSerialization.data(withJSONObject: client).write(to: config, options: .withoutOverwriting)
 
             let outcome = try await Self.run(claude: claude, config: config, folder: work, prompt: Self.prompt(ignoring: inbox.neverRaised(server: path))) { [weak self] process in
@@ -275,7 +292,7 @@ final class AdvisorCenter {
             case .finished:
                 // A new check replaces the last one, so its advice never piles up.
                 earlier.forEach { inbox.remove(id: $0) }
-                defaults.set(Date(), forKey: "advisorLast:\(path)")
+                consents.recordCheck(id: server.id, folder: server.paths.root)
                 defaults.set(signature(server), forKey: "advisorSeen:\(path)")
                 savedChoices += 1
                 phases[path] = .idle
@@ -312,7 +329,7 @@ final class AdvisorCenter {
                     let last = self.lastCheck(server) ?? .distantPast
                     guard Date().timeIntervalSince(last) > 6 * 3600,
                           self.signature(server) != self.defaults.string(forKey: "advisorSeen:\(path)") ?? "" else { continue }
-                    await self.check(server)
+                    await self.check(server, automatic: true)
                     if self.items[path]?.contains(where: { $0.severity == .important }) == true {
                         server.raiseAlert("The Advisor has something for \(server.profile.name)", "Open Leaf Juice to read it.")
                     }
