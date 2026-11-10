@@ -199,6 +199,12 @@ private let head = "[12:00:00 INFO]: "
         equal(d.commands[0].args[1].values ?? [], ["kid", "builder"], "a list of choices keeps its values")
         equal(d.errors, ["already-invited"], "the plugin's own error codes")
     } else { check(false, "describe read") }
+    let optionals = #"{"format":1,"plugin":"Usher","version":"0.4.0","commands":[{"name":"apply","args":[{"name":"uuid","type":"uuid"},{"name":"whitelist","type":"bool","optional":true},{"name":"via","type":"string","optional":true}]}]}"#
+    if case .described(let d) = PluginDescription.read(Data(optionals.utf8)) {
+        equal(d.commands[0].args.map(\.optional), [false, true, true], "optional arguments are marked, and required ones carry no key")
+    } else { check(false, "optional arguments read") }
+    let misordered = #"{"format":1,"plugin":"Usher","version":"0.4.0","commands":[{"name":"apply","args":[{"name":"via","type":"string","optional":true},{"name":"uuid","type":"uuid"}]}]}"#
+    if case .unreadable = PluginDescription.read(Data(misordered.utf8)) { check(true, "") } else { check(false, "a required argument after an optional one is refused") }
     if case .newerFormat(2) = PluginDescription.read(Data(#"{"format":2,"plugin":"Usher","version":"9","commands":"changed shape"}"#.utf8)) { check(true, "") } else { check(false, "a newer format is refused, not half-read") }
     for (label, json) in [("no format", #"{"plugin":"Usher","version":"1"}"#), ("format 0", #"{"format":0,"plugin":"Usher","version":"1"}"#),
                           ("a plugin name that's a path", #"{"format":1,"plugin":"../Latchkey","version":"1"}"#), ("not JSON", "nope")] {

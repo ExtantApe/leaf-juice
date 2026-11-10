@@ -2,6 +2,10 @@
 
 Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-10: optional arguments in describe
+
+Signalbox 0.2.0 marks an argument that may be left out with `"optional": true`, and Usher 0.4.0 uses it. Leaf Juice now reads it, and refuses a describe with a required argument after an optional one (fail closed: it couldn't tell which slot a value fills). Two checks added; 2468 passed, 0 failed. Not yet tried against Usher 0.4.0 itself, which isn't released.
+
 ## 2026-11-09: plugin commands, format 1
 
 Leaf Juice's side of the shared plugin command format (ops `briefs/plugin-commands-spec.md`), behind a new module, Plugin commands, that starts off. 2463 passed, 0 failed (111 new).

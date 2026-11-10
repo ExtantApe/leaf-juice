@@ -339,6 +339,18 @@ public struct PluginDescription: Sendable, Equatable {
         public let of: String?
         /// For an enum, or a list of enums: the choices.
         public let values: [String]?
+        /// May be left out. Optional arguments come only after every required one.
+        public let optional: Bool
+
+        enum CodingKeys: String, CodingKey { case name, type, of, values, optional }
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try c.decode(String.self, forKey: .name)
+            type = try c.decode(String.self, forKey: .type)
+            of = try c.decodeIfPresent(String.self, forKey: .of)
+            values = try c.decodeIfPresent([String].self, forKey: .values)
+            optional = try c.decodeIfPresent(Bool.self, forKey: .optional) ?? false
+        }
         public static let types: Set<String> = ["string", "int", "bool", "player", "uuid", "enum", "duration", "list"]
         public var isKnown: Bool {
             guard Self.types.contains(type) else { return false }
@@ -360,6 +372,11 @@ public struct PluginDescription: Sendable, Equatable {
         guard head.format <= PluginCommandWire.format else { return .newerFormat(head.format) }
         guard head.format >= 1, let wire = try? JSONDecoder().decode(Wire.self, from: json),
               PluginCommandWire.matches(regex(#"^[A-Za-z0-9_-]{1,64}$"#), wire.plugin) else { return .unreadable }
+        // A required argument after an optional one would leave Leaf Juice guessing which slot a value fills.
+        for command in wire.commands ?? [] {
+            guard let firstOptional = command.args.firstIndex(where: \.optional) else { continue }
+            if command.args[firstOptional...].contains(where: { !$0.optional }) { return .unreadable }
+        }
         return .described(PluginDescription(format: wire.format, plugin: wire.plugin, version: wire.version, commands: wire.commands ?? [], errors: wire.errors ?? []))
     }
 }
