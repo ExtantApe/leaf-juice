@@ -2407,6 +2407,14 @@ if let flag = CommandLine.arguments.firstIndex(of: "--real-upgrade-plugins"), fl
         print("Skipping --real-upgrade-plugins: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
     }
 }
+if let flag = CommandLine.arguments.firstIndex(of: "--real-usher"), flag + 1 < CommandLine.arguments.count {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        let dump = CommandLine.arguments.firstIndex(of: "--dump-describe").map { URL(fileURLWithPath: CommandLine.arguments[$0 + 1]) }
+        await runRealUsher(jar: URL(fileURLWithPath: CommandLine.arguments[flag + 1]), dump: dump)
+    } else {
+        print("Skipping --real-usher: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
 if CommandLine.arguments.contains("--real-paper") {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         await runRealPaper()

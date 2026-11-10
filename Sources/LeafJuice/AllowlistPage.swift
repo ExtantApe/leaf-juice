@@ -18,6 +18,10 @@ struct AllowlistPage: View {
     @State private var editing: AllowlistEntry?
     @State private var conflictA = ""
     @State private var conflictB = ""
+    @State private var usher: UsherStatus?
+    @State private var attempts: [UsherAttempt] = []
+    @State private var usherEditing: AllowlistEntry?
+    @State private var modules = Modules.shared
 
     private var running: Bool { server.state == .running }
 
@@ -25,11 +29,14 @@ struct AllowlistPage: View {
         Page(title: "Allowlist", subtitle: "Who can join \(server.profile.name). This only changes this server.") {
             if let blocked = server.playerAccessBlocked { Callout(tone: .warning, title: "Adding players is off here", detail: blocked) }
             if let message { Callout(tone: .danger, title: message) }
+            if server.hasUsher { usherNote }
             addCard
             if !waiting.isEmpty { waitingCard }
+            if usherProfiles != nil, !attempts.isEmpty { attemptsCard }
             listCard
-            if server.hasLuckPerms { groupsCard }
+            if server.hasLuckPerms, !server.hasUsher { groupsCard }
         }
+        .task(id: "\(server.state)-\(modules.isOn(.pluginCommands))") { await readUsher() }
         .task {
             await server.refreshPlugins()
             reload()
@@ -40,6 +47,9 @@ struct AllowlistPage: View {
                 entries = server.allowlist
                 waiting = server.waitingAccess
             }
+        }
+        .sheet(item: $usherEditing) { entry in
+            UsherProfileSheet(server: server, entry: entry, profiles: usherProfiles ?? []) { reload() }
         }
         .sheet(item: $editing) { entry in
             GroupEditor(server: server, entry: entry, settings: settings) { reload() }
@@ -74,6 +84,21 @@ struct AllowlistPage: View {
     @ViewBuilder private func found(_ account: MojangAccount) -> some View {
         Fact(label: "Account", value: account.name)
         Fact(label: "ID", value: account.uuid)
+        if server.hasUsher {
+            if let profiles = usherProfiles {
+                UsherApproval(server: server, uuid: account.uuid, name: account.name, profiles: profiles) { _ in
+                    reload()
+                    Task { await readAttempts() }
+                }
+            } else {
+                Hint("Usher looks after who can join this server, so they can be approved once Leaf Juice can reach it.")
+            }
+        } else {
+            rawFound(account)
+        }
+    }
+
+    @ViewBuilder private func rawFound(_ account: MojangAccount) -> some View {
         if server.hasLuckPerms {
             let offered = settings.knownGroups.filter(settings.grantable.contains)
             if offered.isEmpty {
@@ -128,7 +153,10 @@ struct AllowlistPage: View {
                 HStack {
                     Text(entry.name).foregroundStyle(Juice.ink).textSelection(.enabled)
                     Spacer()
-                    if server.hasLuckPerms {
+                    if server.hasUsher {
+                        Button("Profiles…") { usherEditing = entry }.buttonStyle(.juice).disabled(usherProfiles == nil)
+                            .accessibilityLabel("Profiles for \(entry.name)")
+                    } else if server.hasLuckPerms {
                         Button("Groups…") { editing = entry }.buttonStyle(.juice).disabled(!running || server.playerAccessBlocked != nil)
                             .accessibilityLabel("Groups for \(entry.name)")
                     }
@@ -136,7 +164,8 @@ struct AllowlistPage: View {
                         .accessibilityLabel("Remove \(entry.name)")
                 }
             }
-            if server.hasLuckPerms, !running { Hint("Groups can only be changed while the server runs.") }
+            if server.hasUsher, usherProfiles == nil { Hint("Profiles can be changed once Leaf Juice can reach Usher.") }
+            else if server.hasLuckPerms, !server.hasUsher, !running { Hint("Groups can only be changed while the server runs.") }
         }
     }
 
@@ -187,6 +216,57 @@ struct AllowlistPage: View {
                 }
             }
         }
+    }
+
+    private var usherProfiles: [UsherProfile]? {
+        if case .ready(_, let profiles, _, _) = usher { profiles } else { nil }
+    }
+
+    @ViewBuilder private var usherNote: some View {
+        switch usher {
+        case .unavailable(let why)?:
+            Callout(tone: .warning, title: "Usher can't be reached", detail: why + " Leaf Juice won't add anyone or change groups around it.") {
+                if !modules.isOn(.pluginCommands) {
+                    Button("Turn On Plugin Commands") { modules.set(.pluginCommands, on: true) }.buttonStyle(.juice)
+                }
+            }
+        case .ready(let version, _, let luckPerms, let problems)?:
+            Callout(tone: .info, title: "Approvals go through Usher \(version)", detail: "Profiles, questions and the change log are Usher's. This works only while Leaf Juice runs this server, because it types Usher's commands into the console.") {
+                EmptyView()
+            }
+            if !luckPerms { Callout(tone: .warning, title: "LuckPerms isn't running", detail: "Usher refuses every change without it, saying why.") }
+            ForEach(problems, id: \.self) { Callout(tone: .warning, title: "Usher's settings", detail: $0) }
+        default:
+            Hint("Checking Usher…")
+        }
+    }
+
+    private var attemptsCard: some View {
+        Card(title: "Turned away recently (\(attempts.count))", systemImage: "hand.raised") {
+            Hint("People the whitelist stopped, newest first in Usher's list. Approving still looks the name up first.")
+            ForEach(attempts) { attempt in
+                HStack {
+                    Text(attempt.name).foregroundStyle(Juice.ink).textSelection(.enabled)
+                    Hint(attempt.count == 1 ? "once" : "\(attempt.count) times")
+                    Spacer()
+                    Button("Approve…") { typed = attempt.name; lookUp() }.buttonStyle(.juice)
+                        .accessibilityLabel("Approve \(attempt.name)")
+                }
+            }
+        }
+    }
+
+    private func readUsher() async {
+        await server.refreshPlugins()
+        guard server.hasUsher else { usher = .notInstalled; return }
+        usher = nil
+        usher = await server.usherStatus()
+        await readAttempts()
+    }
+
+    private func readAttempts() async {
+        guard usherProfiles != nil, case .success(let list) = await server.usherAttempts() else { attempts = []; return }
+        attempts = list
     }
 
     private func reload() {

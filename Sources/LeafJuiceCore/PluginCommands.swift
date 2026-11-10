@@ -198,15 +198,23 @@ public enum CommandOutcome: Sendable {
             let ok: Bool
             let error: Err?
             let needs: [ConfirmQuestion]?
-            let next: String?
+            let next: Cursor?
             let secretFile: String?
             struct Err: Decodable { let code: String; let message: String? }
+        }
+        /// The spec's cursor is a string. Usher 0.4.0 sends a number, so either is taken, as text.
+        struct Cursor: Decodable {
+            let text: String
+            init(from decoder: Decoder) throws {
+                let c = try decoder.singleValueContainer()
+                if let s = try? c.decode(String.self) { text = s } else { text = String(try c.decode(Int.self)) }
+            }
         }
         let data = Data(json.utf8)
         guard let wire = try? JSONDecoder().decode(Wire.self, from: data), wire.id == id else {
             return .failed(CommandError(code: CommandError.badAnswer, message: ""))
         }
-        if wire.ok { return .done(CommandAnswer(id: id, next: wire.next, secretFile: wire.secretFile, json: data)) }
+        if wire.ok { return .done(CommandAnswer(id: id, next: wire.next?.text, secretFile: wire.secretFile, json: data)) }
         if let needs = wire.needs, !needs.isEmpty { return .needsYes(needs) }
         if let err = wire.error, !err.code.isEmpty { return .failed(CommandError(code: err.code, message: err.message ?? "")) }
         return .failed(CommandError(code: CommandError.badAnswer, message: ""))

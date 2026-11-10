@@ -2,6 +2,32 @@
 
 Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-10: the Allowlist page goes through Usher
+
+On a server with Usher, the Allowlist page approves people and changes their profiles through Usher's format-1 commands: `profiles`, `show`, `apply` (with its questions) and `attempts`. It never goes around Usher with raw LuckPerms or `whitelist add`. This was decided on 2026-11-07, for kids' and adults' groups. Default run: 2493 passed, 0 failed. With the real run: 2520 passed.
+
+Covered:
+
+- **Never around Usher (fail closed).** With an Usher jar on the server, raw adding, adding a group and removing a group are each refused. Nothing is queued, and no `lp` or `whitelist add` is typed. Taking someone off the allowlist still works. Removing the guard failed 5 checks, and it was put back.
+- **Usher can't be reached.** The page says why and changes nothing in each case: plugin commands off, the server not started here, an Usher with no `apply` (it names 0.4.0), or a newer format.
+- **Through a fake Usher.** Profiles come with labels and worlds, and Usher's settings problems come through. "none" is refused as a profile. An approval runs, then a question, then nothing changes until the yes. Adding and removing happen in one go. The typed command is checked word for word.
+- **Real Usher 0.4.0 and LuckPerms on throwaway Paper 26.3** (`--real-usher <jar> --with-luckperms`):
+  - Usher's describe gives format 1 and the optional arguments.
+  - Its problems name the missing groups until they exist.
+  - An approval gives the profile, the group in LuckPerms and the whitelist entry.
+  - A second chat circle asks `bridge`, and nothing changes until it's answered.
+  - `grown_sky` asks `confirm-grown-sky`.
+  - Adding and removing in one go works.
+  - The raw path is refused.
+  - Usher's change log names Leaf Juice.
+  - Every account is made up and offline.
+- **Usher 0.4.0's `attempts`.** It uses `attempts` and a number for `next`, where the spec says `items` and a string. Leaf Juice reads both, and the Plugins Lead has been told.
+
+Gaps skipped:
+
+- **The screen itself.** The wording, layout, keyboard and VoiceOver on the Allowlist page's Usher parts haven't been looked at by hand. They go in owner test T6.
+- **A real server.** These are throwaway servers only, until the owner's go.
+
 ## 2026-11-10: optional arguments in describe
 
 Signalbox 0.2.0 marks an argument that may be left out with `"optional": true`, and Usher 0.4.0 uses it. Leaf Juice now reads it, and refuses a describe with a required argument after an optional one (fail closed: it couldn't tell which slot a value fills). Two checks added; 2468 passed, 0 failed. Not yet tried against Usher 0.4.0 itself, which isn't released.
