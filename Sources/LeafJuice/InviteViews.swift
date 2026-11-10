@@ -18,6 +18,7 @@ struct InvitesCard: View {
     @State private var problem: String?
     @State private var working = false
     @State private var invites: [LatchkeyInvite] = []
+    @State private var more = false
     @State private var revoking: LatchkeyInvite?
     @State private var modules = Modules.shared
 
@@ -35,8 +36,11 @@ struct InvitesCard: View {
                         Button("Turn On Plugin Commands") { modules.set(.pluginCommands, on: true) }.buttonStyle(.juice)
                     }
                 }
-            case .ready(let version, let invitesWork, let publicURL, let problems)?:
+            case .ready(let version, let invitesWork, let publicURL, let problems, let lobby)?:
                 ForEach(problems, id: \.self) { Callout(tone: .warning, title: "Latchkey's settings", detail: $0) }
+                if let lobby {
+                    Fact(label: "Lobby", value: lobby ? "On: new players arrive in Latchkey's lobby" : "Off: players arrive at the usual spawn")
+                }
                 if !invitesWork {
                     Callout(tone: .warning, title: "Latchkey \(version) isn't taking invites", detail: "Until its settings pass its checks, it won't make any. The problems above say what to change.")
                 } else {
@@ -120,6 +124,7 @@ struct InvitesCard: View {
         let open = invites.filter { $0.isOpen() }
         Text("Invites (\(open.count) waiting)").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
         if invites.isEmpty { Hint("None yet.") }
+        if more { Hint("Showing the newest \(invites.count). Older invites are in Latchkey's own list: /latchkey invite list.") }
         ForEach(invites) { invite in
             HStack {
                 Text(invite.name).foregroundStyle(Juice.ink).textSelection(.enabled)
@@ -143,7 +148,11 @@ struct InvitesCard: View {
         guard server.hasLatchkey else { status = .notInstalled; return }
         status = nil
         status = await server.latchkeyStatus()
-        if case .ready = status, case .success(let list) = await server.listInvites() { invites = list } else { invites = [] }
+        if case .ready = status { await reloadList() } else { invites = []; more = false }
+    }
+
+    private func reloadList() async {
+        if case .success(let list) = await server.listInvites() { invites = list.invites; more = list.more }
     }
 
     private func create() {
@@ -155,12 +164,12 @@ struct InvitesCard: View {
             switch await server.createInvite(name: name.trimmingCharacters(in: .whitespaces), profiles: chosen.sorted(), days: days, yes: yes) {
             case .made(let new):
                 made = new; questions = []; answered = []
-                if case .success(let list) = await server.listInvites() { invites = list }
+                await reloadList()
             case .questions(let qs): questions = qs; answered = []
             case .failed(let why): problem = why
             case .notConfirmed:
                 problem = "Latchkey didn't answer in 15 seconds. An invite may still have been made, so check the list below and revoke anything you don't want."
-                if case .success(let list) = await server.listInvites() { invites = list }
+                await reloadList()
             }
         }
     }
@@ -170,7 +179,7 @@ struct InvitesCard: View {
         revoking = nil
         Task {
             problem = await server.revokeInvite(invite.invite)
-            if case .success(let list) = await server.listInvites() { invites = list }
+            await reloadList()
         }
     }
 }

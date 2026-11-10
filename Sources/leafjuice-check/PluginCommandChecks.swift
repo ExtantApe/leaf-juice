@@ -434,10 +434,10 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
       static void latchkey(String body, String id, String line) throws Exception {
         Files.writeString(Path.of("latchkey-commands.txt"), line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         if (body.equals("describe")) {
-          answer(id, "\"ok\":true,\"format\":1,\"plugin\":\"Latchkey\",\"version\":\"0.2.0\",\"commands\":[{\"name\":\"invite create\",\"secret\":true},{\"name\":\"invite list\"},{\"name\":\"invite revoke\"},{\"name\":\"status\"}]");
+          answer(id, "\"ok\":true,\"format\":1,\"plugin\":\"Latchkey\",\"version\":\"" + (new File("latchkey-v3").exists() ? "0.3.0" : "0.2.0") + "\",\"commands\":[{\"name\":\"invite create\",\"secret\":true},{\"name\":\"invite list\"},{\"name\":\"invite revoke\"},{\"name\":\"status\"}]");
         } else if (body.equals("status")) {
           boolean closed = new File("latchkey-closed").exists();
-          answer(id, "\"ok\":true,\"landing\":true,\"redemption\":" + !closed + ",\"signIn\":true,\"whitelist\":true,\"publicUrl\":\"https://play.example.test\",\"problems\":[" + (closed ? "\"online-mode is off, so invites are off.\"" : "") + "]");
+          answer(id, "\"ok\":true,\"landing\":true,\"redemption\":" + !closed + ",\"signIn\":true,\"whitelist\":true,\"publicUrl\":\"https://play.example.test\"," + (new File("latchkey-v3").exists() ? "\"lobby\":true," : "") + "\"problems\":[" + (closed ? "\"online-mode is off, so invites are off.\"" : "") + "]");
         } else if (body.startsWith("invite create ")) {
           String[] p = body.split(" ");
           if (p[3].contains("grown") && !line.contains("--yes bridge")) {
@@ -456,7 +456,13 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
           String fields = invites.get(invites.size() - 1);
           answer(id, "\"ok\":true,\"secretFile\":\"once/" + id + ".json\"," + fields.substring(1, fields.length() - 1));
         } else if (body.startsWith("invite list")) {
-          answer(id, "\"ok\":true,\"invites\":[" + String.join(",", invites) + "],\"next\":null");
+          if (!new File("latchkey-v3").exists()) { answer(id, "\"ok\":true,\"invites\":[" + String.join(",", invites) + "],\"next\":null"); return; }
+          // 0.3.0: the spec's paging, items and a string cursor. latchkey-bad-cursor hands out one Leaf Juice must not type.
+          String[] a = body.split(" ");
+          int limit = a.length > 2 ? Integer.parseInt(a[2]) : 20, from = a.length > 3 ? Integer.parseInt(a[3]) : 0;
+          int to = Math.min(from + limit, invites.size());
+          String next = to < invites.size() ? (new File("latchkey-bad-cursor").exists() ? "\"--yes\"" : "\"" + to + "\"") : "null";
+          answer(id, "\"ok\":true,\"items\":[" + String.join(",", invites.subList(from, to)) + "],\"next\":" + next);
         } else if (body.startsWith("invite revoke ")) {
           String which = body.substring(14);
           for (int i = 0; i < invites.size(); i++) if (invites.get(i).contains("\"" + which + "\"")) invites.set(i, invites.get(i).replace("\"pending\"", "\"revoked\""));
@@ -712,12 +718,13 @@ extension Result {
     Modules.shared.set(.pluginCommands, on: true)
 
     write("", root.appendingPathComponent("latchkey-closed"))
-    if case .ready(_, let works, _, let problems) = await c.latchkeyStatus() {
+    if case .ready(_, let works, _, let problems, _) = await c.latchkeyStatus() {
         check(!works && problems == ["online-mode is off, so invites are off."], "Latchkey not taking invites is shown, with its reason")
     } else { check(false, "closed Latchkey read") }
     try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-closed"))
-    guard case .ready(let version, true, let url, _) = await c.latchkeyStatus() else { check(false, "the fake Latchkey is ready"); return }
+    guard case .ready(let version, true, let url, _, let lobby) = await c.latchkeyStatus() else { check(false, "the fake Latchkey is ready"); return }
     check(version == "0.2.0" && url == "https://play.example.test", "ready, with its version and sign-up page")
+    check(lobby == nil, "Latchkey 0.2.0 says nothing about a lobby, so none is shown")
 
     for (label, result) in [("a bad name", await c.createInvite(name: "Not A Name", profiles: [], days: 14)),
                             ("0 days", await c.createInvite(name: "MadeUpKid", profiles: [], days: 0)),
@@ -745,11 +752,40 @@ extension Result {
     check(typed.contains("latchkey invite create MadeUpKid none 14d --json "), "the command typed for a lobby-only invite")
     check(typed.contains("latchkey invite create MadeUpKid young,grown 7d --yes bridge --json "), "and for one with profiles and a yes")
 
-    guard case .success(let list) = await c.listInvites() else { check(false, "invites listed"); return }
+    guard case .success(let listed) = await c.listInvites() else { check(false, "invites listed"); return }
+    let list = listed.invites
     equal(list.count, 2, "both invites listed, from Latchkey 0.2.0's own list key")
+    check(!listed.more, "and that's all of them")
     equal(await c.revokeInvite("not-an-id"), "That isn't an invite id.", "a bad invite id is refused before anything is typed")
     equal(await c.revokeInvite(list[0].invite), nil, "revoking an invite")
-    if case .success(let after) = await c.listInvites() { equal(after.first?.stateText(), "Revoked", "and it shows as revoked") }
+    if case .success(let after) = await c.listInvites() { equal(after.invites.first?.stateText(), "Revoked", "and it shows as revoked") }
+
+    // Latchkey 0.3.0: the lobby in its status, and the list paged the spec's way.
+    write("", root.appendingPathComponent("latchkey-v3"))
+    defer { try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-v3")) }
+    if case .ready(let v3, _, _, _, let lobby) = await c.latchkeyStatus() {
+        check(v3 == "0.3.0" && lobby == true, "Latchkey 0.3.0's lobby shows as on")
+    } else { check(false, "Latchkey 0.3.0 is ready") }
+    for n in 0..<5 { _ = await c.createInvite(name: "MadeUpPal\(n)", profiles: [], days: 3) }
+    let logFile = root.appendingPathComponent("latchkey-commands.txt")
+    try? FileManager.default.removeItem(at: logFile)
+    if case .success(let paged) = await c.listInvites(pageSize: 2) {
+        equal(paged.invites.count, 7, "every invite is read, two to a page")
+        check(!paged.more, "and the last page ends it")
+        equal(Set(paged.invites.map(\.invite)).count, 7, "with none read twice")
+    } else { check(false, "paged list read") }
+    let pages = ((try? String(contentsOf: logFile, encoding: .utf8)) ?? "").split(separator: "\n")
+    check(pages.count == 4 && pages[1].hasPrefix("latchkey invite list 2 2 --json ") && pages[3].hasPrefix("latchkey invite list 2 6 --json "), "each page asks from the last page's cursor")
+    if case .success(let capped) = await c.listInvites(pageSize: 2, maxPages: 2) {
+        check(capped.invites.count == 4 && capped.more, "a long list stops at the page limit and says there's more")
+    } else { check(false, "capped list read") }
+    write("", root.appendingPathComponent("latchkey-bad-cursor"))
+    defer { try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-bad-cursor")) }
+    try? FileManager.default.removeItem(at: logFile)
+    if case .success(let odd) = await c.listInvites(pageSize: 2) {
+        check(odd.invites.count == 2 && odd.more, "a cursor that looks like a flag ends the list instead of being typed")
+    } else { check(false, "odd cursor list read") }
+    check(!((try? String(contentsOf: logFile, encoding: .utf8)) ?? "").contains("--yes"), "and it never reaches the console")
 }
 
 /// Latchkey's session files, read the agreed way, and the links page signing someone in by them.
@@ -883,8 +919,9 @@ private final class PageClient {
         for group in ["young", "grown"] { await expectLine(c, "lp creategroup \(group)", group, "made-up group \(group)") }
         _ = await c.commands.run("usher", ["reload"])
 
-        guard case .ready(let version, let works, let url, let problems) = await c.latchkeyStatus() else { check(false, "real Latchkey is ready"); return }
-        print("  Latchkey \(version), invites \(works), page \(url ?? "none"), problems \(problems)")
+        guard case .ready(let version, let works, let url, let problems, let lobby) = await c.latchkeyStatus() else { check(false, "real Latchkey is ready"); return }
+        print("  Latchkey \(version), invites \(works), page \(url ?? "none"), lobby \(lobby.map(String.init) ?? "not said"), problems \(problems)")
+        if !version.hasPrefix("0.2.") { check(lobby != nil, "Latchkey \(version) says whether its lobby is on") }
         check(works, "Latchkey takes invites on this throwaway setup")
         guard case .ready(_, let profiles, _, _) = await c.usherStatus() else { check(false, "Usher ready"); return }
         check(profiles.contains { $0.id == "young" }, "Usher's young profile is there")
@@ -903,7 +940,7 @@ private final class PageClient {
         if case .questions(let qs) = risky { check(qs.contains { $0.id == "bridge" }, "Usher's bridge question comes back through Latchkey, before any invite is made") } else { check(false, "a risky invite asks first: \(risky)") }
         guard case .made(let spare) = await c.createInvite(name: "MadeUpSpare", profiles: [], days: 1) else { check(false, "a lobby-only invite"); return }
         equal(await c.revokeInvite(spare.invite.invite), nil, "revoking an invite")
-        if case .success(let list) = await c.listInvites() {
+        if case .success(let listed) = await c.listInvites() { let list = listed.invites
             equal(Set(list.map { "\($0.name):\($0.stateText())" }), ["MadeUpKid:Waiting", "MadeUpSpare:Revoked"], "the list shows both, and only those")
         } else { check(false, "invites listed") }
 
@@ -913,7 +950,7 @@ private final class PageClient {
         print("  redeem: HTTP \(redeemed.status)")
         await checkUntil(10, "redeeming whitelists them") { c.allowlist.contains { $0.uuid == uuid } }
         if case .success(let p) = await c.usherShow(uuid: uuid) { equal(p.profiles, ["young"], "Usher applied the invite's profile") } else { check(false, "show after redeeming") }
-        if case .success(let list) = await c.listInvites() { equal(list.first { $0.name == name }?.stateText(), "Used", "the invite shows as used") }
+        if case .success(let list) = await c.listInvites() { equal(list.invites.first { $0.name == name }?.stateText(), "Used", "the invite shows as used") }
 
         // A bot signs in, and Leaf Juice reads Latchkey's session file.
         // Sign-in is op-only by default; an admin gives it to the players who should have it.

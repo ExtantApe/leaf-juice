@@ -45,7 +45,8 @@ public enum LatchkeyStatus: Sendable, Equatable {
     case notInstalled
     case unavailable(String)
     /// `invitesWork` is false when Latchkey won't make invites (`/latchkey status` says why, in `problems`).
-    case ready(version: String, invitesWork: Bool, publicURL: String?, problems: [String])
+    /// `lobby` is whether Latchkey's lobby is on, from 0.3.0; nil when this Latchkey doesn't say.
+    case ready(version: String, invitesWork: Bool, publicURL: String?, problems: [String], lobby: Bool?)
 }
 
 /// A new invite: the code is shown once, then forgotten.
@@ -54,6 +55,12 @@ public struct NewInvite: Sendable, Equatable {
     public let code: String
     /// Latchkey's own warning, such as profiles nobody checked.
     public let warning: String?
+}
+
+public struct InviteList: Sendable, Equatable {
+    public let invites: [LatchkeyInvite]
+    /// True when there were more than Leaf Juice read, or a cursor it wouldn't send back.
+    public let more: Bool
 }
 
 public enum InviteResult: Sendable, Equatable {
@@ -88,9 +95,10 @@ extension ServerController {
         }
         let reply = await commands.run("latchkey", ["status"])
         guard case .done(let answer) = reply.outcome else { return .unavailable(Self.plain(reply.outcome, doing: "Asking Latchkey how it's set up")) }
-        struct Wire: Decodable { let redemption: Bool?; let publicUrl: String?; let problems: [String]? }
+        struct Wire: Decodable { let redemption: Bool?; let publicUrl: String?; let problems: [String]?; let lobby: Bool? }
         guard let wire = try? answer.decode(Wire.self) else { return .unavailable("Latchkey's status couldn't be read.") }
-        return .ready(version: described.version, invitesWork: wire.redemption ?? false, publicURL: wire.publicUrl, problems: wire.problems ?? [])
+        return .ready(version: described.version, invitesWork: wire.redemption ?? false, publicURL: wire.publicUrl,
+                      problems: wire.problems ?? [], lobby: wire.lobby)
     }
 
     /// Makes an invite for a name, with Usher profiles. The code comes back once, from Latchkey's once-file.
@@ -117,14 +125,29 @@ extension ServerController {
         }
     }
 
-    public func listInvites(limit: Int = 50) async -> Result<[LatchkeyInvite], UsherProblem> {
-        let reply = await commands.run("latchkey", ["invite", "list"], [.int(limit)])
-        guard case .done(let answer) = reply.outcome else { return .failure(UsherProblem(Self.plain(reply.outcome, doing: "Asking Latchkey"))) }
-        // The spec names a page's list `items`; Latchkey 0.2.0 calls it `invites`. Either is read.
-        struct Wire: Decodable { let items: [LatchkeyInvite]?; let invites: [LatchkeyInvite]? }
-        guard let wire = try? answer.decode(Wire.self) else { return .failure(UsherProblem("Latchkey's list couldn't be read.")) }
-        return .success(wire.items ?? wire.invites ?? [])
+    /// Pages through Latchkey's invites, newest first. Stops at `maxPages`, and says so with `more`.
+    /// Latchkey 0.3.0 pages the spec's way (`items`, a string `next`); 0.2.0 answers one page as `invites`,
+    /// and its numeric `next` isn't a cursor it takes back, so only the first page of that is read.
+    public func listInvites(pageSize: Int = 50, maxPages: Int = 10) async -> Result<InviteList, UsherProblem> {
+        var all: [LatchkeyInvite] = []
+        var cursor: String?
+        for _ in 0..<maxPages {
+            var args: [CommandArg] = [.int(pageSize)]
+            if let cursor { args.append(.word(cursor)) }
+            let reply = await commands.run("latchkey", ["invite", "list"], args)
+            guard case .done(let answer) = reply.outcome else { return .failure(UsherProblem(Self.plain(reply.outcome, doing: "Asking Latchkey"))) }
+            struct Wire: Decodable { let items: [LatchkeyInvite]?; let invites: [LatchkeyInvite]? }
+            guard let wire = try? answer.decode(Wire.self) else { return .failure(UsherProblem("Latchkey's list couldn't be read.")) }
+            all += wire.items ?? wire.invites ?? []
+            guard wire.items != nil, let next = answer.next else { return .success(InviteList(invites: all, more: false)) }
+            // A cursor goes back as a plain word; anything else ends the list here rather than being typed.
+            guard Self.isCursor(next), next != cursor else { return .success(InviteList(invites: all, more: true)) }
+            cursor = next
+        }
+        return .success(InviteList(invites: all, more: true))
     }
+
+    static func isCursor(_ s: String) -> Bool { PluginCommandWire.matches(PluginCommandWire.wordPattern, s) && !s.hasPrefix("-") }
 
     public func revokeInvite(_ invite: String) async -> String? {
         guard invite.count == 8, invite.allSatisfy({ "0123456789abcdef".contains($0) }) else { return "That isn't an invite id." }
