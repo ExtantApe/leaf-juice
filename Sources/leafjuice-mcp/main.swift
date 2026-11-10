@@ -3,6 +3,8 @@
 //                 [--receipt <file>]                          Create that file once the log has been read, so the app can tell a real check from an empty one.
 //   leafjuice-mcp --suggestions                               Show suggestions with real names, for a person at a terminal.
 //   leafjuice-mcp --clear-suggestions                         Delete them, also only from a terminal.
+//   leafjuice-mcp --keychain-check                            Can this program reach its key without asking? Exit 0, or 3 with the reason.
+//   leafjuice-mcp --allow-keychain                            Let macOS ask a person for the key, once. Run by the app's Allow Keychain Access.
 import Darwin
 import Foundation
 import LeafJuiceAdvisor
@@ -17,12 +19,27 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 
+// MARK: The key in the Keychain
+
+if CommandLine.arguments.contains("--keychain-check") || CommandLine.arguments.contains("--allow-keychain") {
+    let allow = CommandLine.arguments.contains("--allow-keychain")
+    do {
+        let vault: KeyVault = allow ? KeychainVault(interactive: true) : try KeychainVault.forHelper()
+        _ = try vault.key(create: true)
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data(((error as? KeyVaultProblem)?.message ?? KeyVaultProblem.unavailable.message).utf8))
+        exit(3)
+    }
+}
+
 // MARK: Suggestions, for a person
 
 if CommandLine.arguments.contains("--suggestions") || CommandLine.arguments.contains("--clear-suggestions") {
     guard isatty(STDOUT_FILENO) == 1 else { fail("This only runs with its output on a terminal.") }
     do {
-        let key = try PrivacyKey()
+        // A person is at the terminal, so macOS may ask them for the key.
+        let key = try PrivacyKey(vault: KeychainVault(interactive: true))
         let inbox = try SuggestionInbox(sanitizer: nil)
         if CommandLine.arguments.contains("--clear-suggestions") { inbox.clear(); exit(0) }
         let (all, unreadable) = inbox.all()

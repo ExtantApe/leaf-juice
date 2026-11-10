@@ -35,8 +35,16 @@ final class AdvisorCenter {
     private var running: [String: Process] = [:]
     private var watching = false
     private let defaults = UserDefaults.standard
+    /// Set when the Keychain needs a person's OK for the Advisor's key. The page then offers Allow Keychain Access.
+    private(set) var keychainNeedsOK = false
 
-    private init() { findClaude() }
+    private init() {
+        findClaude()
+        // A key this app makes trusts its helper too, so neither asks about the other. Prompts stay off here: only
+        // Allow Keychain Access lets macOS ask.
+        let helper = Self.helperPath
+        PrivacyKey.defaultVault = { KeychainVault(interactive: false, alsoTrusted: helper.map { [$0] } ?? []) }
+    }
 
     // MARK: Choices, which all default to off
 
@@ -141,10 +149,58 @@ final class AdvisorCenter {
     }
 
     /// Beside this app's own program, whether it's in an app bundle or a build folder.
-    private var advisorProgram: String? {
+    private var advisorProgram: String? { Self.helperPath }
+    private static var helperPath: String? {
         guard let own = Bundle.main.executableURL else { return nil }
         let path = own.deletingLastPathComponent().appendingPathComponent("leafjuice-mcp").path
         return FileManager.default.isExecutableFile(atPath: path) ? path : nil
+    }
+
+    // MARK: The key in the Keychain
+
+    /// Runs the helper with one flag and returns what it said when it refused. Nil means it can reach the key.
+    nonisolated private static func helper(_ program: String, _ flag: String) async -> String? {
+        await Task.detached(priority: .userInitiated) { () -> String? in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: program)
+            process.arguments = [flag]
+            let errors = Pipe()
+            process.standardError = errors
+            process.standardOutput = FileHandle.nullDevice
+            process.standardInput = FileHandle.nullDevice
+            guard (try? process.run()) != nil else { return KeyVaultProblem.unavailable.message }
+            let said = String(decoding: errors.fileHandleForReading.readDataToEndOfFile().prefix(1000), as: UTF8.self)
+            process.waitUntilExit()
+            return process.terminationStatus == 0 ? nil : (said.isEmpty ? KeyVaultProblem.unavailable.message : said)
+        }.value
+    }
+
+    /// Whether this app and its helper can both reach the key without asking anyone. Makes the key if there's none.
+    /// Nil when both can; otherwise the reason, and Allow Keychain Access is offered when that would fix it.
+    func keychainProblem() async -> String? {
+        guard let program = advisorProgram else { return "This build of Leaf Juice is missing its Advisor program." }
+        var said: String?
+        do { _ = try PrivacyKey.defaultVault().key(create: true) } catch { said = (error as? KeyVaultProblem)?.message ?? KeyVaultProblem.unavailable.message }
+        if said == nil { said = await Self.helper(program, "--keychain-check") }
+        keychainNeedsOK = said.map(KeyVaultProblem.needsAllowing) ?? false
+        return said
+    }
+
+    /// The one place macOS may ask. It asks for this app first, then for the helper, each only if needed.
+    func allowKeychain(_ server: ServerController) async {
+        let path = server.paths.root.path
+        guard let program = advisorProgram else { phases[path] = .failed("This build of Leaf Juice is missing its Advisor program."); return }
+        do {
+            _ = try KeychainVault(interactive: true, alsoTrusted: [program]).key(create: true)
+        } catch {
+            phases[path] = .failed((error as? KeyVaultProblem)?.message ?? KeyVaultProblem.unavailable.message)
+            return
+        }
+        if let refused = await Self.helper(program, "--allow-keychain") { phases[path] = .failed(refused); return }
+        if let still = await keychainProblem() { phases[path] = .failed(still); return }
+        phases[path] = .idle
+        say(server, .good, "The Advisor can use its key", "Nothing else needs allowing until Leaf Juice is updated.")
+        refresh(server)
     }
 
     // MARK: Reading
@@ -164,7 +220,9 @@ final class AdvisorCenter {
             }.sorted { $0.severity.rank > $1.severity.rank }
         } catch {
             items[path] = []
-            phases[path] = .failed((error as? AdvisorError)?.description ?? "The Advisor's private folder couldn't be read.")
+            let message = (error as? AdvisorError)?.description ?? "The Advisor's private folder couldn't be read."
+            if KeyVaultProblem.needsAllowing(message) { keychainNeedsOK = true }
+            phases[path] = .failed(message)
         }
     }
 
@@ -200,7 +258,8 @@ final class AdvisorCenter {
             let scratch = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("leafjuice-preview-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: scratch) }
             do {
-                let key = try PrivacyKey(directory: scratch)
+                // A key in memory only: looking records nothing, in the Keychain or anywhere else.
+                let key = try PrivacyKey(directory: scratch, vault: EphemeralVault())
                 let reader = ServerReader(root: root, sanitizer: Sanitizer(key: key))
                 let dismissed = FileManager.default.fileExists(atPath: AdvisorPaths.home.path) ? try SuggestionInbox(sanitizer: nil).neverRaised(server: root.path) : []
                 return SharedPreview.text(serverToken: try key.server(folder: root, display: display), summary: try reader.summary(), issues: try reader.openIssues(limit: 100), report: try reader.recentProblems(limit: 500), dismissed: dismissed)
@@ -256,6 +315,9 @@ final class AdvisorCenter {
         guard let claude = claudePath else { phases[path] = .failed("Claude Code isn't installed on this Mac."); return }
         guard let program = advisorProgram else { phases[path] = .failed("This build of Leaf Juice is missing its Advisor program."); return }
         guard !AdvisorPaths.homeIsInside(server: server.paths.root) else { phases[path] = .failed("The Advisor's private folder is inside this server's folder, so nothing was shared."); return }
+        // Asked first and quietly, so a Keychain that needs your OK stops the check here, with the button to fix it,
+        // rather than part-way through with nothing to show.
+        if let refused = await keychainProblem() { phases[path] = .failed(refused); return }
         phases[path] = .checking
         defer { stopping.remove(path) }
         var finished = false
@@ -428,6 +490,8 @@ struct AdvisorPage: View {
     @State private var showingPreview = false
     @State private var confirmingForget = false
     @State private var confirmingFirstCheck = false
+    @State private var explainingKeychain = false
+    @State private var allowing = false
 
     var body: some View {
         Page(title: "Advisor", subtitle: "Looks over \(server.profile.name) with AI and suggests what to do. It can't change anything.") {
@@ -444,6 +508,14 @@ struct AdvisorPage: View {
         } message: {
             Text("This is the first check of the folder \(AdvisorCenter.shown(server.paths.root)), which last ran \(AdvisorCenter.lastRan(server)). Its filtered information goes to Anthropic through your Claude account. See What's Shared shows exactly what.")
         }
+        .confirmationDialog("Let the Advisor use its key?", isPresented: $explainingKeychain, titleVisibility: .visible) {
+            Button("Continue") {
+                allowing = true
+                Task { await center.allowKeychain(server); allowing = false }
+            }
+        } message: {
+            Text("The Advisor keeps its list of who each code name stands for locked with a key in your Keychain. macOS will ask up to twice, once for Leaf Juice and once for its helper, leafjuice-mcp. Choose Always Allow each time, and type your Mac password if it asks. Until Leaf Juice is signed by its developer, macOS asks again after each update.")
+        }
         .confirmationDialog("Forget everything the Advisor has stored?", isPresented: $confirmingForget, titleVisibility: .visible) {
             Button("Forget Everything", role: .destructive) { center.forgetEverything(servers: model.servers) }
         } message: {
@@ -457,7 +529,12 @@ struct AdvisorPage: View {
     private var feedback: some View {
         VStack(spacing: 8) {
             if case let .failed(message) = center.phase(server) {
-                Callout(tone: .warning, title: "That didn't work", detail: message)
+                Callout(tone: .warning, title: "That didn't work", detail: message) {
+                    if center.keychainNeedsOK {
+                        Button(allowing ? "Waiting for macOS…" : "Allow Keychain Access…") { explainingKeychain = true }
+                            .buttonStyle(.juicePrimary).disabled(allowing)
+                    }
+                }
             }
             if let notice = center.notice(server) {
                 Callout(tone: notice.tone, title: notice.title, detail: notice.detail)

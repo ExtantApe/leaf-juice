@@ -23,6 +23,7 @@ import ImageIO
 import CryptoKit
 import Foundation
 import Network
+import LeafJuiceAdvisor
 @testable import LeafJuiceCore
 
 // ... --demo-packs <folder> <zip>...  Fills a throwaway folder with these packs and a server, for clicking through the app.
@@ -93,6 +94,9 @@ if let flag = CommandLine.arguments.firstIndex(of: "--demo-invites"), flag + 1 <
 
 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("leafjuice-check-\(UUID().uuidString)", isDirectory: true)
 try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+// Every PrivacyKey made in this run uses a stand-in vault, so the login Keychain is never touched. The real helper
+// program gets a throwaway keychain file instead (see KeyVaultChecks.swift).
+PrivacyKey.defaultVault = { CheckVault.shared }
 // Real-server runs leave hundreds of MB here, so every exit deletes it, and says so if it can't.
 atexit { cleanUpScratch() }
 

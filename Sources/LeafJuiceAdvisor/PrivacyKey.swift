@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 /// Says nothing specific on purpose: these messages reach the AI client.
@@ -110,8 +111,16 @@ public final class PrivacyKey {
 
     public static let tokenPattern = #"\b(?:Player|IP|Server)-[0-9a-f]{8}\b"#
 
+    /// Where every PrivacyKey gets its vault unless it's given one. The checks swap in a stand-in.
+    nonisolated(unsafe) public static var defaultVault: () throws -> KeyVault = { try KeychainVault.forHelper() }
+
     private let directory: URL
-    private var file: URL { directory.appendingPathComponent("key.json") }
+    private let vault: KeyVault
+    private var sealedKey: SymmetricKey?
+    /// The token list, sealed with the key in the Keychain.
+    private var file: URL { directory.appendingPathComponent("key.sealed") }
+    /// The plain file from before 2026-11-10. Read only to seal it, then deleted.
+    private var legacyFile: URL { directory.appendingPathComponent("key.json") }
     private var lockFile: URL { directory.appendingPathComponent("key.lock") }
     private var entries: [Entry] = []
     /// Keyed by kind as well as value, so a player can't merge into an address.
@@ -120,8 +129,9 @@ public final class PrivacyKey {
     private var loadedStamp: String?
 
     /// Refuses to start from a key it can't read, rather than starting afresh and overwriting it.
-    public init(directory: URL = AdvisorPaths.home) throws {
+    public init(directory: URL = AdvisorPaths.home, vault: KeyVault? = nil) throws {
         self.directory = directory
+        do { self.vault = try vault ?? Self.defaultVault() } catch { throw Self.plain(error) }
         try PrivateFiles.ensureDirectory(directory)
         var excluded = URLResourceValues()
         excluded.isExcludedFromBackup = true
@@ -133,19 +143,54 @@ public final class PrivacyKey {
     /// Before every answer, so a damaged key stops things straight away, even if this answer holds no tokens.
     public func verify() throws { try reload() }
 
-    /// Parsing is skipped if the file hasn't changed, but it's always checked.
-    private func reload() throws {
-        var info = stat()
-        let exists = lstat(file.path, &info) == 0
-        let stamp = exists ? "\(info.st_ino)|\(info.st_size)|\(info.st_mode)|\(info.st_nlink)|\(info.st_uid)|\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)|\(info.st_ctimespec.tv_sec).\(info.st_ctimespec.tv_nsec)" : "none"
-        if stamp == loadedStamp { return }
-        guard let data = try PrivateFiles.read(file) else { index([]); loadedStamp = "none"; return }
+    static func plain(_ error: Error) -> AdvisorError {
+        if let problem = error as? KeyVaultProblem { return AdvisorError(problem.message) }
+        return error as? AdvisorError ?? AdvisorError("The Keychain couldn't be used just now, so nothing was shared.")
+    }
+
+    /// The key from the vault, kept for this program's life once it's been read.
+    private func vaultKey(create: Bool) throws -> SymmetricKey {
+        if let sealedKey { return sealedKey }
+        do {
+            let key = try vault.key(create: create)
+            sealedKey = key
+            return key
+        } catch { throw Self.plain(error) }
+    }
+
+    private static func decode(_ data: Data) throws -> [Entry] {
         guard let stored = try? JSONDecoder().decode(Stored.self, from: data), stored.version == 2,
               stored.entries.allSatisfy({ $0.token.range(of: "^" + Self.tokenPattern + "$", options: .regularExpression) != nil }) else {
             throw AdvisorError("The advisor's key file couldn't be read, so nothing was shared.")
         }
-        index(stored.entries)
+        return stored.entries
+    }
+
+    /// Parsing is skipped if the file hasn't changed, but it's always checked. A plain key from before is sealed
+    /// first, and never used as it is: if the Keychain can't be reached, nothing is shared.
+    private func reload() throws {
+        var info = stat()
+        let exists = lstat(file.path, &info) == 0
+        if !exists, lstat(legacyFile.path, &info) == 0 { try sealLegacy() }
+        let sealedNow = lstat(file.path, &info) == 0
+        let stamp = sealedNow ? "\(info.st_ino)|\(info.st_size)|\(info.st_mode)|\(info.st_nlink)|\(info.st_uid)|\(info.st_mtimespec.tv_sec).\(info.st_mtimespec.tv_nsec)|\(info.st_ctimespec.tv_sec).\(info.st_ctimespec.tv_nsec)" : "none"
+        if stamp == loadedStamp { return }
+        guard let data = try PrivateFiles.read(file) else { index([]); loadedStamp = "none"; return }
+        let key = try vaultKey(create: false)
+        guard let plain = SealedFile.open(data, with: key) else {
+            throw AdvisorError("The advisor's key file couldn't be read, so nothing was shared.")
+        }
+        index(try Self.decode(plain))
         loadedStamp = stamp
+        // Sealed already, so a plain copy left by a crash mid-way goes.
+        unlink(legacyFile.path)
+    }
+
+    private func sealLegacy() throws {
+        guard let data = try PrivateFiles.read(legacyFile) else { return }
+        let entries = try Self.decode(data)
+        try PrivateFiles.write(try SealedFile.seal(try JSONEncoder().encode(Stored(entries: entries)), with: vaultKey(create: true)), to: file)
+        unlink(legacyFile.path)
     }
 
     private func index(_ list: [Entry]) {
@@ -254,7 +299,9 @@ public final class PrivacyKey {
         guard let data = try? encoder.encode(Stored(entries: list)) else {
             throw AdvisorError("The advisor's key file couldn't be written, so nothing was shared.")
         }
-        try PrivateFiles.write(data, to: file)
+        var info = stat()
+        let key = try vaultKey(create: lstat(file.path, &info) != 0)
+        try PrivateFiles.write(try SealedFile.seal(data, with: key), to: file)
         index(list)
         loadedStamp = nil
     }
