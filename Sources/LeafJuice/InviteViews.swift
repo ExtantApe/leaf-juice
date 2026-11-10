@@ -41,6 +41,7 @@ struct InvitesCard: View {
                     Callout(tone: .warning, title: "Latchkey \(version) isn't taking invites", detail: "Until its settings pass its checks, it won't make any. The problems above say what to change.")
                 } else {
                     if let publicURL, !publicURL.isEmpty { Fact(label: "Sign-up page", value: publicURL) }
+                    Hint("Signing in to the web pages with /signin needs the latchkey.signin permission, which only operators have until you give it to a group in LuckPerms.")
                     if let made { codeView(made) } else { form }
                 }
                 listView
