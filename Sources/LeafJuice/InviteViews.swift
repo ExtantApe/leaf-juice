@@ -183,3 +183,57 @@ struct InvitesCard: View {
         }
     }
 }
+
+/// Someone's sign-ins on the web pages, through Latchkey. Shown only when Latchkey's `describe` offers it.
+struct WebSignInSection: View {
+    let server: ServerController
+    let name: String
+    @State private var state: LatchkeySignIns?
+    @State private var confirming = false
+    @State private var working = false
+    @State private var result: String?
+    @State private var problem: String?
+
+    var body: some View {
+        Group {
+            switch state {
+            case nil: Hint("Asking Latchkey about web sign-ins…")
+            case .unsupported?: EmptyView()
+            case .problem(let why)?:
+                Text("Web sign-in").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
+                Callout(tone: .warning, title: "Couldn't check web sign-ins", detail: why)
+            case .signedIn(let n)?:
+                Text("Web sign-in").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
+                HStack {
+                    Hint(n == 0 ? "\(name) isn't signed in to the web pages anywhere." : "\(name) is signed in to the web pages on \(n) browser\(n == 1 ? "" : "s").")
+                    Spacer()
+                    if n > 0 {
+                        Button(working ? "Signing Out…" : "Sign Out Everywhere…") { confirming = true }
+                            .buttonStyle(.juice).disabled(working)
+                            .accessibilityLabel("Sign \(name) out of the web pages everywhere")
+                    }
+                }
+            }
+            if let result { Callout(tone: .good, title: result) }
+            if let problem { Callout(tone: .danger, title: problem) }
+        }
+        .task(id: name) { state = await server.latchkeySignIns(name: name) }
+        .confirmationDialog("Sign \(name) out of the web pages everywhere?", isPresented: $confirming) {
+            Button("Sign Out Everywhere", role: .destructive, action: signOut)
+        } message: {
+            Text("They stay on the allowlist with the same profiles, and can sign in again with /signin in the game.")
+        }
+    }
+
+    private func signOut() {
+        working = true; result = nil; problem = nil
+        Task {
+            defer { working = false }
+            switch await server.signOutEverywhere(name: name) {
+            case .success(let n): result = n == 0 ? "\(name) wasn't signed in anywhere." : "Signed \(name) out of \(n) browser\(n == 1 ? "" : "s")."
+            case .failure(let e): problem = e.message
+            }
+            state = await server.latchkeySignIns(name: name)
+        }
+    }
+}

@@ -434,7 +434,7 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
       static void latchkey(String body, String id, String line) throws Exception {
         Files.writeString(Path.of("latchkey-commands.txt"), line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         if (body.equals("describe")) {
-          answer(id, "\"ok\":true,\"format\":1,\"plugin\":\"Latchkey\",\"version\":\"" + (new File("latchkey-v3").exists() ? "0.3.0" : "0.2.0") + "\",\"commands\":[{\"name\":\"invite create\",\"secret\":true},{\"name\":\"invite list\"},{\"name\":\"invite revoke\"},{\"name\":\"status\"}]");
+          answer(id, "\"ok\":true,\"format\":1,\"plugin\":\"Latchkey\",\"version\":\"" + (new File("latchkey-v3").exists() ? "0.3.0" : "0.2.0") + "\",\"commands\":[{\"name\":\"invite create\",\"secret\":true},{\"name\":\"invite list\"},{\"name\":\"invite revoke\"},{\"name\":\"status\"}" + (new File("latchkey-v3").exists() ? ",{\"name\":\"session list\"},{\"name\":\"session revoke\"}" : "") + "]");
         } else if (body.equals("status")) {
           boolean closed = new File("latchkey-closed").exists();
           answer(id, "\"ok\":true,\"landing\":true,\"redemption\":" + !closed + ",\"signIn\":true,\"whitelist\":true,\"publicUrl\":\"https://play.example.test\"," + (new File("latchkey-v3").exists() ? "\"lobby\":true," : "") + "\"problems\":[" + (closed ? "\"online-mode is off, so invites are off.\"" : "") + "]");
@@ -463,6 +463,12 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
           int to = Math.min(from + limit, invites.size());
           String next = to < invites.size() ? (new File("latchkey-bad-cursor").exists() ? "\"--yes\"" : "\"" + to + "\"") : "null";
           answer(id, "\"ok\":true,\"items\":[" + String.join(",", invites.subList(from, to)) + "],\"next\":" + next);
+        } else if (body.startsWith("session list ") || body.startsWith("session revoke ")) {
+          // Made-up counts: MadeUpKid is signed in on two browsers until signed out.
+          String who = body.substring(body.lastIndexOf(' ') + 1);
+          int n = who.equals("MadeUpKid") && !new File("latchkey-signed-out").exists() ? 2 : 0;
+          if (body.startsWith("session list ")) answer(id, "\"ok\":true,\"uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"name\":\"" + who + "\",\"sessions\":" + n);
+          else { new File("latchkey-signed-out").createNewFile(); answer(id, "\"ok\":true,\"uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"name\":\"" + who + "\",\"ended\":" + n); }
         } else if (body.startsWith("invite revoke ")) {
           String which = body.substring(14);
           for (int i = 0; i < invites.size(); i++) if (invites.get(i).contains("\"" + which + "\"")) invites.set(i, invites.get(i).replace("\"pending\"", "\"revoked\""));
@@ -760,8 +766,21 @@ extension Result {
     equal(await c.revokeInvite(list[0].invite), nil, "revoking an invite")
     if case .success(let after) = await c.listInvites() { equal(after.invites.first?.stateText(), "Revoked", "and it shows as revoked") }
 
+    equal(await c.latchkeySignIns(name: "MadeUpKid"), .unsupported, "Latchkey 0.2.0's describe has no session commands, so no web sign-in section")
+    if case .failure = await c.signOutEverywhere(name: "MadeUpKid") { check(true, "") } else { check(false, "and signing out is refused without them") }
+    check(!((try? String(contentsOf: root.appendingPathComponent("latchkey-commands.txt"), encoding: .utf8)) ?? "").contains("session "), "and nothing about sessions is typed")
+
     // Latchkey 0.3.0: the lobby in its status, and the list paged the spec's way.
     write("", root.appendingPathComponent("latchkey-v3"))
+    equal(await c.latchkeySignIns(name: "MadeUpKid"), .signedIn(browsers: 2), "Latchkey 0.3.0 offers session commands: two browsers")
+    equal(await c.latchkeySignIns(name: "MadeUpPal"), .signedIn(browsers: 0), "and none for someone not signed in")
+    equal(await c.latchkeySignIns(name: "Not A Name"), .problem("That account's name isn't valid."), "a bad name is refused before anything is typed")
+    if case .success(let ended) = await c.signOutEverywhere(name: "MadeUpKid") { equal(ended, 2, "signing out everywhere ends both") } else { check(false, "signed out") }
+    equal(await c.latchkeySignIns(name: "MadeUpKid"), .signedIn(browsers: 0), "and afterwards there are none")
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-signed-out"))
+    Modules.shared.set(.pluginCommands, on: false)
+    equal(await c.latchkeySignIns(name: "MadeUpKid"), .unsupported, "with Plugin commands off, nothing is asked")
+    Modules.shared.set(.pluginCommands, on: true)
     defer { try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-v3")) }
     if case .ready(let v3, _, _, _, let lobby) = await c.latchkeyStatus() {
         check(v3 == "0.3.0" && lobby == true, "Latchkey 0.3.0's lobby shows as on")
@@ -974,6 +993,18 @@ private final class PageClient {
         web2.requireOnlineMode = false
         func page() -> String { String(decoding: web2.handle(.init(method: "GET", path: "/", headers: ["host": "links.example.test", "cookie": "\(LatchkeySessions.cookie)=\(cookie)"], body: Data())).body, as: UTF8.self) }
         check(page().contains("Signed in as \(name)"), "Leaf Juice's links page signs them in by Latchkey's cookie")
+
+        if version.hasPrefix("0.2.") {
+            equal(await c.latchkeySignIns(name: name), .unsupported, "Latchkey \(version) has no session commands in describe, so no web sign-in section")
+        } else {
+            // Latchkey 0.3.0 offers session commands: the player sheet's count and Sign Out Everywhere. With this, the
+            // whitelist-remove step below no longer has a session left to end; 0.2.0 runs still prove that path.
+            equal(await c.latchkeySignIns(name: name), .signedIn(browsers: 1), "the player sheet sees one browser signed in")
+            if case .success(let ended) = await c.signOutEverywhere(name: name) { equal(ended, 1, "Sign Out Everywhere ends it") } else { check(false, "signed out everywhere") }
+            await checkUntil(5, "which deletes the session file") { LatchkeySessions.read(plugins: c.paths.plugins, cookieValue: cookie) == nil }
+            check(!page().contains("Signed in as"), "and Leaf Juice's page no longer signs them in")
+            equal(await c.latchkeySignIns(name: name), .signedIn(browsers: 0), "and the count is back to none")
+        }
 
         await expectLine(c, "whitelist remove \(name)", "Removed", "taken off the whitelist")
         await checkUntil(5, "which ends the session file") { LatchkeySessions.read(plugins: c.paths.plugins, cookieValue: cookie) == nil }

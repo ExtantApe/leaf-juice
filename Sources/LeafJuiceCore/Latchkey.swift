@@ -157,6 +157,48 @@ extension ServerController {
     }
 }
 
+/// Someone's browser sign-ins, as Latchkey counts them.
+public enum LatchkeySignIns: Sendable, Equatable {
+    /// This Latchkey's `describe` doesn't offer `session list` and `session revoke`, so nothing is shown.
+    case unsupported
+    case signedIn(browsers: Int)
+    case problem(String)
+}
+
+extension ServerController {
+    static let latchkeySessionCommands = ["session list", "session revoke"]
+
+    /// Whether this Latchkey offers every one of `names`, from its own `describe`. False when it can't be asked.
+    func latchkeyOffers(_ names: [String]) async -> Bool {
+        guard hasLatchkey, Modules.shared.isOn(.pluginCommands), state == .running, process != nil,
+              case .described(let d) = await commands.describe("latchkey") else { return false }
+        let have = Set(d.commands.map(\.name))
+        return names.allSatisfy(have.contains)
+    }
+
+    /// How many browsers someone is signed in on. Nothing is said when Latchkey doesn't offer it.
+    public func latchkeySignIns(name: String) async -> LatchkeySignIns {
+        guard AccountLookup.isValidName(name) else { return .problem("That account's name isn't valid.") }
+        guard await latchkeyOffers(Self.latchkeySessionCommands) else { return .unsupported }
+        let reply = await commands.run("latchkey", ["session", "list"], [.player(name)])
+        guard case .done(let answer) = reply.outcome else { return .problem(Self.plain(reply.outcome, doing: "Asking Latchkey")) }
+        struct Wire: Decodable { let sessions: Int }
+        guard let wire = try? answer.decode(Wire.self), wire.sessions >= 0 else { return .problem("Latchkey's answer couldn't be read.") }
+        return .signedIn(browsers: wire.sessions)
+    }
+
+    /// Ends every browser sign-in someone has. Their allowlist place and profiles stay.
+    public func signOutEverywhere(name: String) async -> Result<Int, UsherProblem> {
+        guard AccountLookup.isValidName(name) else { return .failure(UsherProblem("That account's name isn't valid.")) }
+        guard await latchkeyOffers(Self.latchkeySessionCommands) else { return .failure(UsherProblem("This Latchkey can't sign people out from Leaf Juice.")) }
+        let reply = await commands.run("latchkey", ["session", "revoke"], [.player(name)])
+        guard case .done(let answer) = reply.outcome else { return .failure(UsherProblem(Self.plain(reply.outcome, doing: "Signing \(name) out"))) }
+        struct Wire: Decodable { let ended: Int }
+        guard let wire = try? answer.decode(Wire.self) else { return .failure(UsherProblem("Latchkey signed them out, but its answer couldn't be read. Check again.")) }
+        return .success(wire.ended)
+    }
+}
+
 /// Reads Latchkey's file for one browser session. Format agreed 2026-11-09:
 /// `plugins/Latchkey/sessions/<lowercase hex SHA-256 of the cookie as sent>.json`, folder 0700, file 0600, holding
 /// `{"uuid", "name", "expires", "since"}` in Unix seconds. Unknown keys are ignored. Anything odd is no session.
