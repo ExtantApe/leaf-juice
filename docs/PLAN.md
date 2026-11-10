@@ -3,6 +3,8 @@
 A free, unsigned, native Mac wrapper for Minecraft Java servers. It should be the obvious step
 up from `java -jar paper.jar`, and cost about as little to run.
 
+Open work isn't tracked here. Every open item is a task in the ops task log (D22, D26): K61 to K73 as of 2026-11-10, listed by `~/Code/ops/scripts/task.py list --owner "Minecraft: Leaf Juice App"`. This file keeps the design and the decisions.
+
 ## What's out there, and where this fits
 
 | Tool | Shape | Takeaway |
