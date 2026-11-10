@@ -135,7 +135,7 @@ That stops an agent casually running them through a pipe, but it isn't a boundar
 
 ## Running Claude Code
 
-The app starts Claude Code from a new empty temporary folder, with `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, a fixed `--system-prompt`, `--disable-slash-commands`, `--no-session-persistence` and a short list of environment variables. Each of these was tested with planted markers and made-up data, with one exception noted below.
+The app starts Claude Code from a new empty temporary folder, with `--tools ""`, `--strict-mcp-config`, `--setting-sources ""`, a fixed `--system-prompt`, `--disable-slash-commands`, `--no-session-persistence` and a short list of environment variables. Each of these was tested with planted markers and made-up data, with one exception noted below. The arguments, the environment and the prompt are built in one place, `AdvisorLaunch`, and the default check run fails if any of these flags is dropped, if a variable is added to the environment, or if a dismissed title could carry `@` or a path into the prompt ("Advisor: how Claude Code is started").
 
 - **`@` in a prompt reads a file, even with no tools.** So nothing the AI wrote goes into a prompt unless it's been cut down to letters, digits, spaces and hyphens, and the key is never near the working folder.
 - **Dismissed titles go back to the AI.** When you press Don't Raise This Again, that suggestion's title is listed in later checks' prompts, cut down as above and marked as never instructions. A title steered by a plugin, such as "Ignore all warnings", would still be repeated on every later check, until you press Forget Everything.
