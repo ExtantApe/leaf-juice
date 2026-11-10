@@ -91,7 +91,6 @@ if let flag = CommandLine.arguments.firstIndex(of: "--demo-invites"), flag + 1 <
     exit(0)
 }
 
-
 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("leafjuice-check-\(UUID().uuidString)", isDirectory: true)
 try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
 // Every PrivacyKey made in this run uses a stand-in vault, so the login Keychain is never touched. The real helper
@@ -99,6 +98,20 @@ try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories
 PrivacyKey.defaultVault = { CheckVault.shared }
 // Real-server runs leave hundreds of MB here, so every exit deletes it, and says so if it can't.
 atexit { cleanUpScratch() }
+
+// ... --demo-pack <folder> --i-accept-the-minecraft-eula  A throwaway online-mode server with a pack only joining players get.
+if let flag = CommandLine.arguments.firstIndex(of: "--demo-pack"), flag + 1 < CommandLine.arguments.count {
+    guard CommandLine.arguments.contains("--i-accept-the-minecraft-eula") else {
+        print("--demo-pack needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+        exit(2)
+    }
+    let demo = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+    setenv("LEAFJUICE_HOME", demo.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", demo.appendingPathComponent("servers").path, 1)
+    do { try await runDemoPack(demo) } catch { print("Demo failed: \(error)"); exit(1) }
+    exit(0)
+}
+
 
 func cleanUpScratch() {
     guard FileManager.default.fileExists(atPath: scratch.path) else { return }
@@ -3419,7 +3432,7 @@ func localAddresses() -> [String] {
         c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
         defer { c.stopPackHost(); c.forceStop(); c.stopTicker() }
         let runtimes = await JavaManager.discover()
-        guard let java = JavaManager.best(for: 21, in: runtimes) else { failures.append("no Java 21"); return }
+        guard let java = JavaManager.best(for: 25, in: runtimes) else { failures.append("no Java 25"); return }
         let table = try await ProtocolTable.load(mc: realMC, cache: folder("real-pack-protocol"), java: java.path)
 
         let first = try await ResourcePacks.add(await makePack("Made Up First", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"first"}}"#, "assets/minecraft/textures/block/stone.png": "first"]))
@@ -3443,13 +3456,27 @@ func localAddresses() -> [String] {
         await checkUntil(240, "up: \(c.state)") { c.state == .running }
         check(c.packHostIsListening, "starting the server starts serving")
 
+        check(c.packHostSettings.joiningOnly, "only players joining is on")
+        /// The pack, fetched with the headers the game sends for this player, read from the real server's log.
+        func fetchAsGame(_ name: String, _ offer: String, _ sha1: String) async -> PackURLCheck {
+            let id = (c.playerUUIDs[name] ?? "").replacingOccurrences(of: "-", with: "")
+            return await PackHosting.check(url: offer, expected: sha1, headers: ["X-Minecraft-Username": name, "X-Minecraft-UUID": id, "X-Minecraft-Version": realMC, "User-Agent": "Minecraft Java/\(realMC)"])
+        }
         func offered(_ name: String, expect sha1: String, _ label: String) async throws {
+            await expectLine(c, "whitelist add \(name)", "Added", "\(label): \(name) is whitelisted")
             let bot = try await join(name, c, table, port: port)
             equal(bot.packOffer?.url, url, "\(label): the server offers this address")
             equal(bot.packOffer?.hash, sha1, "\(label): with this hash")
             check(bot.packOffer?.required == true, "\(label): required")
-            let download = await PackHosting.check(url: bot.packOffer?.url ?? "", expected: bot.packOffer?.hash ?? "")
-            check(download.ok, "\(label): what the bot was offered downloads and matches: \(download.summary)")
+            let download = await fetchAsGame(name, bot.packOffer?.url ?? "", bot.packOffer?.hash ?? "")
+            check(download.ok, "\(label): fetched with the game's headers for the joining player, it downloads and matches: \(download.summary)")
+            let bare = await PackHosting.check(url: bot.packOffer?.url ?? "", expected: bot.packOffer?.hash ?? "")
+            equal(bare.outcome, .status(404), "\(label): the same address without them, as from a browser or curl, gets 404")
+            let unlisted = await PackHosting.check(url: bot.packOffer?.url ?? "", expected: bot.packOffer?.hash ?? "",
+                                                   headers: ["X-Minecraft-Username": "MadeUpStranger", "X-Minecraft-UUID": "99999999222243338444555555555555", "X-Minecraft-Version": realMC])
+            equal(unlisted.outcome, .status(404), "\(label): a UUID that isn't whitelisted gets 404")
+            try? await Task.sleep(for: .seconds(3))
+            check(c.players.contains(name), "\(label): the bot is still on the server, not kicked")
             await leave(bot, c)
         }
         try await offered("PackBotOne", expect: oldBuild.sha1, "first join")
@@ -3478,10 +3505,11 @@ func localAddresses() -> [String] {
         await checkUntil(90, "stopped for the exact pack: \(c.state)") { !c.state.isLive }
         await c.start()
         await checkUntil(240, "up with the exact pack: \(c.state)") { c.state == .running }
+        await expectLine(c, "whitelist add PackBotExact", "Added", "PackBotExact is whitelisted")
         let exactBot = try await join("PackBotExact", c, table, port: port)
         equal(exactBot.packOffer?.url, exactURL, "the server offers the exact pack's own address")
         equal(exactBot.packOffer?.hash, exact.sha1, "with the export's hash")
-        let exactDownload = await PackHosting.check(url: exactBot.packOffer?.url ?? "", expected: exactBot.packOffer?.hash ?? "")
+        let exactDownload = await fetchAsGame("PackBotExact", exactBot.packOffer?.url ?? "", exactBot.packOffer?.hash ?? "")
         check(exactDownload.ok, "and the download matches it: \(exactDownload.summary)")
         await leave(exactBot, c)
 
@@ -4484,6 +4512,7 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     } catch { failures.append("resource packs threw: \(error)") }
     await packHostingChecks()
     await exactPackChecks()
+    await packGateChecks()
     await packSongChecks()
     await pluginUpgradeChecks()
     await serverIconChecks()
@@ -4757,6 +4786,8 @@ func madeUpImage(_ w: Int, _ h: Int, to url: URL, type: CFString = "public.png" 
         write("server-port=25599\n", root.appendingPathComponent("server.properties"))
         let c = try await ServerController.adopt(root: root, name: "pack-songs")
         try c.setPackHost(address: "http://127.0.0.1:28769", port: 28769)
+        // These checks are about serving itself; the joining check has its own section (PackGateChecks.swift).
+        do { var s = c.packHostSettings; s.joiningOnly = false; c.packHostSettings = s }
         let before = c.packBuildAddress(recipe: recipe.name, sha1: all.sha1)!, after = c.packBuildAddress(recipe: recipe.name, sha1: less.sha1)!
         check(before != after && after.hasSuffix("/\(less.sha1).zip"), "the per-build address changes with the choice")
 
@@ -4841,6 +4872,8 @@ func madeUpImage(_ w: Int, _ h: Int, to url: URL, type: CFString = "public.png" 
         check(odd.warnings.contains { $0.contains("pack.mcmeta") }, "a zip that isn't a pack is still served, with a warning")
 
         try c.setPackHost(address: "http://127.0.0.1:\(port)", port: port)
+        // These checks are about serving itself; the joining check has its own section (PackGateChecks.swift).
+        do { var s = c.packHostSettings; s.joiningOnly = false; c.packHostSettings = s }
         try c.startPackHost()
         await checkUntil(5, "listening") { c.packHostIsListening }
         let template = c.packAddressTemplate(recipe: "madeup-hud")!
@@ -4987,7 +5020,7 @@ func residentBytes() -> UInt64 {
     check(PackHosting.isOnlyThisMac("http://localhost:1") && PackHosting.isOnlyThisMac("http://127.0.0.1") && !PackHosting.isOnlyThisMac("https://packs.example.net"), "an address only this Mac can use is noticed")
     let tokens = (0..<20).map { _ in PackHosting.newToken() }
     equal(Set(tokens).count, 20, "paths differ"); check(tokens.allSatisfy { $0.count == 64 }, "and are long")
-    equal(PackHosting.parse(Data("GET /a HTTP/1.1\r\nHost: x\r\n\r\n".utf8)), .ok(method: "GET", path: "/a"), "a request is read")
+    equal(PackHosting.parse(Data("GET /a HTTP/1.1\r\nHost: x\r\n\r\n".utf8)), .ok(method: "GET", path: "/a", headers: ["host": "x"]), "a request is read")
     equal(PackHosting.parse(Data("GET /a HTTP/1.1\r\nHost".utf8)), .incomplete, "a partial one waits")
     equal(PackHosting.parse(Data("GARBAGE\r\n\r\n".utf8)), .bad, "nonsense is refused")
     equal(PackHosting.parse(Data(repeating: 65, count: 9000)), .bad, "so is one that never ends")
@@ -5034,6 +5067,8 @@ func residentBytes() -> UInt64 {
         do { try c.startPackHost() } catch { refusedStart = true }
         check(refusedStart, "it needs an address first")
         try c.setPackHost(address: "http://127.0.0.1:\(port)/", port: port)
+        // These checks are about serving itself; the joining check has its own section (PackGateChecks.swift).
+        do { var s = c.packHostSettings; s.joiningOnly = false; c.packHostSettings = s }
         var badPort = false
         do { try c.setPackHost(address: "http://127.0.0.1", port: 80) } catch { badPort = true }
         check(badPort, "a low port is refused")
@@ -5278,6 +5313,8 @@ func residentBytes() -> UInt64 {
         // A port in use is reported rather than silent.
         let rival = try await ServerController.adopt(root: folder("pack-hosting-rival"), name: "rival")
         try rival.setPackHost(address: "http://127.0.0.1", port: port)
+        // These checks are about serving itself; the joining check has its own section (PackGateChecks.swift).
+        do { var s = rival.packHostSettings; s.joiningOnly = false; rival.packHostSettings = s }
         try rival.startPackHost()
         await checkUntil(5, "a taken port is reported") { rival.packHostError != nil || rival.packHostIsListening }
         check(rival.packHostError?.contains("\(port)") == true, "and says which: \(rival.packHostError ?? "listening anyway")")
@@ -5288,6 +5325,8 @@ func residentBytes() -> UInt64 {
         write("server-port=25597\n", movingRoot.appendingPathComponent("server.properties"))
         let moving = try await ServerController.adopt(root: movingRoot, name: "moving")
         try moving.setPackHost(address: "http://127.0.0.1", port: port + 2)
+        // These checks are about serving itself; the joining check has its own section (PackGateChecks.swift).
+        do { var s = moving.packHostSettings; s.joiningOnly = false; moving.packHostSettings = s }
         let beforeMove = moving.packAddress(recipe: "world-one")
         check(beforeMove != nil && beforeMove == moving.packAddress(recipe: "world-one"), "asking twice gives the same address")
         _ = try moving.rename(to: "Moved", moveFolderTo: "pack-hosting-moved")

@@ -597,7 +597,7 @@ struct ResourcePacksPage: View {
             return
         }
         perform("Checking the address…") {
-            let result = await PackHosting.check(url: address, expected: build.sha1)
+            let result = await PackHosting.check(url: address, expected: build.sha1, ticket: server.packCheckTicket())
             if result.ok { write(build) } else { checkFailed = result }
         }
     }

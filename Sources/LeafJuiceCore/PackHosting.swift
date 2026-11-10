@@ -23,7 +23,20 @@ public struct PackHostSettings: Codable, Equatable, Sendable {
     /// Where players reach this Mac, such as https://packs.example.net. It should not be the sign-in page's hostname.
     public var address = ""
     public var recipes: [String: HostedRecipe] = [:]
+    /// Serve packs only to whitelisted players the server shows joining. On unless turned off. See PackGate.
+    public var joiningOnly = true
     public init() {}
+
+    enum CodingKeys: String, CodingKey { case enabled, port, address, recipes, joiningOnly }
+    /// Settings saved before a field existed keep everything else, and get that field's default.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 8766
+        address = try c.decodeIfPresent(String.self, forKey: .address) ?? ""
+        recipes = try c.decodeIfPresent([String: HostedRecipe].self, forKey: .recipes) ?? [:]
+        joiningOnly = try c.decodeIfPresent(Bool.self, forKey: .joiningOnly) ?? true
+    }
     public var portIsUsable: Bool { (1024...65535).contains(port) }
 }
 
@@ -153,21 +166,29 @@ public enum PackHosting {
     public enum Parsed: Equatable, Sendable {
         case incomplete
         case bad
-        case ok(method: String, path: String)
+        case ok(method: String, path: String, headers: [String: String])
     }
 
-    /// Only the first line matters. Nothing here reads a cookie, a query or a body.
+    /// The first line, and headers by lowercase name for the joining check. Nothing here reads a cookie, a query or a body.
     public static func parse(_ data: Data, limit: Int = 8192) -> Parsed {
         guard let end = data.range(of: Data("\r\n\r\n".utf8)) else { return data.count > limit ? .bad : .incomplete }
         guard end.lowerBound <= limit, let head = String(data: data[data.startIndex..<end.lowerBound], encoding: .utf8) else { return .bad }
         let first = head.split(separator: "\r\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
         let parts = first.split(separator: " ", omittingEmptySubsequences: false)
         guard parts.count == 3, parts[2].hasPrefix("HTTP/1."), parts[1].hasPrefix("/") else { return .bad }
-        return .ok(method: String(parts[0]), path: String(parts[1]))
+        var headers: [String: String] = [:]
+        for line in head.split(separator: "\r\n").dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { return .bad }
+            let name = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+            // A header sent twice is ambiguous, so the first one stands and a second makes the whole request bad.
+            guard !name.isEmpty, headers[name] == nil else { return .bad }
+            headers[name] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        }
+        return .ok(method: String(parts[0]), path: String(parts[1]), headers: headers)
     }
 
     /// Downloads it the way a player's game would, with nothing remembered, and compares what arrives.
-    public static func check(url text: String, expected: String) async -> PackURLCheck {
+    public static func check(url text: String, expected: String, ticket: String? = nil, headers extra: [String: String] = [:]) async -> PackURLCheck {
         guard isFullAddress(text), let url = URL(string: text) else { return PackURLCheck(outcome: .failed("That isn't a full web address.")) }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
@@ -175,6 +196,9 @@ public enum PackHosting {
         configuration.httpShouldSetCookies = false
         configuration.timeoutIntervalForRequest = 30
         configuration.timeoutIntervalForResource = 600
+        var headers = extra
+        if let ticket { headers[PackGate.checkHeader] = ticket }
+        configuration.httpAdditionalHeaders = headers
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
         do {
@@ -206,6 +230,9 @@ public final class PackHost: @unchecked Sendable {
     private let queue = DispatchQueue(label: "leafjuice.packs")
     private let properties: URL
     private let allowed: @MainActor @Sendable () -> Bool
+    /// Asked on this host's own queue, before anything about a pack is sent. False is a plain 404.
+    private let admit: @Sendable ([String: String]) -> Bool
+    public let tickets = PackCheckTickets()
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: NWConnection] = [:]
     private var routes: [PackRoute]
@@ -213,10 +240,12 @@ public final class PackHost: @unchecked Sendable {
     private var listening = false
     public var onFailure: (@MainActor @Sendable (String) -> Void)?
 
-    public init(routes: [PackRoute], properties: URL, allowed: @escaping @MainActor @Sendable () -> Bool = { true }) {
+    public init(routes: [PackRoute], properties: URL, allowed: @escaping @MainActor @Sendable () -> Bool = { true },
+                admit: @escaping @Sendable ([String: String]) -> Bool = { _ in true }) {
         self.routes = routes
         self.properties = properties
         self.allowed = allowed
+        self.admit = admit
     }
 
     public var isListening: Bool {
@@ -308,26 +337,31 @@ public final class PackHost: @unchecked Sendable {
             case .bad:
                 exchange.answered = true
                 self.finish(status: 400, reason: "Bad Request", head: false, connection)
-            case let .ok(method, path):
+            case let .ok(method, path, headers):
                 exchange.answered = true
                 let check = self.allowed
                 Task { @MainActor in
                     let on = check()
                     self.queue.async {
                         guard on else { self.stop(); return }
-                        self.answer(method: method, path: path, connection, exchange)
+                        self.answer(method: method, path: path, headers: headers, connection, exchange)
                     }
                 }
             }
         }
     }
 
-    private func answer(method: String, path: String, _ connection: NWConnection, _ exchange: Exchange) {
+    private func answer(method: String, path: String, headers: [String: String], _ connection: NWConnection, _ exchange: Exchange) {
         guard method == "GET" || method == "HEAD" else {
             finish(status: 405, reason: "Method Not Allowed", head: false, connection, extra: "Allow: GET, HEAD\r\n")
             return
         }
         let head = method == "HEAD"
+        // First, so a refused request learns nothing, not even whether an address exists.
+        guard tickets.redeem(headers[PackGate.checkHeader]) || admit(headers) else {
+            finish(status: 404, reason: "Not Found", head: head, connection)
+            return
+        }
         let text = try? String(contentsOf: properties, encoding: .utf8)
         guard let (route, asked) = PackHosting.match(path: path, routes: routes) else {
             finish(status: 404, reason: "Not Found", head: head, connection)
@@ -411,6 +445,17 @@ extension ServerController {
     }
 
     public var packHostIsListening: Bool { packHost?.isListening == true }
+
+    /// A one-time pass for this app's own check of a pack address. Nil when nothing is being served from here.
+    public func packCheckTicket() -> String? { packHost?.isListening == true ? packHost?.tickets.issue() : nil }
+
+    /// Turns the joining check on or off. Serving restarts so the change applies to the next request.
+    public func setPackJoiningOnly(_ on: Bool) throws {
+        var settings = packHostSettings
+        settings.joiningOnly = on
+        packHostSettings = settings
+        if packHost != nil { try startPackHost() }
+    }
 
     /// Gives the recipe its random path the first time it's asked for.
     @discardableResult
@@ -506,7 +551,10 @@ extension ServerController {
         var settings = packHostSettings
         guard !settings.address.isEmpty else { throw LeafError("Enter the address players reach first.") }
         guard settings.portIsUsable else { throw LeafError("The port has to be between 1024 and 65535.") }
-        let host = PackHost(routes: [], properties: paths.properties, allowed: { Modules.shared.isOn(.resourcePacks) })
+        let root = paths.root
+        let gated = settings.joiningOnly
+        let host = PackHost(routes: [], properties: paths.properties, allowed: { Modules.shared.isOn(.resourcePacks) },
+                            admit: { headers in !gated || PackGate.admits(headers: headers, root: root) })
         host.onFailure = { [weak self] message in
             self?.packHostError = message
             self?.packHost = nil

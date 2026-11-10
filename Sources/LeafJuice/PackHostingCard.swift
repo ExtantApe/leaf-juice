@@ -81,7 +81,20 @@ struct PackHostingCard: View {
             }
             if PackHosting.isOnlyThisMac(settings.address) { Hint("This address only works on this Mac, so it's good for testing and no use to players.") }
             Hint("Leaf Juice listens on this Mac only, so something like Caddy has to carry it through your tunnel. Use a different hostname from any sign-in page.")
-            Hint("The game can't sign in, so a long random path is all that hides a pack, and every player's game is given it. It runs only while Leaf Juice is open, uses your upload speed, and keeps no record of who downloads.")
+            Toggle(isOn: Binding(get: { settings.joiningOnly }, set: { on in
+                do { try server.setPackJoiningOnly(on); error = nil } catch { self.error = error.localizedDescription }
+                reload()
+            })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Only players joining this server").foregroundStyle(Juice.ink)
+                    Text("A pack goes only to a game that names a whitelisted player the server shows connecting in the last 5 minutes, or online now. Anyone else, a browser included, is told there's nothing there.")
+                        .font(.caption).foregroundStyle(Juice.muted).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if settings.joiningOnly {
+                Hint("This stops casual downloads and shared links. A game's request can be faked, so someone who knows a whitelisted player's name and ID could still get the pack while that player is joining. Only players listed in the whitelist get it, whether or not the whitelist is switched on.")
+            }
+            Hint("The game can't sign in, so a long random path hides a pack, and every player's game is given it. It runs only while Leaf Juice is open, uses your upload speed, and keeps no record of who downloads.")
         }
     }
 
@@ -198,7 +211,7 @@ struct PackHostingCard: View {
         guard let url, let sha1 else { return }
         checking = name
         Task {
-            results[name] = await PackHosting.check(url: url, expected: sha1)
+            results[name] = await PackHosting.check(url: url, expected: sha1, ticket: server.packCheckTicket())
             checking = nil
         }
     }
