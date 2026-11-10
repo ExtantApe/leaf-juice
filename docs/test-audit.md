@@ -2,6 +2,36 @@
 
 Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-10: packs served only to players joining
+
+The owner's request of 2026-11-10 (see `docs/PLAN.md`). Default run: 2710 passed. With `--real-pack` (throwaway Paper 26.3, bots): 2762 passed.
+
+Covered:
+
+- **The game's headers.** A name, a dashed or undashed UUID, and a version are read. Nine bad shapes are refused.
+- **The server's log lines.** A UUID counts only from the login thread, and joins and leaves only from the server thread.
+  - Chat can't vouch for someone or put them online, and neither can a line from another thread or one with text added.
+  - A line from 23:59 read at 00:02 counts as three minutes old.
+- **The decision.**
+  - A player gets the pack 1 or 4.5 minutes after connecting, and while online.
+  - Six minutes after connecting, or once they've left, they don't.
+  - None of these get it: another name with that UUID, a UUID not on the whitelist, a player who's joining but isn't on the whitelist, an unreadable or damaged whitelist, an unreadable log, or no headers.
+- **The real listener on 127.0.0.1.**
+  - A joining player gets the pack.
+  - These all get the same 404 as a wrong address: curl with no headers, a browser, a UUID not on the whitelist, the `.sha1` address, a HEAD request, a stale player, and no log to read.
+  - A header sent twice is a bad request.
+  - The app's one-time pass works once, a made-up pass is refused, and a pass lapses after two minutes.
+  - Turned off, anyone with the address gets the pack. Turned back on, it's refused again.
+  - Settings saved before this existed keep their addresses and get the check switched on.
+- **Real Paper 26.3 with bots,** made-up offline accounts, deleted after. Each whitelisted bot that joined fetched the pack with the game's headers, built from the real server's own log, across a restart and for an exact pack. The same address without the headers, and for an unlisted UUID, got 404. The bot was still on the server three seconds later.
+- **The older serving checks** turn the gate off, so they still test serving itself.
+- **Mutations:** letting everyone through failed 4 checks, and dropping the time limit failed 4.
+
+Gaps skipped:
+
+- **A real 26.x game client.** That it sends the three headers comes from how the game has worked since 1.20.3. The bots send them because the check does. This is owner test T28, with `--demo-pack`. If the headers turn out different, every player would be refused the pack.
+- **Through the playit tunnel.** It's plain TCP, so headers pass unchanged, but that wasn't tried. Pack serving on the real server waits on the owner anyway.
+
 ## 2026-11-10: the Advisor's token list, sealed with a key in the Keychain
 
 The owner's decision of 2026-11-10 (see `docs/PLAN.md`). Default run: 2659 passed.
