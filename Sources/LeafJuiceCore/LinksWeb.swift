@@ -203,6 +203,15 @@ public final class LinksWeb {
     }
 
     private func session(for request: Request, now: Date) -> Session? {
+        if let own = ownSession(for: request, now: now) { return own }
+        // Latchkey's sign-in, read from its session file on every request. The file is Latchkey's, so nothing is written here.
+        guard let value = LatchkeySessions.cookieValue(request.headers["cookie"]),
+              let found = LatchkeySessions.read(plugins: paths.plugins, cookieValue: value, now: now),
+              accessProblem(found.uuid) == nil else { return nil }
+        return Session(uuid: found.uuid, name: found.name, started: found.since, expires: found.expires)
+    }
+
+    private func ownSession(for request: Request, now: Date) -> Session? {
         guard let secret = Self.cookieValue(request.headers["cookie"]) else { return nil }
         let key = Self.hash(secret)
         guard let found = sessions[key] else { return nil }

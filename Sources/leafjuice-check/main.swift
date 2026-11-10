@@ -77,6 +77,20 @@ let realMC: String = {
     return CommandLine.arguments[flag + 1]
 }()
 
+// ... --demo-invites <folder> --i-accept-the-minecraft-eula  A throwaway server with Usher, Latchkey and made-up players.
+if let flag = CommandLine.arguments.firstIndex(of: "--demo-invites"), flag + 1 < CommandLine.arguments.count {
+    guard CommandLine.arguments.contains("--i-accept-the-minecraft-eula") else {
+        print("--demo-invites needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+        exit(2)
+    }
+    let demo = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+    setenv("LEAFJUICE_HOME", demo.appendingPathComponent("home").path, 1)
+    setenv("LEAFJUICE_SERVERS", demo.appendingPathComponent("servers").path, 1)
+    do { try await runDemoInvites(demo) } catch { print("Demo failed: \(error)"); exit(1) }
+    exit(0)
+}
+
+
 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("leafjuice-check-\(UUID().uuidString)", isDirectory: true)
 try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
 // Real-server runs leave hundreds of MB here, so every exit deletes it, and says so if it can't.
@@ -2405,6 +2419,13 @@ if let flag = CommandLine.arguments.firstIndex(of: "--real-upgrade-plugins"), fl
         await runRealUpgradePlugins(madeUp: CommandLine.arguments[flag + 1])
     } else {
         print("Skipping --real-upgrade-plugins: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
+if let flag = CommandLine.arguments.firstIndex(of: "--real-invites"), flag + 2 < CommandLine.arguments.count {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealInvites(usher: URL(fileURLWithPath: CommandLine.arguments[flag + 1]), latchkey: URL(fileURLWithPath: CommandLine.arguments[flag + 2]))
+    } else {
+        print("Skipping --real-invites: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
     }
 }
 if let flag = CommandLine.arguments.firstIndex(of: "--real-usher"), flag + 1 < CommandLine.arguments.count {

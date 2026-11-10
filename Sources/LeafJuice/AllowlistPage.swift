@@ -31,6 +31,7 @@ struct AllowlistPage: View {
             if let message { Callout(tone: .danger, title: message) }
             if server.hasUsher { usherNote }
             addCard
+            if server.hasLatchkey { InvitesCard(server: server, profiles: server.hasUsher ? usherProfiles : nil) }
             if !waiting.isEmpty { waitingCard }
             if usherProfiles != nil, !attempts.isEmpty { attemptsCard }
             listCard

@@ -20,6 +20,8 @@ private let head = "[12:00:00 INFO]: "
     onceFileChecks()
     section("Plugin commands: the module switch")
     moduleSwitchChecks()
+    section("Latchkey session files")
+    latchkeySessionChecks()
     section("Plugin commands: a fake plugin through a real console")
     await fakePluginServerChecks()
 }
@@ -368,6 +370,7 @@ private let head = "[12:00:00 INFO]: "
         if case .notConfirmed = quiet.outcome { check(true, "") } else { check(false, "a plugin that never answers is 'not confirmed': \(quiet.outcome)") }
 
         await usherThroughFake(c, root: root)
+        await latchkeyThroughFake(c, root: root)
 
         store.set(.pluginCommands, on: false)
         let typed = c.console.count
@@ -424,6 +427,44 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
           answer(id, "\"ok\":false,\"error\":{\"code\":\"unknown-command\",\"message\":\"\"}");
         }
       }
+      static java.util.List<String> invites = new java.util.ArrayList<>();
+      static String invite(String id, String name, String profiles, String status) {
+        return "{\"invite\":\"" + id + "\",\"uuid\":\"AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE\",\"name\":\"" + name + "\",\"profiles\":[" + profiles + "],\"confirmed\":[],\"status\":\"" + status + "\",\"created\":1800000000,\"expires\":4000000000}";
+      }
+      static void latchkey(String body, String id, String line) throws Exception {
+        Files.writeString(Path.of("latchkey-commands.txt"), line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        if (body.equals("describe")) {
+          answer(id, "\"ok\":true,\"format\":1,\"plugin\":\"Latchkey\",\"version\":\"0.2.0\",\"commands\":[{\"name\":\"invite create\",\"secret\":true},{\"name\":\"invite list\"},{\"name\":\"invite revoke\"},{\"name\":\"status\"}]");
+        } else if (body.equals("status")) {
+          boolean closed = new File("latchkey-closed").exists();
+          answer(id, "\"ok\":true,\"landing\":true,\"redemption\":" + !closed + ",\"signIn\":true,\"whitelist\":true,\"publicUrl\":\"https://play.example.test\",\"problems\":[" + (closed ? "\"online-mode is off, so invites are off.\"" : "") + "]");
+        } else if (body.startsWith("invite create ")) {
+          String[] p = body.split(" ");
+          if (p[3].contains("grown") && !line.contains("--yes bridge")) {
+            answer(id, "\"ok\":false,\"needs\":[{\"id\":\"bridge\",\"question\":\"This puts them in two chat circles. Go ahead?\"}]");
+            return;
+          }
+          String profiles = p[3].equals("none") ? "" : "\"" + String.join("\",\"", p[3].split(",")) + "\"";
+          String inviteId = String.format("%08x", invites.size() + 0x1a2b3c4d);
+          invites.add(invite(inviteId, p[2], profiles, "pending"));
+          Path dir = Path.of("plugins/Latchkey/once");
+          Files.createDirectories(dir);
+          Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"));
+          Path tmp = Files.createTempFile(dir, "w", ".tmp", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+          Files.writeString(tmp, "{\"id\":\"" + id + "\",\"kind\":\"invite-code\",\"value\":\"QW3RTY\",\"expires\":4000000000}");
+          Files.move(tmp, dir.resolve(id + ".json"), StandardCopyOption.ATOMIC_MOVE);
+          String fields = invites.get(invites.size() - 1);
+          answer(id, "\"ok\":true,\"secretFile\":\"once/" + id + ".json\"," + fields.substring(1, fields.length() - 1));
+        } else if (body.startsWith("invite list")) {
+          answer(id, "\"ok\":true,\"invites\":[" + String.join(",", invites) + "],\"next\":null");
+        } else if (body.startsWith("invite revoke ")) {
+          String which = body.substring(14);
+          for (int i = 0; i < invites.size(); i++) if (invites.get(i).contains("\"" + which + "\"")) invites.set(i, invites.get(i).replace("\"pending\"", "\"revoked\""));
+          answer(id, "\"ok\":true,\"invite\":\"" + which + "\",\"status\":\"revoked\"");
+        } else {
+          answer(id, "\"ok\":false,\"error\":{\"code\":\"unknown-command\",\"message\":\"\"}");
+        }
+      }
       public static void main(String[] args) throws Exception {
         ServerSocket socket = new ServerSocket(25596, 50, InetAddress.getLoopbackAddress());
         log("Starting minecraft server version 26.3");
@@ -434,6 +475,7 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
           if (line.equals("stop")) { log("Stopping the server"); socket.close(); System.exit(0); }
           int at = line.lastIndexOf(" --json ");
           if (line.startsWith("usher ") && at >= 0) { usher(line.substring(6, at), line.substring(at + 8), line); continue; }
+          if (line.startsWith("latchkey ") && at >= 0) { latchkey(line.substring(9, at), line.substring(at + 8), line); continue; }
           if (!line.startsWith("fakeplug ") || at < 0) { log("Unknown command"); continue; }
           String id = line.substring(at + 8);
           String body = line.substring(9, at);
@@ -655,4 +697,318 @@ extension Result {
     let log = (try? String(contentsOf: root.appendingPathComponent("plugins/Usher/changes.log"), encoding: .utf8)) ?? ""
     check(log.contains("leaf-juice"), "Usher's change log says the changes came from Leaf Juice")
     if case .success(let list) = await c.usherAttempts() { print("  attempts: \(list.count)") } else { check(false, "attempts read on real Usher") }
+}
+
+/// Invites through a fake Latchkey: the code comes only from the once-file, questions hold the invite back.
+@MainActor private func latchkeyThroughFake(_ c: ServerController, root: URL) async {
+    check(!c.hasLatchkey, "no Latchkey jar, no invites card")
+    equal(await c.latchkeyStatus(), .notInstalled, "and no Latchkey status")
+    makeJarInPlugins(root, "Latchkey")
+    await c.refreshPlugins()
+    defer { try? FileManager.default.removeItem(at: root.appendingPathComponent("plugins/Latchkey.jar")) }
+
+    Modules.shared.set(.pluginCommands, on: false)
+    if case .unavailable(let why) = await c.latchkeyStatus() { check(why.contains("Plugin commands"), "switched off, invites say how to turn them on") } else { check(false, "switched off is unavailable") }
+    Modules.shared.set(.pluginCommands, on: true)
+
+    write("", root.appendingPathComponent("latchkey-closed"))
+    if case .ready(_, let works, _, let problems) = await c.latchkeyStatus() {
+        check(!works && problems == ["online-mode is off, so invites are off."], "Latchkey not taking invites is shown, with its reason")
+    } else { check(false, "closed Latchkey read") }
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-closed"))
+    guard case .ready(let version, true, let url, _) = await c.latchkeyStatus() else { check(false, "the fake Latchkey is ready"); return }
+    check(version == "0.2.0" && url == "https://play.example.test", "ready, with its version and sign-up page")
+
+    for (label, result) in [("a bad name", await c.createInvite(name: "Not A Name", profiles: [], days: 14)),
+                            ("0 days", await c.createInvite(name: "MadeUpKid", profiles: [], days: 0)),
+                            ("31 days", await c.createInvite(name: "MadeUpKid", profiles: [], days: 31)),
+                            ("a profile called none", await c.createInvite(name: "MadeUpKid", profiles: ["none"], days: 14))] {
+        if case .failed = result { check(true, "") } else { check(false, "refused before anything is typed: \(label)") }
+    }
+    check(!FileManager.default.fileExists(atPath: root.appendingPathComponent("latchkey-commands.txt").path) ||
+          !((try? String(contentsOf: root.appendingPathComponent("latchkey-commands.txt"), encoding: .utf8)) ?? "").contains("invite create"), "and none of them reached Latchkey")
+
+    let consoleBefore = c.console.count
+    guard case .made(let lobby) = await c.createInvite(name: "MadeUpKid", profiles: [], days: 14) else { check(false, "a lobby-only invite is made"); return }
+    equal(lobby.code, "QW3RTY", "the code is read from Latchkey's once-file")
+    check(lobby.invite.profiles.isEmpty && lobby.invite.isOpen(), "lobby only, and waiting")
+    check(!c.console.dropFirst(consoleBefore).contains { $0.text.contains("QW3RTY") }, "the code never reaches the console")
+    check(((try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("plugins/Latchkey/once").path)) ?? []).isEmpty, "and its file is gone")
+
+    if case .questions(let qs) = await c.createInvite(name: "MadeUpKid", profiles: ["young", "grown"], days: 7) {
+        equal(qs.map(\.id), ["bridge"], "an invite with a risky mix asks first")
+        if case .made(let new) = await c.createInvite(name: "MadeUpKid", profiles: ["young", "grown"], days: 7, yes: ["bridge"]) {
+            equal(new.invite.profiles, ["young", "grown"], "and is made with the yes, with its profiles")
+        } else { check(false, "made with the yes") }
+    } else { check(false, "risky invite asks") }
+    let typed = (try? String(contentsOf: root.appendingPathComponent("latchkey-commands.txt"), encoding: .utf8)) ?? ""
+    check(typed.contains("latchkey invite create MadeUpKid none 14d --json "), "the command typed for a lobby-only invite")
+    check(typed.contains("latchkey invite create MadeUpKid young,grown 7d --yes bridge --json "), "and for one with profiles and a yes")
+
+    guard case .success(let list) = await c.listInvites() else { check(false, "invites listed"); return }
+    equal(list.count, 2, "both invites listed, from Latchkey 0.2.0's own list key")
+    equal(await c.revokeInvite("not-an-id"), "That isn't an invite id.", "a bad invite id is refused before anything is typed")
+    equal(await c.revokeInvite(list[0].invite), nil, "revoking an invite")
+    if case .success(let after) = await c.listInvites() { equal(after.first?.stateText(), "Revoked", "and it shows as revoked") }
+}
+
+/// Latchkey's session files, read the agreed way, and the links page signing someone in by them.
+@MainActor private func latchkeySessionChecks() {
+    let root = folder("latchkey-sessions")
+    let paths = ServerPaths(root: root)
+    let sessions = paths.plugins.appendingPathComponent("Latchkey/sessions", isDirectory: true)
+    try? FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+    chmod(sessions.path, 0o700)
+    let uuid = "00000000-0000-4000-8000-0000000000aa"
+    let now = Date()
+    func sha(_ s: String) -> String { LinksWeb.hash(s) }
+    @discardableResult func plant(_ cookie: String, _ json: String, mode: mode_t = 0o600) -> URL {
+        let url = sessions.appendingPathComponent("\(sha(cookie)).json")
+        try? Data(json.utf8).write(to: url)
+        chmod(url.path, mode)
+        return url
+    }
+    func body(uuid u: String = uuid, name: String = "MadeUp", expires: Date = now.addingTimeInterval(3600), since: Date? = now.addingTimeInterval(-60)) -> String {
+        var j = "{\"uuid\":\"\(u)\",\"name\":\"\(name)\",\"expires\":\(Int(expires.timeIntervalSince1970))"
+        if let since { j += ",\"since\":\(Int(since.timeIntervalSince1970))" }
+        return j + ",\"later\":true}"
+    }
+    func read(_ cookie: String) -> LatchkeySessions.Session? { LatchkeySessions.read(plugins: paths.plugins, cookieValue: cookie, now: now) }
+
+    let good = LinksWeb.randomSecret()
+    plant(good, body())
+    check(read(good).map { $0.uuid == uuid && $0.name == "MadeUp" } ?? false, "a session file is read by the hash of the cookie as sent, with unknown keys ignored")
+    let cases: [(String, String, mode_t)] = [
+        ("no since", body(since: nil), 0o600),
+        ("expiry before sign-in", body(expires: now.addingTimeInterval(60), since: now.addingTimeInterval(120)), 0o600),
+        ("more than 30 days from sign-in", body(expires: now.addingTimeInterval(3600), since: now.addingTimeInterval(-31 * 86400)), 0o600),
+        ("run out", body(expires: now.addingTimeInterval(-1)), 0o600),
+        ("signed in in the future", body(expires: now.addingTimeInterval(7200), since: now.addingTimeInterval(3600)), 0o600),
+        ("a uuid in capitals", body(uuid: uuid.uppercased()), 0o600),
+        ("a bad name", body(name: "Not A Name"), 0o600),
+        ("not JSON", "nope", 0o600),
+        ("readable by others", body(), 0o644),
+    ]
+    for (label, json, mode) in cases {
+        let cookie = LinksWeb.randomSecret()
+        plant(cookie, json, mode: mode)
+        check(read(cookie) == nil, "no session: \(label)")
+    }
+    let linkTarget = folder("latchkey-elsewhere").appendingPathComponent("s.json")
+    write(body(), linkTarget); chmod(linkTarget.path, 0o600)
+    let linked = LinksWeb.randomSecret()
+    try? FileManager.default.createSymbolicLink(at: sessions.appendingPathComponent("\(sha(linked)).json"), withDestinationURL: linkTarget)
+    check(read(linked) == nil, "no session: a link to a file elsewhere")
+    check(read(LinksWeb.randomSecret()) == nil, "no session: no file")
+    chmod(sessions.path, 0o755)
+    check(read(good) == nil, "no session: a folder others can look in")
+    chmod(sessions.path, 0o700)
+    check(LatchkeySessions.cookieValue("a=b; latchkey_session=\(good); c=d") == good, "the cookie is found among others")
+    check(LatchkeySessions.cookieValue("latchkey_session=../../x") == nil && LatchkeySessions.cookieValue("latchkey_session=short") == nil, "an odd cookie isn't used")
+
+    // The links page signs someone in by Latchkey's cookie, checking the allowlist and bans itself.
+    write("online-mode=true\n", paths.properties)
+    write(#"[{"uuid":"\#(uuid)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+    var settings = LinksPageSettings(); settings.address = "https://links.example.test/"
+    let web = LinksWeb(paths: paths, settings: { settings }, content: { LinksPageContent(serverVersion: "Paper 26.3", plugins: []) })
+    func page(_ cookie: String) -> String {
+        String(decoding: web.handle(.init(method: "GET", path: "/", headers: ["host": "links.example.test", "cookie": "latchkey_session=\(cookie)"], body: Data()), now: now).body, as: UTF8.self)
+    }
+    check(page(good).contains("Signed in as MadeUp"), "the links page signs someone in by Latchkey's session")
+    write(#"[{"uuid":"\#(uuid)","name":"MadeUp"}]"#, root.appendingPathComponent("banned-players.json"))
+    check(!page(good).contains("Signed in as"), "but not once they're banned")
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("banned-players.json"))
+    write("[]", root.appendingPathComponent("whitelist.json"))
+    check(!page(good).contains("Signed in as"), "or off the allowlist")
+    write(#"[{"uuid":"\#(uuid)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
+    try? FileManager.default.removeItem(at: sessions.appendingPathComponent("\(sha(good)).json"))
+    check(!page(good).contains("Signed in as"), "or once Latchkey deletes the file")
+    plant(good, body(expires: now.addingTimeInterval(86400 * 2)))
+    check(page(good).contains("Signed in as MadeUp"), "an extended session counts at once, since the file is read every time")
+}
+
+/// A tiny browser for Latchkey's page, using curl, keeping cookies itself (they're Secure, and this is plain HTTP on 127.0.0.1).
+private final class PageClient {
+    let port: Int
+    var cookies: [String: String] = [:]
+    init(port: Int) { self.port = port }
+
+    func request(_ path: String, form: [String: String]? = nil) async throws -> (status: Int, setCookies: [String], body: String) {
+        var args = ["-s", "-i", "--max-time", "15", "http://127.0.0.1:\(port)\(path)"]
+        if !cookies.isEmpty { args += ["-H", "Cookie: " + cookies.map { "\($0.key)=\($0.value)" }.joined(separator: "; ")] }
+        if let form {
+            for (k, v) in form { args += ["--data-urlencode", "\(k)=\(v)"] }
+        }
+        let r = try await Tool.run("/usr/bin/curl", args)
+        let text = r.out.replacingOccurrences(of: "\r\n", with: "\n")
+        let parts = text.components(separatedBy: "\n\n")
+        let head = parts.first ?? "", body = parts.dropFirst().joined(separator: "\n\n")
+        let lines = head.split(separator: "\n").map(String.init)
+        let status = Int(lines.first?.split(separator: " ").dropFirst().first ?? "") ?? 0
+        let set = lines.filter { $0.lowercased().hasPrefix("set-cookie:") }.map { String($0.dropFirst(11)).trimmingCharacters(in: .whitespaces) }
+        for c in set {
+            let kv = c.split(separator: ";").first.map(String.init) ?? ""
+            guard let eq = kv.firstIndex(of: "=") else { continue }
+            let k = String(kv[..<eq]), v = String(kv[kv.index(after: eq)...])
+            if v.isEmpty || c.contains("Max-Age=0") { cookies[k] = nil } else { cookies[k] = v }
+        }
+        return (status, set, body)
+    }
+
+    func csrf(_ path: String) async throws -> String {
+        let page = try await request(path).body
+        guard let r = page.range(of: #"name="csrf" value=""#), let end = page[r.upperBound...].firstIndex(of: "\"") else { throw LeafError("no form on \(path)") }
+        return String(page[r.upperBound..<end])
+    }
+}
+
+/// Real Paper with LuckPerms, Usher and Latchkey: an invite made through Leaf Juice is redeemed on Latchkey's page,
+/// a bot signs in, Leaf Juice reads the session file, and taking them off the whitelist ends it. Made-up offline accounts.
+@MainActor func runRealInvites(usher: URL, latchkey: URL) async {
+    section("REAL INVITES THROUGH LATCHKEY AND USHER (EULA accepted by the person running this)")
+    do {
+        let port = 25593, web = 25694
+        let root = folder("real-invites")
+        let c = try await buildInvitesServer(root: root, port: port, web: web, usher: usher, latchkey: latchkey)
+        defer { c.forceStop(); c.stopTicker() }
+        Modules.shared.set(.pluginCommands, on: true)
+        defer { Modules.shared.set(.pluginCommands, on: false) }
+        let runtimes = await JavaManager.discover()
+        guard let java = JavaManager.best(for: 25, in: runtimes) else { failures.append("no Java 25"); return }
+        let table = try await ProtocolTable.load(mc: realMC, cache: folder("real-invites-protocol"), java: java.path)
+
+        await c.start()
+        await checkUntil(240, "Paper \(realMC) with Usher and Latchkey runs (last: \(c.console.suffix(3).map(\.text)))") { c.state == .running }
+        await c.refreshPlugins()
+        for group in ["young", "grown"] { await expectLine(c, "lp creategroup \(group)", group, "made-up group \(group)") }
+        _ = await c.commands.run("usher", ["reload"])
+
+        guard case .ready(let version, let works, let url, let problems) = await c.latchkeyStatus() else { check(false, "real Latchkey is ready"); return }
+        print("  Latchkey \(version), invites \(works), page \(url ?? "none"), problems \(problems)")
+        check(works, "Latchkey takes invites on this throwaway setup")
+        guard case .ready(_, let profiles, _, _) = await c.usherStatus() else { check(false, "Usher ready"); return }
+        check(profiles.contains { $0.id == "young" }, "Usher's young profile is there")
+
+        let name = "MadeUpKid", uuid = PlayerFiles.offlineUUID(name: name)
+        let consoleBefore = c.console.count
+        guard case .made(let invite) = await c.createInvite(name: name, profiles: ["young"], days: 7) else { check(false, "an invite with a profile is made"); return }
+        print("  invite \(invite.invite.invite) for \(invite.invite.name), \(invite.invite.profiles), code length \(invite.code.count)")
+        check(invite.code.count == 6, "a six-character code comes back, from the once-file")
+        check(!c.console.dropFirst(consoleBefore).contains { $0.text.contains(invite.code) }, "the code never reaches the console")
+        let logText = (try? String(contentsOf: root.appendingPathComponent("logs/latest.log"), encoding: .utf8)) ?? ""
+        check(!logText.contains(invite.code), "or latest.log")
+        check(((try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("plugins/Latchkey/once").path)) ?? []).isEmpty, "and the once-file is gone")
+
+        let risky = await c.createInvite(name: "MadeUpOther", profiles: ["young", "grown"], days: 7)
+        if case .questions(let qs) = risky { check(qs.contains { $0.id == "bridge" }, "Usher's bridge question comes back through Latchkey, before any invite is made") } else { check(false, "a risky invite asks first: \(risky)") }
+        guard case .made(let spare) = await c.createInvite(name: "MadeUpSpare", profiles: [], days: 1) else { check(false, "a lobby-only invite"); return }
+        equal(await c.revokeInvite(spare.invite.invite), nil, "revoking an invite")
+        if case .success(let list) = await c.listInvites() {
+            equal(Set(list.map { "\($0.name):\($0.stateText())" }), ["MadeUpKid:Waiting", "MadeUpSpare:Revoked"], "the list shows both, and only those")
+        } else { check(false, "invites listed") }
+
+        // Redeemed on Latchkey's own page, as the player would.
+        let browser = PageClient(port: web)
+        let redeemed = try await browser.request("/invite", form: ["csrf": try await browser.csrf("/"), "code": invite.code.lowercased(), "name": name])
+        print("  redeem: HTTP \(redeemed.status)")
+        await checkUntil(10, "redeeming whitelists them") { c.allowlist.contains { $0.uuid == uuid } }
+        if case .success(let p) = await c.usherShow(uuid: uuid) { equal(p.profiles, ["young"], "Usher applied the invite's profile") } else { check(false, "show after redeeming") }
+        if case .success(let list) = await c.listInvites() { equal(list.first { $0.name == name }?.stateText(), "Used", "the invite shows as used") }
+
+        // A bot signs in, and Leaf Juice reads Latchkey's session file.
+        // Sign-in is op-only by default; an admin gives it to the players who should have it.
+        await expectLine(c, "lp user \(name) permission set latchkey.signin true", "latchkey.signin", "sign-in allowed for \(name)")
+        let bot = try await join(name, c, table, port: port)
+        bot.command("signin")
+        await checkUntil(10, "/signin sends a link (got \(bot.privateMessages.map { String($0.filter { $0.isASCII && !$0.isNewline }.prefix(120)) }))") { bot.privateMessages.contains { $0.contains("/signin#") } }
+        // The bot's messages are raw packet bytes, so the link is picked out by its exact shape, nothing more.
+        let linkPattern = regex(#"https://play\.example\.test/signin#[A-Za-z0-9_-]{43}"#)
+        guard let message = bot.privateMessages.first(where: { $0.contains("/signin#") }),
+              let m = linkPattern.firstMatch(in: message, range: NSRange(message.startIndex..., in: message)),
+              let range = Range(m.range, in: message) else { check(false, "the link"); return }
+        let link = String(message[range])
+        let signin = PageClient(port: web)
+        let signed = try await signin.request("/signin", form: ["csrf": try await signin.csrf("/signin"), "link": link])
+        print("  sign-in: HTTP \(signed.status)")
+        guard let cookie = signin.cookies[LatchkeySessions.cookie] else { check(false, "Latchkey set its session cookie"); return }
+        let session = LatchkeySessions.read(plugins: c.paths.plugins, cookieValue: cookie)
+        check(session?.uuid == uuid && session?.name == name, "Leaf Juice reads the real session file: \(String(describing: session))")
+        let web2 = LinksWeb(paths: c.paths, settings: { var s = LinksPageSettings(); s.address = "https://links.example.test/"; return s }, content: { LinksPageContent(serverVersion: "Paper", plugins: []) })
+        web2.requireOnlineMode = false
+        func page() -> String { String(decoding: web2.handle(.init(method: "GET", path: "/", headers: ["host": "links.example.test", "cookie": "\(LatchkeySessions.cookie)=\(cookie)"], body: Data())).body, as: UTF8.self) }
+        check(page().contains("Signed in as \(name)"), "Leaf Juice's links page signs them in by Latchkey's cookie")
+
+        await expectLine(c, "whitelist remove \(name)", "Removed", "taken off the whitelist")
+        await checkUntil(5, "which ends the session file") { LatchkeySessions.read(plugins: c.paths.plugins, cookieValue: cookie) == nil }
+        check(!page().contains("Signed in as"), "and Leaf Juice's page with it")
+        bot.leave()
+
+        c.stop()
+        await checkUntil(90, "stops") { c.state == .stopped }
+    } catch { failures.append("real invites: \(error)") }
+}
+
+/// A throwaway offline Paper server with LuckPerms, Usher and Latchkey, set up the way their own tests do it.
+/// Latchkey's offline-testing flag goes in this server's launch settings only.
+@MainActor func buildInvitesServer(root: URL, port: Int, web: Int, usher: URL, latchkey: URL) async throws -> ServerController {
+        write("server-ip=127.0.0.1\nserver-port=\(port)\nonline-mode=false\nwhite-list=true\nenforce-whitelist=true\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\ngenerate-structures=false\nspawn-protection=0\nnetwork-compression-threshold=-1\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "real-invites")
+        try EULA.accept(c.paths)
+        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!)
+        try await c.addPlugin(source: .modrinth(project: "luckperms", allowBeta: false))
+        for jar in [usher, latchkey] { try FileManager.default.copyItem(at: jar, to: root.appendingPathComponent("plugins/\(jar.lastPathComponent)")) }
+        // Each plugin's shipped config, set for a throwaway offline server the way their own tests do it.
+        var usherConfig = try await Tool.run("/usr/bin/unzip", ["-p", usher.path, "config.yml"]).out
+        usherConfig = usherConfig.replacingOccurrences(of: "name-lookup: auto", with: "name-lookup: offline").replacingOccurrences(of: "lobby-world: \"\"", with: "lobby-world: world")
+        try FileOps.ensureDir(root.appendingPathComponent("plugins/Usher"))
+        write(usherConfig, root.appendingPathComponent("plugins/Usher/config.yml"))
+        var lk = try await Tool.run("/usr/bin/unzip", ["-p", latchkey.path, "config.yml"]).out
+        for (a, b) in [("enabled: false", "enabled: true"), ("port: 25680", "port: \(web)"), ("public-url: \"\"", "public-url: \"https://play.example.test\"")] {
+            guard lk.contains(a) else { throw LeafError("Latchkey's shipped config no longer has \(a)") }
+            lk = lk.replacingOccurrences(of: a, with: b)
+        }
+        try FileOps.ensureDir(root.appendingPathComponent("plugins/Latchkey"))
+        write(lk, root.appendingPathComponent("plugins/Latchkey/config.yml"))
+        c.profile.launch.extraJVMArgs = "-Dlatchkey.allowOfflineForTesting=true"
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        c.profile.backup.enabled = false
+        c.profile.launch.restartOnCrash = false
+        return c
+}
+
+/// --demo-invites <folder>: a throwaway server with made-up players and invites, for the owner's hand check of the
+/// Allowlist and Invites screens. The app is opened with this folder as its home, so no real server is in sight.
+@MainActor func runDemoInvites(_ demo: URL) async throws {
+    let jars = demo.appendingPathComponent("jars", isDirectory: true)
+    try FileOps.ensureDir(jars)
+    var got: [URL] = []
+    for (name, url, sha) in [
+        ("Usher-0.4.0.jar", "https://github.com/ExtantApe/Usher/releases/download/v0.4.0/Usher-0.4.0.jar", "543629b0d81bf117697f185457b03d86954ccc6d44314d63affd1f7876a799d7"),
+        ("Latchkey-0.2.0.jar", "https://github.com/ExtantApe/Latchkey/releases/download/v0.2.0/Latchkey-0.2.0.jar", "bc9f991f948c0df53f55723fb0e7f487c33d1026cf4b31b4fdefc4faaf4e8ecb"),
+    ] {
+        let to = jars.appendingPathComponent(name)
+        _ = try await HTTP.download(URL(string: url)!, to: to, expect: ExpectedHashes(sha256: sha))
+        got.append(to)
+    }
+    let root = demo.appendingPathComponent("servers/invites-demo", isDirectory: true)
+    try FileOps.ensureDir(root)
+    let c = try await buildInvitesServer(root: root, port: 25595, web: 25695, usher: got[0], latchkey: got[1])
+    c.profile.name = "Invites demo"
+    Modules.shared.set(.pluginCommands, on: true)
+    await c.start()
+    guard await until(240, { c.state == .running }) else { throw LeafError("The demo server didn't start: \(c.console.suffix(3).map(\.text))") }
+    await c.refreshPlugins()
+    for group in ["young", "grown", "young_sky", "grown_sky", "builders"] { _ = await c.ask("lp creategroup \(group)") { $0.contains { $0.contains(group) } } }
+    _ = await c.commands.run("usher", ["reload"])
+    _ = await c.usherApply(uuid: PlayerFiles.offlineUUID(name: "MadeUpBuilder"), name: "MadeUpBuilder", add: ["builders"], remove: [])
+    _ = await c.createInvite(name: "MadeUpExplorer", profiles: ["young"], days: 14)
+    c.stop()
+    _ = await until(90, { c.state == .stopped })
+    c.stopTicker()
+    // Warnings from the first start, before the groups existed, would only confuse the hand check.
+    try? FileManager.default.removeItem(at: c.paths.issues)
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("logs/latest.log"))
+    // Listed in the demo home, so the app opens straight onto it.
+    try JSONStore.save([root.path], to: AppPaths.registry)
+    print("Demo ready in \(demo.path): one approved player, one waiting invite, made-up names only.")
 }

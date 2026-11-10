@@ -2,6 +2,31 @@
 
 Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-10: invites through Latchkey, and Latchkey's session files
+
+The Allowlist page gains an Invites card on servers with Latchkey. It makes an invite with Usher profiles, shows the code once, and lists and revokes invites, all through Latchkey 0.2.0's format-1 commands. The links page and map gateway now also sign people in by Latchkey's session file, read in the agreed format on every request. Default run: 2535 passed. With `--real-invites`: 2559 passed.
+
+Covered:
+
+- **The session file (fail closed).** It's named by the SHA-256 of the cookie as sent, and unknown keys are ignored. No session in each of these cases: no `since`, expiry before sign-in, more than 30 days from sign-in, already run out, signed in in the future, a capitalised uuid, a bad name, not JSON, readable by others, a folder others can look in, a link elsewhere, or no file. Loosening the time checks failed 3 checks, and they were put back.
+- **The links page by Latchkey's cookie.** Someone is signed in by it, but not once banned, off the allowlist, or after Latchkey deletes the file. An extended session counts at once.
+- **Invites through a fake Latchkey.** It isn't offered without Latchkey, or with plugin commands off. Latchkey not taking invites is shown, with its reason. A bad name, 0 or 31 days, and a profile called "none" are refused before anything is typed. The code comes only from the once-file, which is deleted, and never appears in the console. A risky mix asks first. The typed commands are checked word for word. Invites are listed and revoked.
+- **Real Latchkey 0.2.0, Usher 0.4.0 and LuckPerms on throwaway Paper 26.3** (`--real-invites <usher.jar> <latchkey.jar>`, made-up offline accounts, deleted after):
+  - The invite code never appears in the console or `latest.log`.
+  - Usher's `bridge` question comes back through Latchkey.
+  - Invites can be listed and revoked.
+  - The code works when typed in lowercase on Latchkey's own page. That whitelists the player, and Usher applies the profile.
+  - A bot signs in with `/signin`, after an admin gives `latchkey.signin`, which is op-only by default.
+  - Leaf Juice reads the real session file, and its links page signs the player in.
+  - `whitelist remove` ends both.
+- **Looked at by hand by this session, against `--demo-invites`.** An invite was made through the real screen: the question showed inline, the code appeared once, and the list updated. One fix came from it: the hint under the profiles no longer moves the button.
+
+Gaps skipped:
+
+- **Keyboard, VoiceOver and wording, by a person.** That's owner test T24.
+- **A real server, a real browser and a real client.** These wait for the owner's go. Latchkey's HTTPS through a tunnel is Latchkey's own gap.
+- **Leaf Juice's own sign-in.** It still works alongside Latchkey's. Retiring it is a later change, after T24.
+
 ## 2026-11-10: the Allowlist page goes through Usher
 
 On a server with Usher, the Allowlist page approves people and changes their profiles through Usher's format-1 commands: `profiles`, `show`, `apply` (with its questions) and `attempts`. It never goes around Usher with raw LuckPerms or `whitelist add`. This was decided on 2026-11-07, for kids' and adults' groups. Default run: 2493 passed, 0 failed. With the real run: 2520 passed.
