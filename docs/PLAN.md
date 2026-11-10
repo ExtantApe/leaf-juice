@@ -62,7 +62,7 @@ Settled by the owner. Follow them without asking again.
 
 ### From the ops decision feed
 
-Settled decisions reach this repo through `~/Code/ops/decisions/all.md` and `decisions/leaf-juice.md`, read at startup and after a context summary. Acknowledged through D26 on 2026-11-10. D7 to D21 are in other areas' feeds, none in this one.
+Settled decisions reach this repo through `~/Code/ops/decisions/all.md` and `decisions/leaf-juice.md`, read at startup and after a context summary. Acknowledged through D29 on 2026-11-10. D7 to D21 are in other areas' feeds, none in this one.
 
 | ID | Decision | What it means here |
 |---|---|---|
@@ -77,6 +77,9 @@ Settled decisions reach this repo through `~/Code/ops/decisions/all.md` and `dec
 | D24 | Helpers are subagents first (2026-11-10) | Helper work here runs in subagents of this session. A separate session only for long parallel work on its own branch. |
 | D25 | Retire finished sessions only after handover (2026-11-10) | The Leaf Juice AI Advisor, Wiki and Mac server wrapper sessions retire once their tasks are moved here and acked. |
 | D26 | No separate backlogs (2026-11-10) | No "next" or "later" lists live in this repo. Each is a task with a priority and a category, and this file points at the task log. |
+| D27 | Three "now" tasks at a time (2026-11-10) | Whoever works Leaf Juice keeps at most three tasks in "now", takes the next when one is done, and blocks a stuck one while working the others. |
+| D28 | Pause after the current task for a brief (2026-11-10) | This helper finished K47's check (no change needed: Leaf Juice already speaks Usher 0.4, and passes against 0.4.1) and took nothing new. |
+| D29 | Helpers hand over and bow out (2026-11-10) | The Leaf Juice App helper handed everything to the Minecraft Server lead (Minecraft: Sonoran Realms Server): `~/Code/ops/handoffs/Minecraft: Leaf Juice App.md`, and every task moved. That lead now owns Leaf Juice. |
 
 ## The Change Queue
 
