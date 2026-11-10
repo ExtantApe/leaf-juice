@@ -2,6 +2,37 @@
 
 Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-10: the Advisor's token list, sealed with a key in the Keychain
+
+The owner's decision of 2026-11-10 (see `docs/PLAN.md`). Default run: 2659 passed.
+
+Covered:
+
+- **Every PrivacyKey in the run uses a stand-in vault,** so the login Keychain is never touched. The real helper program and the real Keychain code use throwaway keychain files in the scratch folder, never added to the search list (checked before and after).
+- **Sealed at rest.** The file starts `LJAK1`, the planted name and UUID can't be read from it, and there's no plain copy. One key is made, and the same key opens the file after a restart.
+- **Failing closed, with a plain reason, and nothing written:**
+  - a locked Keychain;
+  - a refusal;
+  - a key gone from the Keychain (no new key is made over the old file);
+  - a different key;
+  - one changed byte;
+  - no key yet with a locked Keychain, where no token is given out and no file is written.
+
+  Falling back to a fixed key on a Keychain error was tried on purpose and failed 6 checks. That also showed the locked and refused checks were too loose, because any refusal passed them. They now need the right reason, and the same change failed them.
+- **The old plain `key.json`.** It isn't used while the Keychain is locked, and stays as it was. Once the key can be reached, its tokens carry over and the plain file is deleted. A plain file left beside a sealed one is never read. One that's a symlink is refused.
+- **The real Keychain code, on throwaway keychains,** with prompts off as the helper runs. All of these happen at once, with no prompt:
+  - a missing key;
+  - a 256-bit key made once and read back;
+  - a locked keychain, which says it needs access and makes no new key;
+  - a key that doesn't trust this program, which says it was refused.
+- **The real helper.** It reaches a key that trusts it. A key the app makes for itself and the helper opens for the helper with no prompt. A key made only for the app is refused to the helper with the denied reason. A locked keychain stops it with the needs-access reason. The helper's answers to an AI client still pass every earlier check, now with a sealed file, opened here to prove it holds no secrets.
+- **Where the app may start programs.** Claude Code is started once, with `AdvisorLaunch`'s arguments. The helper is started only with `--keychain-check` or `--allow-keychain`.
+
+Gaps skipped:
+
+- **The login Keychain, macOS's own prompt, and the Allow Keychain Access button.** These need a person and their password. They're in owner test T25, which also seals the existing `key.json` on the owner's Mac.
+- **Turning prompts on in the helper by mistake.** That mutation would show a real macOS prompt and stall the run, so it wasn't tried. The source and the check of the helper's two flags cover it.
+
 ## 2026-11-10: Latchkey 0.3, web sign-ins, and the Advisor's first audit
 
 Latchkey 0.3's lobby and paging, Sign Out Everywhere on the player sheets, and the Advisor, which merged on 2026-11-09 without an audit entry. Default run: 2614 passed. With `--real-invites` (Usher 0.4.1 and Latchkey 0.3.0): 2579 passed, before the Advisor checks below were added. With Latchkey 0.2.0: 2578 passed.
