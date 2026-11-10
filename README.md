@@ -158,6 +158,16 @@ Taking someone off the allowlist leaves their groups alone. Changing someone's g
 
 **Tested:** real Paper 1.21.11 and LuckPerms on throwaway servers, including a bot's first join on offline mode. **Not tested:** a real first join on online mode, or the screen being clicked through.
 
+### With Usher and Latchkey
+
+These need **Plugin commands**, which is off by default, and the server running in Leaf Juice, because Leaf Juice types the plugins' commands into its console and reads their answers.
+
+- **Usher:** when it's installed, approving someone goes through Usher's profiles, its questions show on the page and each needs a tick, and changes land in Usher's own log. Leaf Juice then never changes groups or the whitelist around Usher. If it can't reach Usher, the page refuses rather than doing it another way. People the whitelist turned away are listed, with an Approve button.
+- **Invites (Latchkey):** an invite is a six-character code for one Minecraft name, lasting 1 to 30 days, with the Usher profiles you pick. The code is shown once and Leaf Juice keeps no copy. It never goes through the console or the server log. Invites can be listed and revoked. With Latchkey 0.3, the card also shows whether Latchkey's lobby is on.
+- **Web sign-ins:** where Latchkey offers it (0.3 and later), each player's sheet shows how many browsers they're signed in on, with **Sign Out Everywhere**. Their allowlist place and profiles stay.
+
+**Tested:** throwaway Paper 26.3 with Usher 0.4.0 and 0.4.1, Latchkey 0.2.0 and an unreleased 0.3.0 build, LuckPerms and made-up offline accounts: an invite made here, redeemed on Latchkey's page, profiles applied by Usher, a bot signed in, signed out again. **Not tested:** a real server, a real game client, or the screens with a keyboard and VoiceOver.
+
 ## Plugin links
 
 One page listing each enabled plugin, its version and a link to its documentation, with the server's version at the top.
@@ -170,7 +180,7 @@ Off by default. Turn it on and the same list is served as a web page that only p
 
 **Who gets in:** a player types `/signin` in game and clicks the one-time link they're sent, so there's no password. That takes the Latchkey plugin, the `latchkey.signin` permission (ops have it by default), a place on the allowlist, and `online-mode=true`. A server behind a proxy has `online-mode` off, so it isn't supported yet.
 
-- A session lasts 12 hours and lives in memory, so quitting Leaf Juice signs everyone out. Losing the permission takes effect at the next sign-in. Leaving the allowlist or being banned ends access at once.
+- With Latchkey 0.2 or later, Leaf Juice also accepts Latchkey's own browser sessions, reading Latchkey's session file on every request, so they last as long as Latchkey says and survive Leaf Juice quitting. Leaf Juice's older sign-in still works alongside it for now: a session lasts 12 hours and lives in memory, so quitting Leaf Juice ends it. Losing the permission takes effect at the next sign-in. Leaving the allowlist or being banned ends access at once.
 - Nothing has an age or account type of its own: children's accounts follow the same permission.
 - The app shows who's signed in, and can sign anyone out. It keeps the account, the time and what happened for 30 days, in `.leafjuice/sign-in-log.json`, with no addresses, browsers or pages visited.
 - The page only exists while Leaf Juice is open.

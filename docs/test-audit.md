@@ -2,6 +2,63 @@
 
 Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-10: Latchkey 0.3, web sign-ins, and the Advisor's first audit
+
+Latchkey 0.3's lobby and paging, Sign Out Everywhere on the player sheets, and the Advisor, which merged on 2026-11-09 without an audit entry. Default run: 2614 passed. With `--real-invites` (Usher 0.4.1 and Latchkey 0.3.0): 2579 passed, before the Advisor checks below were added. With Latchkey 0.2.0: 2578 passed.
+
+Covered:
+
+- **Latchkey 0.3's lobby.** Its status shows on the Invites card when Latchkey reports it, and nothing is shown when 0.2.0 doesn't. Real 0.3.0 reported it (off, on the throwaway's default settings).
+- **Invite list paging.** Against a fake Latchkey:
+  - every invite is read two to a page, none of them twice;
+  - each page asks from the last page's cursor, checked word for word;
+  - a long list stops at the page limit and says there's more;
+  - a cursor shaped like a flag (`--yes`) ends the list and is never typed.
+
+  Loosening the cursor guard failed 1 check: the runner refuses it as a second guard. 0.2.0's single page is still read.
+- **Web sign-ins, offered only through `describe`.**
+  - With 0.2.0, which doesn't list the session commands, nothing is shown, signing out is refused and no session command is typed.
+  - With 0.3.0, the browser count is shown and Sign Out Everywhere ends every session.
+  - A bad name is refused before anything is typed.
+  - With Plugin commands off, nothing is asked.
+
+  Making the `describe` gate always say yes failed 5 checks.
+- **Web sign-ins, for real.** Real Latchkey 0.3.0 on throwaway Paper 26.3: the bot's one browser is counted, and Sign Out Everywhere deletes the session file and ends Leaf Juice's page sign-in. The 0.2.0 run still proves that `whitelist remove` ends a session.
+- **The Advisor, against `docs/ADVISOR-SECURITY.md`.** Each threat in its table maps to a section of the run:
+
+  | Threat | Section |
+  | --- | --- |
+  | Chat or commands reach the AI | what chat can't do; text inside code |
+  | Names, UUIDs and IPs | who's who; identity; a whole planted server |
+  | Secrets | a whole planted server; the real program |
+  | Forged identity | identity |
+  | Changing the server, or network and process code | the real program (source rule 4) |
+  | Reading other files | files outside the server |
+  | Translating tokens | suggestions |
+  | Guessable tokens | tokens and the key file |
+  | A long line hangs it | a long line can't hang it |
+  | Failing silently | failing closed |
+  | The two independent reviews' attacks | the two review sections |
+
+Gaps added, with the checks:
+
+- **How Claude Code is started.** The flags that take away its shell and files (`--tools ""`), settings, hooks, slash commands, transcript and other MCP servers, and its short environment list, were only tested by hand when the Advisor was built. They lived in the app's page, which the run can't reach. They're now built in `AdvisorLaunch` and checked:
+  - each flag is passed;
+  - only the five advisor tools are pre-approved;
+  - risky flags are never passed;
+  - planted `ANTHROPIC_BASE_URL`, `HTTPS_PROXY`, `NODE_OPTIONS` and `CLAUDE_CONFIG_DIR` never reach it, and `PATH` is fixed;
+  - a dismissed title can't carry `@`, a path or code into the prompt;
+  - the app starts Claude Code in one place, with exactly these.
+
+  Dropping `--tools ""` failed 1 check. Adding a variable to the list first went uncaught, because the check read the same list. The expected list is now written out in the check, and the same change failed 2 checks.
+
+Gaps skipped:
+
+- **The sheets and cards by hand,** with keyboard and VoiceOver. That's owner test T24.
+- **Multi-page invite lists on a real Latchkey.** The throwaway has two invites. The fake covers paging, and real 0.3.0 answered in the spec's shape.
+- **The Advisor with real data and Claude Code really running.** That's the trial, which waits for the owner's go on a real server. The flags are checked as data, not by running Claude Code.
+- **The key file still isn't encrypted.** Encrypting it only helps with the key in the Keychain, and an unsigned app is asked for Keychain access again after every rebuild. That's a question for the owner.
+
 ## 2026-11-10: invites through Latchkey, and Latchkey's session files
 
 The Allowlist page gains an Invites card on servers with Latchkey. It makes an invite with Usher profiles, shows the code once, and lists and revokes invites, all through Latchkey 0.2.0's format-1 commands. The links page and map gateway now also sign people in by Latchkey's session file, read in the agreed format on every request. Default run: 2535 passed. With `--real-invites`: 2559 passed.
