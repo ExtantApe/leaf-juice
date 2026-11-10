@@ -62,7 +62,7 @@ Settled by the owner. Follow them without asking again.
 
 ### From the ops decision feed
 
-Settled decisions reach this repo through `~/Code/ops/decisions/all.md` and `decisions/leaf-juice.md`, read at startup and after a context summary. Acknowledged through D6 on 2026-11-10.
+Settled decisions reach this repo through `~/Code/ops/decisions/all.md` and `decisions/leaf-juice.md`, read at startup and after a context summary. Acknowledged through D26 on 2026-11-10. D7 to D21 are in other areas' feeds, none in this one.
 
 | ID | Decision | What it means here |
 |---|---|---|
@@ -72,6 +72,11 @@ Settled decisions reach this repo through `~/Code/ops/decisions/all.md` and `dec
 | D4 | Priority order (2026-11-10) | Docker media first, then the Minecraft server, then Captive Origins, then Slothdoku and Theseus. Leaf Juice work serves the Minecraft server and follows that order. |
 | D5 | No private repos because of CI minutes (2026-11-10) | This repo stays public. CI follows `ops/rules/actions-minutes.md`. |
 | D6 | Plugin names need the owner's approval (2026-11-10) | Leaf Juice uses only plugin names in `ops/plugin-names.md`. It creates no plugins of its own. Any new one would go to the owner through Helm first. |
+| D22 | One task log for every open task (2026-11-10) | Leaf Juice's open work is K61 to K73 in `ops/tasks/log.jsonl`, written only through `task.py`. Nothing is deleted. Moves need an ack, and closes need a reference. |
+| D23 | Leads own their helpers (2026-11-10) | Leaf Juice is a helper under the Minecraft Server lead (Minecraft: Sonoran Realms Server) and reports to it, not to Helm. |
+| D24 | Helpers are subagents first (2026-11-10) | Helper work here runs in subagents of this session. A separate session only for long parallel work on its own branch. |
+| D25 | Retire finished sessions only after handover (2026-11-10) | The Leaf Juice AI Advisor, Wiki and Mac server wrapper sessions retire once their tasks are moved here and acked. |
+| D26 | No separate backlogs (2026-11-10) | No "next" or "later" lists live in this repo. Each is a task with a priority and a category, and this file points at the task log. |
 
 ## The Change Queue
 
