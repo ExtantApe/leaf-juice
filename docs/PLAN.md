@@ -58,6 +58,19 @@ Settled by the owner. Follow them without asking again.
 | 2026-11-10 | The Advisor's token list is sealed with a key in the Keychain. Owner's words, through Helm: "Use Keychain because I'm going to buy the Apple Developer stuff soon and then it will be signed". Built the same day (`b9a1f87`): `key.sealed` (AES-GCM, a 256-bit key in the login Keychain), the helper never prompts and fails closed, and Allow Keychain Access on the Advisor page lets macOS ask. While Leaf Juice is unsigned, macOS asks again after each rebuild. Those prompts go away once the app is signed with an Apple Developer ID (Apple Developer Program, ops N21). Switching to signing is a later step, after the owner enrolls. |
 | 2026-11-10 | Served packs go only to players joining. Owner's words, through Helm: "I'm fine if an authorized player just uses the standard pack URL. It's more than I don't want a random person to hit pack and be able to download it". One address stays. A request needs the game's X-Minecraft-Username, -UUID and -Version headers, for a whitelisted player the server's own log shows connecting in the last 5 minutes or online now. Anyone else gets the same 404 as a wrong address. On by default, with a switch. The docs say headers can be faked. The app's own Check uses a one-time pass. No plugin hook was needed: Paper logs "UUID of player" on its login thread in both online and offline mode. Before this is used on Sonoran Realms, a real 26.x client has to load a pack through it (owner test T28). |
 
+### From the ops decision feed
+
+Settled decisions reach this repo through `~/Code/ops/decisions/all.md` and `decisions/leaf-juice.md`, read at startup and after a context summary. Acknowledged through D6 on 2026-11-10.
+
+| ID | Decision | What it means here |
+|---|---|---|
+| D1 | Decision feeds for every area (2026-11-10) | Settled entries are acted on, not re-argued. One may be raised once, with evidence, only under `ops/rules/decision-feeds.md`. |
+| D2 | Agnostic plugins, best architecture first (2026-11-10) | Leaf Juice talks to plugins (Usher, Latchkey, Preflight and the rest) only through their own commands and files, never as a hard dependency, and each works without it. New capabilities are built on the right structure from the start, cutting scope rather than structure. |
+| D3 | Owner steps and tests go through `ops/inbox` (2026-11-10) | New owner items go to `~/Code/ops/inbox/<ID>-<slug>.md` with a one-line note to Helm, never straight into `needs-you.md` or `tests.md`. T24, T25 and T28 went in before this. |
+| D4 | Priority order (2026-11-10) | Docker media first, then the Minecraft server, then Captive Origins, then Slothdoku and Theseus. Leaf Juice work serves the Minecraft server and follows that order. |
+| D5 | No private repos because of CI minutes (2026-11-10) | This repo stays public. CI follows `ops/rules/actions-minutes.md`. |
+| D6 | Plugin names need the owner's approval (2026-11-10) | Leaf Juice uses only plugin names in `ops/plugin-names.md`. It creates no plugins of its own. Any new one would go to the owner through Helm first. |
+
 ## The Change Queue
 
 Every change falls into one of two cases, decided by whether the server is running:
