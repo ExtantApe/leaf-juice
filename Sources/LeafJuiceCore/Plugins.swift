@@ -66,7 +66,7 @@ public enum PluginYAML {
     /// Reads the descriptor inside a jar. Paper's own format wins when both exist.
     public static func read(jar: URL) async -> PluginDescriptor? {
         for (file, paper) in [("paper-plugin.yml", true), ("plugin.yml", false)] {
-            if let r = try? await Tool.run("/usr/bin/unzip", ["-p", jar.path, file]), r.ok,
+            if let r = try? await Tool.run("/usr/bin/unzip", ["-p", jar.path, file], maxOutput: 1 << 20, timeout: 30), r.ok,
                let d = parse(r.out, paper: paper) { return d }
         }
         return nil

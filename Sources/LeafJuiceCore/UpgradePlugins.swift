@@ -193,6 +193,7 @@ extension ServerController {
             defer { setActivity(nil) }
             try FileOps.ensureDir(work)
             let paper = work.appendingPathComponent(build.fileName)
+            guard !build.hashes.isEmpty else { throw LeafError("That Paper build has no published checksum, so it wasn't used.") }
             try await HTTP.download(HTTP.url(build.downloadURL), to: paper, expect: build.hashes)
             setActivity("Copying the server for the check…")
             let copy = work.appendingPathComponent("copy", isDirectory: true)

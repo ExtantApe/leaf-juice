@@ -253,6 +253,11 @@ public struct ExpectedHashes: Codable, Equatable, Sendable {
     public init(sha1: String? = nil, sha256: String? = nil, sha512: String? = nil, md5: String? = nil) {
         self.sha1 = sha1; self.sha256 = sha256; self.sha512 = sha512; self.md5 = md5
     }
+    /// No checksum at all: the download can't be checked against anything.
+    public var isEmpty: Bool { sha1 == nil && sha256 == nil && sha512 == nil && md5 == nil }
+    /// A checksum worth trusting on its own (MD5 isn't).
+    public var hasStrongHash: Bool { sha1 != nil || sha256 != nil || sha512 != nil }
+
     public func verify(_ d: Hashing.Digests) -> Bool {
         func ok(_ want: String?, _ got: String) -> Bool { want.map { $0.lowercased() == got } ?? true }
         return ok(sha1, d.sha1) && ok(sha256, d.sha256) && ok(sha512, d.sha512) && ok(md5, d.md5)
@@ -274,7 +279,10 @@ public struct ToolResult: Sendable {
 
 public enum Tool {
     /// Runs a command at utility priority and waits for it, without blocking the caller's actor.
-    public static func run(_ path: String, _ args: [String], cwd: URL? = nil, lowPriority: Bool = true) async throws -> ToolResult {
+    /// `maxOutput` caps what's kept from each pipe; past it the tool is stopped. `timeout` stops a tool that runs too
+    /// long (off by default: backups of big worlds legitimately take a while). Both from the K158 audit.
+    public static func run(_ path: String, _ args: [String], cwd: URL? = nil, lowPriority: Bool = true,
+                           maxOutput: Int = 64 << 20, timeout: TimeInterval? = nil) async throws -> ToolResult {
         try await withCheckedThrowingContinuation { continuation in
             // Real threads, not the shared pool: this blocks while the tool runs, and enough blocked pool
             // threads leave none free to finish the work they're waiting on. Observed hanging with 37 plugins.
@@ -290,16 +298,30 @@ public enum Tool {
                     process.standardError = errPipe
                     process.standardInput = FileHandle.nullDevice
                     try process.run()
+                    if let timeout {
+                        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if process.isRunning { process.terminate() } }
+                    }
+                    // Keeps at most `maxOutput`, and stops the tool once it's past that; reads on to the end so it can exit.
+                    func capped(_ handle: FileHandle) -> Data {
+                        var kept = Data()
+                        while true {
+                            let chunk = handle.availableData
+                            if chunk.isEmpty { break }
+                            if kept.count < maxOutput { kept.append(chunk.prefix(maxOutput - kept.count)) }
+                            else if process.isRunning { process.terminate() }
+                        }
+                        return kept
+                    }
                     // Read both pipes at once: a full pipe would otherwise stall the tool.
                     final class Box: @unchecked Sendable { var data = Data() }
                     let errBox = Box()
                     let group = DispatchGroup()
                     group.enter()
                     Thread.detachNewThread {
-                        errBox.data = errPipe.fileHandleForReading.readDataToEndOfFile()
+                        errBox.data = capped(errPipe.fileHandleForReading)
                         group.leave()
                     }
-                    let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    let outData = capped(outPipe.fileHandleForReading)
                     group.wait()
                     process.waitUntilExit()
                     continuation.resume(returning: ToolResult(

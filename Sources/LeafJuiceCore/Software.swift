@@ -8,6 +8,13 @@ public struct SoftwareBuild: Codable, Equatable, Sendable {
     public var channel: String
     public var downloadURL: String
     public var fileName: String
+
+    /// A file name from a download API, used as a path: only its last part, a .jar, and not hidden (K158 audit).
+    public static func safeJarName(_ name: String, fallback: String) -> String {
+        let last = (name as NSString).lastPathComponent
+        guard last == name, last.hasSuffix(".jar"), !last.hasPrefix("."), last.count <= 128 else { return fallback }
+        return last
+    }
     public var hashes: ExpectedHashes
     public var size: Int64?
     public var published: Date?
@@ -96,7 +103,7 @@ public enum SoftwareCatalog {
               let file = chosen.downloads["server:default"] else { return nil }
         return SoftwareBuild(
             flavor: flavor, mcVersion: mc, build: chosen.id, channel: chosen.channel, downloadURL: file.url,
-            fileName: file.name, hashes: ExpectedHashes(sha256: file.checksums?.sha256), size: file.size,
+            fileName: SoftwareBuild.safeJarName(file.name, fallback: "\(flavor.rawValue)-\(mc)-\(chosen.id).jar"), hashes: ExpectedHashes(sha256: file.checksums?.sha256), size: file.size,
             published: chosen.time,
             changes: (chosen.commits ?? []).compactMap { $0.message?.components(separatedBy: "\n").first },
             javaMinimum: meta?.version.java?.version?.minimum,

@@ -633,6 +633,10 @@ do {
     check(!ParsedLogLine("[12:00:00 INFO]: Steve joined the game").isChat, "a server line isn't chat")
     check(LuckPermsText.checkResult(["[12:00:00 INFO]: <Kid> Result: true"]) != .yes, "chat saying 'Result: true' isn't LuckPerms' yes")
     check(LuckPermsText.checkResult(["[12:00:00 INFO]: [LP]     Result: true"]) == .yes, "LuckPerms' own result line still is")
+    // The audit's area C.
+    equal(SoftwareBuild.safeJarName("../../Library/LaunchAgents/x.plist", fallback: "paper-26.2-1.jar"), "paper-26.2-1.jar", "a server jar name with a path in it isn't used")
+    equal(SoftwareBuild.safeJarName("paper-26.2-135.jar", fallback: "x.jar"), "paper-26.2-135.jar", "a plain jar name is kept")
+    check(ExpectedHashes().isEmpty && !ExpectedHashes(md5: "a").hasStrongHash && ExpectedHashes(sha256: "a").hasStrongHash, "no checksum, or MD5 alone, doesn't count as a published hash")
     // The audit's area A.
     check(!PackGate.admits(headers: [:], root: folder("no-player")), "a request with no player headers is refused before any file is read")
     check(!MapGateway.blueMapServer(webserverConf: "port: 8100\n").onlyThisMac, "BlueMap on its default address isn't Mac-only, so /map/ stays off")

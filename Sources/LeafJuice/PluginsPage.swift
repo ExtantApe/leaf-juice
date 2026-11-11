@@ -187,7 +187,7 @@ struct PluginDetail: View {
     private func updateCallout(_ c: UpdateCandidate) -> some View {
         Callout(tone: c.compatibility.verdict.tone, title: "\(c.version) is available: \(c.compatibility.verdict.title.lowercased())", detail: c.compatibility.reason) {
             HStack {
-                if let page = c.pageURL.flatMap(URL.init(string:)) { Link("View", destination: page).buttonStyle(.juice) }
+                if let page = c.pageURL.flatMap(PluginLinks.clean).flatMap(URL.init(string:)) { Link("View", destination: page).buttonStyle(.juice) }
                 if c.downloadURL != nil {
                     if Modules.shared.isOn(.testCopies) {
                         Button("Test First") {
@@ -226,7 +226,7 @@ struct PluginDetail: View {
     private func sourceRow(_ record: PluginRecord) -> some View {
         HStack(spacing: 8) {
             Text("Source").foregroundStyle(Juice.muted)
-            if let page = record.source.pageURL {
+            if let page = record.source.pageURL.flatMap({ PluginLinks.clean($0.absoluteString) }).flatMap(URL.init(string:)) {
                 Link(record.source.summary, destination: page)
             } else {
                 Text(record.source.summary).foregroundStyle(Juice.ink)

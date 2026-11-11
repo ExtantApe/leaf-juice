@@ -1030,6 +1030,7 @@ public final class ServerController: Identifiable {
         let staged = paths.staged.appendingPathComponent(name)
         setActivity("Downloading \(build.flavor.title) \(build.label)…", progress: 0)
         defer { setActivity(nil) }
+        guard !build.hashes.isEmpty else { throw LeafError("\(build.label) has no published checksum, so it wasn't installed.") }
         try await HTTP.download(HTTP.url(build.downloadURL), to: staged, expect: build.hashes) { [weak self] value in
             Task { @MainActor in self?.activityProgress = value }
         }
@@ -1168,7 +1169,9 @@ public final class ServerController: Identifiable {
         guard autoInstall else { return }
         for plugin in plugins {
             let record = record(for: plugin)
-            guard record.policy == .auto, let candidate = record.available, candidate.compatibility.allowsAutoInstall else { continue }
+            // Only updates whose source publishes a real checksum install by themselves (K158 audit); others wait for a person.
+            guard record.policy == .auto, let candidate = record.available, candidate.compatibility.allowsAutoInstall,
+                  candidate.hashes.hasStrongHash else { continue }
             do { try await installUpdate(for: plugin) }
             catch {
                 records[plugin.key]?.lastError = error.localizedDescription

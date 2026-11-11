@@ -161,6 +161,7 @@ public final class IssueAnalyzer {
     private var pluginPackages: [(prefix: String, name: String)] = []
     private var pluginNames: Set<String> = []
     private let maxUnknown = 400
+    private let maxPerRule = 50
     private let maxStack = 40
 
     public init(rules: [IssueRule] = RuleBook.load(), records: [IssueRecord] = []) {
@@ -250,6 +251,8 @@ public final class IssueAnalyzer {
 
     private func record(rule: IssueRule, subject: String?, line: ParsedLogLine, date: Date) {
         let id = "rule:\(rule.id)" + (subject.map { ":\($0)" } ?? "")
+        // Each rule keeps at most this many subjects, so varied lines can't grow the catalog without end (K158 audit).
+        if records[id] == nil, subject != nil, records.values.filter({ $0.ruleID == rule.id }).count >= maxPerRule { return }
         lastRecordID = id
         upsert(id: id, date: date) {
             let name = subject ?? "A plugin"
