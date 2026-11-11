@@ -1051,8 +1051,8 @@ private final class PageClient {
     try FileOps.ensureDir(jars)
     var got: [URL] = []
     for (name, url, sha) in [
-        ("Usher-0.4.0.jar", "https://github.com/ExtantApe/Usher/releases/download/v0.4.0/Usher-0.4.0.jar", "543629b0d81bf117697f185457b03d86954ccc6d44314d63affd1f7876a799d7"),
-        ("Latchkey-0.2.0.jar", "https://github.com/ExtantApe/Latchkey/releases/download/v0.2.0/Latchkey-0.2.0.jar", "bc9f991f948c0df53f55723fb0e7f487c33d1026cf4b31b4fdefc4faaf4e8ecb"),
+        ("Usher-0.4.1.jar", "https://github.com/ExtantApe/Usher/releases/download/v0.4.1/Usher-0.4.1.jar", "4d1ff17d7603e58550503975e2aef794645a5b3722468f51363bcc2e44c31b0d"),
+        ("Latchkey-0.3.0.jar", "https://github.com/ExtantApe/Latchkey/releases/download/v0.3.0/Latchkey-0.3.0.jar", "1dd0c76d88612c613afe84fab1658ddf2bf851d373b96df68d0771b4e9b67032"),
     ] {
         let to = jars.appendingPathComponent(name)
         _ = try await HTTP.download(URL(string: url)!, to: to, expect: ExpectedHashes(sha256: sha))

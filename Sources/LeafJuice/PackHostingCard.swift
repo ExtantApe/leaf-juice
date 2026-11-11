@@ -211,7 +211,7 @@ struct PackHostingCard: View {
         guard let url, let sha1 else { return }
         checking = name
         Task {
-            results[name] = await PackHosting.check(url: url, expected: sha1, ticket: server.packCheckTicket())
+            results[name] = await PackHosting.check(url: url, expected: sha1, ticket: server.packCheckTicket(for: url))
             checking = nil
         }
     }

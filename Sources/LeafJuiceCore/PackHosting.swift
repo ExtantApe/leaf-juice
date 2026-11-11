@@ -199,7 +199,8 @@ public enum PackHosting {
         var headers = extra
         if let ticket { headers[PackGate.checkHeader] = ticket }
         configuration.httpAdditionalHeaders = headers
-        let session = URLSession(configuration: configuration)
+        // With a pass, no redirect is followed, so the pass can't be carried to another host.
+        let session = URLSession(configuration: configuration, delegate: ticket == nil ? nil : NoRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         do {
             let (file, response) = try await session.download(from: url)
@@ -449,6 +450,15 @@ extension ServerController {
     /// A one-time pass for this app's own check of a pack address. Nil when nothing is being served from here.
     public func packCheckTicket() -> String? { packHost?.isListening == true ? packHost?.tickets.issue() : nil }
 
+    /// A pass only for this server's own pack address: anywhere else would receive a key to skip the joining check
+    /// (K158 audit). Compares scheme, host and port.
+    public func packCheckTicket(for address: String) -> String? {
+        guard let own = URL(string: packHostSettings.address), let asked = URL(string: address),
+              own.scheme?.lowercased() == asked.scheme?.lowercased(), own.host?.lowercased() == asked.host?.lowercased(),
+              own.port == asked.port else { return nil }
+        return packCheckTicket()
+    }
+
     /// Turns the joining check on or off. Serving restarts so the change applies to the next request.
     public func setPackJoiningOnly(_ on: Bool) throws {
         var settings = packHostSettings
@@ -596,5 +606,13 @@ extension ServerController {
         }
         guard let file = configs.first(where: { $0.path == "server.properties" }) else { throw LeafError("This server has no server.properties yet. Start it once first.") }
         return try saveConfig(file, text: try ResourcePacks.applying(url: url, sha1: sha1, required: required, to: configText(file)))
+    }
+}
+
+/// Refuses every redirect, for downloads that carry a one-time pass.
+final class NoRedirects: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 }

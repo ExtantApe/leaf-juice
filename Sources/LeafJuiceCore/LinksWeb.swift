@@ -529,6 +529,11 @@ public final class LinksListener {
             if case let .answer(response) = web.mapEntry(request) { send(response, head: head, connection) }
             return
         }
+        // Only while BlueMap itself can't be reached around this page (K158 audit).
+        guard map.server().onlyThisMac else {
+            send(LinksWeb.Response(status: 503, headers: ["Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store"], body: Data("The map is off until BlueMap listens only on this Mac.\n".utf8)), head: head, connection)
+            return
+        }
         let allowed = await map.access(session.uuid).allowed
         switch MapGateway.route(path: request.path, allowed: allowed) {
         case .redirect:

@@ -633,6 +633,10 @@ do {
     check(!ParsedLogLine("[12:00:00 INFO]: Steve joined the game").isChat, "a server line isn't chat")
     check(LuckPermsText.checkResult(["[12:00:00 INFO]: <Kid> Result: true"]) != .yes, "chat saying 'Result: true' isn't LuckPerms' yes")
     check(LuckPermsText.checkResult(["[12:00:00 INFO]: [LP]     Result: true"]) == .yes, "LuckPerms' own result line still is")
+    // The audit's area A.
+    check(!PackGate.admits(headers: [:], root: folder("no-player")), "a request with no player headers is refused before any file is read")
+    check(!MapGateway.blueMapServer(webserverConf: "port: 8100\n").onlyThisMac, "BlueMap on its default address isn't Mac-only, so /map/ stays off")
+    check(MapGateway.blueMapServer(webserverConf: "port: 8100\nip: \"127.0.0.1\"\n").onlyThisMac, "with ip 127.0.0.1 it is")
     // The rest of the audit's area B and the gzip header.
     check(PlayerList.rawAddRefusal(path: "whitelist.json", hasUsher: true, onlineMode: true) != nil, "with Usher, the raw allowlist add is refused")
     check(PlayerList.rawAddRefusal(path: "ops.json", hasUsher: false, onlineMode: false) != nil, "without online mode, a name-based op is refused")
@@ -3253,7 +3257,7 @@ func localAddresses() -> [String] {
     section("REAL SIGN-IN (EULA accepted by the person running this)")
     do {
         let root = folder("real-signin")
-        write("server-port=25593\nonline-mode=false\nwhite-list=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nmotd=made up message\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        write("server-port=25593\nonline-mode=false\nwhite-list=true\nenforce-whitelist=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nmotd=made up message\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
         let c = try await ServerController.adopt(root: root, name: "Real sign-in test")
         defer { c.forceStop(); c.stopTicker(); c.stopLinksPage() }
         try EULA.accept(c.paths)
@@ -3279,6 +3283,10 @@ func localAddresses() -> [String] {
 
         let java = c.resolvedJava()?.path ?? ""
         let table = try await ProtocolTable.load(mc: realMC, cache: folder("signin-protocol"), java: java)
+        // Latchkey 0.2+ turns sign-in off unless the whitelist is on, so the bot is allowlisted to join, and taken off
+        // again below to check the refusal (enforce-whitelist=false keeps it connected).
+        c.send("whitelist add MadeUpBot")
+        try? await Task.sleep(for: .seconds(2))
         let bot = try Bot(name: "MadeUpBot", port: 25593, table: table)
         defer { bot.leave() }
         await checkUntil(60, "bot in game: \(bot.disconnectReason ?? "")") { bot.inGame }
@@ -3300,6 +3308,7 @@ func localAddresses() -> [String] {
         check(link() == nil, "no permission, no link")
         check(FileOps.children(pending).isEmpty, "and nothing saved")
         c.send("op MadeUpBot")
+        c.send("whitelist remove MadeUpBot")
         try? await Task.sleep(for: .seconds(2))
         bot.command("signin")
         await checkUntil(10, "told it isn't on the allowlist") { sent("allowlist") }
@@ -3308,7 +3317,11 @@ func localAddresses() -> [String] {
         try? await Task.sleep(for: .seconds(2))
         bot.command("signin")
         await checkUntil(10, "a link arrives in game") { link() != nil }
-        guard let token = link() else { throw LeafError("no link arrived") }
+        guard let token = link() else {
+            for line in c.console where line.text.contains("Latchkey") || line.text.contains("MadeUpBot") || line.text.lowercased().contains("signin") { print("    console: \(line.text.prefix(200))") }
+            for m in bot.privateMessages.suffix(8) { print("    bot got: \(m.prefix(200))") }
+            throw LeafError("no link arrived")
+        }
         check(FileOps.children(pending).first?.lastPathComponent == "\(LinksWeb.hash(token)).json", "its hash is what's saved")
         check(!c.console.contains { $0.text.contains(token) }, "the link isn't in the console")
         let logs = (try? String(contentsOf: c.paths.root.appendingPathComponent("logs/latest.log"), encoding: .utf8)) ?? ""

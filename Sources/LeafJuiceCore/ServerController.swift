@@ -34,6 +34,7 @@ public final class ServerController: Identifiable {
         isEnabled: { Modules.shared.isOn(.pluginCommands) },
         send: { [weak self] line in self?.sendPluginCommand(line) ?? false })
     @ObservationIgnored var mapAccessCache: [String: (date: Date, task: Task<MapAccess, Never>)] = [:]
+    @ObservationIgnored var mapCheckRunning = false
     /// The last reason someone was shown no maps, for the app to explain.
     public internal(set) var mapAccessNote: String?
     public nonisolated let id: UUID

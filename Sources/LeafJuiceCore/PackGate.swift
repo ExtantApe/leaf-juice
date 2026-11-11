@@ -107,7 +107,9 @@ public enum PackGate {
 
     /// For one server folder: reads its whitelist and the end of its log fresh, for every request.
     public static func admits(headers: [String: String], root: URL, now: Date = Date()) -> Bool {
-        admits(player(headers: headers),
+        // Nothing is read from disk for a request that doesn't even claim to be a player (K158 audit).
+        guard let claimed = player(headers: headers) else { return false }
+        return admits(claimed,
                whitelist: tail(root.appendingPathComponent("whitelist.json"), bytes: 4 << 20),
                log: tail(root.appendingPathComponent("logs/latest.log"), bytes: logTail).map { String(decoding: $0, as: UTF8.self) },
                now: now)

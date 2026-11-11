@@ -181,6 +181,10 @@ extension ServerController {
         if let cached = mapAccessCache[key], cached.date.timeIntervalSinceNow > -MapGateway.accessMinutes * 60 { return await cached.task.value }
         let task = Task { @MainActor [weak self] () -> MapAccess in
             guard let self else { return .problem("The server is gone.") }
+            // One person's check at a time, so two checks can't read each other's answers (K158 audit).
+            while self.mapCheckRunning { try? await Task.sleep(for: .milliseconds(50)) }
+            self.mapCheckRunning = true
+            defer { self.mapCheckRunning = false }
             return await self.workOutMapAccess(uuid: key)
         }
         mapAccessCache[key] = (Date(), task)
