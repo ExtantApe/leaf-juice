@@ -269,6 +269,8 @@ public struct ConsoleLine: Identifiable, Equatable, Sendable {
     public let text: String
     public let level: LogLevel
     public let origin: Origin
+    /// True for a player's chat line, which must never count as the server answering something.
+    public var isChat: Bool { origin == .server && ParsedLogLine(text).isChat }
 }
 
 public enum LogLevel: String, Codable, Comparable, Sendable {

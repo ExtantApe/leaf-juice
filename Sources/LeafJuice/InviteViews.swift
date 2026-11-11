@@ -22,7 +22,7 @@ struct InvitesCard: View {
     @State private var revoking: LatchkeyInvite?
     @State private var modules = Modules.shared
 
-    private var nameIsValid: Bool { AccountLookup.isValidName(name.trimmingCharacters(in: .whitespaces)) }
+    private var nameIsValid: Bool { AccountLookup.isValidName(name.trimmingCharacters(in: .whitespacesAndNewlines)) }
 
     var body: some View {
         Card(title: "Invites", systemImage: "envelope.badge.person.crop") {
@@ -161,7 +161,7 @@ struct InvitesCard: View {
         let yes = questions.map(\.id)
         Task {
             defer { working = false }
-            switch await server.createInvite(name: name.trimmingCharacters(in: .whitespaces), profiles: chosen.sorted(), days: days, yes: yes) {
+            switch await server.createInvite(name: name.trimmingCharacters(in: .whitespacesAndNewlines), profiles: chosen.sorted(), days: days, yes: yes) {
             case .made(let new):
                 made = new; questions = []; answered = []
                 await reloadList()

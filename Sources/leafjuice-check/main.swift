@@ -593,6 +593,58 @@ do {
 
 // MARK: Staging
 
+section("One long operation at a time")
+do {
+    // The K158 audit's high finding: Start could run twice, or during a rename or restore, because Start waits
+    // (detecting a server elsewhere, preflight, queued changes) while the state still says stopped.
+    let c = ServerController(root: folder("busy"), profile: ServerProfile())
+    defer { c.stopTicker() }
+    check(c.canStartNow, "a stopped server with nothing running can start")
+    try c.beginBusy("Renaming")
+    check(!c.canStartNow, "Start is off while a rename holds the server")
+    await c.start()
+    equal(c.busyWith, "Renaming", "Start during a rename does nothing, and leaves the rename's mark alone")
+    check(c.state == .stopped, "and nothing was launched")
+    check((try? c.beginBusy("Restoring a backup")) == nil, "a second long operation is refused while one runs")
+    await c.applyPending()
+    equal(c.busyWith, "Renaming", "queued changes wait while something else holds the server")
+    c.endBusy()
+    check(c.canStartNow, "once it's done, Start is back")
+    // Two Starts: the first takes the mark before its first wait, so the second returns at once.
+    let first = Task { @MainActor in await c.start() }
+    var sawFirst = false
+    for _ in 0..<2000 where !sawFirst { await Task.yield(); sawFirst = c.busyWith == "Starting" }
+    check(sawFirst, "Start holds the server from its first moment")
+    if sawFirst {
+        await c.start()
+        equal(c.busyWith, "Starting", "a second Start returns without touching the first")
+    }
+    await first.value
+    check(c.busyWith == nil, "Start lets go when it's done, even when it couldn't start")
+    // The audit's newline finding: ICU's $ also matched before a final line break.
+    check(!AccountLookup.isValidName("Steve\n"), "a player name with a trailing newline is refused")
+    check(AccountLookup.isValidName("Steve"), "a plain name still passes")
+    if case .success = PluginCommandWire.encode(.player("Steve\n"), inList: false) { check(false, "a newline name reaches a plugin command") } else { check(true, "a newline name never reaches a plugin command") }
+    check(!Multiverse.isValidName("world\n") && !Multiverse.isValidSeed("123\n"), "world names and seeds refuse a trailing newline")
+    check(PropertiesDocument.escape("a\rb").contains("\\r"), "a carriage return is escaped in server.properties")
+    // The audit's common cause: chat read as the server answering.
+    check(ParsedLogLine("[12:00:00 INFO]: <Kid> Result: true").isChat, "a player's chat line is recognised as chat")
+    check(ParsedLogLine("[12:00:00] [Async Chat Thread - #0/INFO]: [Not Secure] <Kid> saved the game").isChat, "and in the log file, marked not secure")
+    check(!ParsedLogLine("[12:00:00 INFO]: Steve joined the game").isChat, "a server line isn't chat")
+    check(LuckPermsText.checkResult(["[12:00:00 INFO]: <Kid> Result: true"]) != .yes, "chat saying 'Result: true' isn't LuckPerms' yes")
+    check(LuckPermsText.checkResult(["[12:00:00 INFO]: [LP]     Result: true"]) == .yes, "LuckPerms' own result line still is")
+    // The rest of the audit's area B and the gzip header.
+    check(PlayerList.rawAddRefusal(path: "whitelist.json", hasUsher: true, onlineMode: true) != nil, "with Usher, the raw allowlist add is refused")
+    check(PlayerList.rawAddRefusal(path: "ops.json", hasUsher: false, onlineMode: false) != nil, "without online mode, a name-based op is refused")
+    check(PlayerList.rawAddRefusal(path: "banned-players.json", hasUsher: true, onlineMode: true) == nil, "bans still work as before")
+    var crafted = Data([0x1f, 0x8b, 8, 8, 0, 0, 0, 0, 0, 3]); crafted.append(contentsOf: [UInt8](repeating: 0x41, count: 12))
+    check((try? Gzip.decompress(crafted)) == nil, "a gzip header with no end to its name fails cleanly instead of crashing")
+    let temp = folder("replace"); write("old", temp.appendingPathComponent("p.dat")); write("new", temp.appendingPathComponent("s.dat"))
+    try PlayerSnapshots.replaceCopying(temp.appendingPathComponent("s.dat"), at: temp.appendingPathComponent("p.dat"))
+    equal(try String(contentsOf: temp.appendingPathComponent("p.dat"), encoding: .utf8), "new", "a restore swaps the file in whole")
+    check(!FileOps.exists(temp.appendingPathComponent(".p.dat.restoring")), "and leaves nothing behind")
+} catch { check(false, "one long operation at a time: \(error)") }
+
 section("The change queue")
 do {
     let root = folder("staging")

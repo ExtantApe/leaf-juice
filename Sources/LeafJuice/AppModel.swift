@@ -380,7 +380,7 @@ struct ServerCommands: Commands {
         }
         CommandMenu("Server") {
             Button("Start") { if let s = model.selected { Task { await s.start() } } }
-                .keyboardShortcut("r").disabled(model.selected?.state.canStart != true)
+                .keyboardShortcut("r").disabled(model.selected?.canStartNow != true)
             Button("Stop") { model.selected?.stop() }
                 .keyboardShortcut(".").disabled(model.selected?.state != .running && model.selected?.state != .starting)
             Button("Restart") { model.selected?.restart() }
@@ -411,7 +411,7 @@ struct StatusMenu: View {
         ForEach(model.listed) { server in
             Text("\(server.profile.name): \(server.state.title)")
             if server.state.canStart {
-                Button("Start \(server.profile.name)") { Task { await server.start() } }
+                Button("Start \(server.profile.name)") { Task { await server.start() } }.disabled(!server.canStartNow)
             } else if server.state == .running {
                 Button("Stop \(server.profile.name)") { server.stop() }
             }

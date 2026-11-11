@@ -10,6 +10,10 @@ public struct ParsedLogLine: Sendable {
     public let isStackFrame: Bool
     /// False for raw output with no `[time LEVEL]:` prefix, like JVM errors and exception headers.
     public let hasPrefix: Bool
+    /// A player's chat line (`<Name> text`). Never read as the server's own output: a player could type anything
+    /// (the K158 audit found six places where chat could pass for a server answer).
+    public let isChat: Bool
+    static let chatPattern = try! NSRegularExpression(pattern: #"^(?:\[Not Secure\] )?<\.?[A-Za-z0-9_]{1,16}> "#)
 
     private static let levels: [(String, LogLevel)] = [
         ("FATAL", .error), ("SEVERE", .error), ("ERROR", .error), ("WARNING", .warn), ("WARN", .warn), ("INFO", .info), ("DEBUG", .debug),
@@ -32,6 +36,7 @@ public struct ParsedLogLine: Sendable {
         self.level = level
         self.message = message
         hasPrefix = prefixed
+        isChat = prefixed && Self.chatPattern.firstMatch(in: message, range: NSRange(message.startIndex..., in: message)) != nil
         let trimmed = message.drop { $0 == " " || $0 == "\t" }
         isStackFrame = trimmed.hasPrefix("at ") || trimmed.hasPrefix("Caused by:") || (trimmed.hasPrefix("... ") && trimmed.hasSuffix(" more"))
         if message.hasPrefix("["), let end = message.firstIndex(of: "]") {

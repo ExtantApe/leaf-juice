@@ -86,10 +86,10 @@ public enum Multiverse {
 
     /// The console is line-based, so a stray newline or space in a name could run or change a command.
     public static func isValidName(_ name: String) -> Bool {
-        name.range(of: #"^[A-Za-z0-9_-]+(:[A-Za-z0-9_/.-]+)?$"#, options: .regularExpression) != nil
+        name.range(of: #"^[A-Za-z0-9_-]+(:[A-Za-z0-9_/.-]+)?\z"#, options: .regularExpression) != nil
     }
     public static func isValidSeed(_ seed: String) -> Bool {
-        seed.isEmpty || seed.range(of: #"^[A-Za-z0-9_-]+$"#, options: .regularExpression) != nil
+        seed.isEmpty || seed.range(of: #"^[A-Za-z0-9_-]+\z"#, options: .regularExpression) != nil
     }
 
     // Syntax differs between major versions. Taken from Multiverse-Core's command classes.

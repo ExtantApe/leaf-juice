@@ -362,13 +362,18 @@ struct PlayerListForm: View {
     @State private var entry = ""
 
     private var running: Bool { server.state == .running }
+    private var refusal: String? {
+        PlayerList.rawAddRefusal(path: file.path, hasUsher: server.hasUsher,
+                                 onlineMode: PropertiesDocument((try? String(contentsOf: server.paths.properties, encoding: .utf8)) ?? "").value("online-mode") == "true")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let refusal { Hint(refusal) }
             HStack {
                 TextField(commands.isAddress ? "Address" : "Player name", text: $entry)
                     .textFieldStyle(.roundedBorder).frame(maxWidth: 260).onSubmit(add)
-                Button(commands.addLabel, action: add).buttonStyle(.juicePrimary).disabled(!running || !valid)
+                Button(commands.addLabel, action: add).buttonStyle(.juicePrimary).disabled(!running || !valid || refusal != nil)
             }
             if !entry.isEmpty, !valid { Hint(commands.isAddress ? "That doesn't look like an address." : "Player names are up to 16 letters, numbers or underscores.") }
             if !running { Hint("Start the server to change this list. It looks up accounts for you, and takes effect straight away with no restart.") }
@@ -398,7 +403,7 @@ struct PlayerListForm: View {
     private var valid: Bool { PlayerList.isValid(entry, isAddress: commands.isAddress) }
 
     private func add() {
-        guard valid, running else { return }
+        guard valid, running, refusal == nil else { return }
         run("\(commands.add) \(entry)")
         entry = ""
     }

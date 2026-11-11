@@ -302,6 +302,16 @@ enum YAMLNotes {
 /// `ops.json`, `whitelist.json` and the ban lists. The server owns these while it runs, so changes go
 /// through its own commands, which also look up the account for you.
 public enum PlayerList {
+    /// Why the raw allowlist or op command mustn't be used here, if it mustn't (the K158 audit). With Usher installed,
+    /// players are added through it, so they get their profile and groups; without online-mode, a name isn't an
+    /// account, so a name-based op or allowlist entry could be anyone.
+    public static func rawAddRefusal(path: String, hasUsher: Bool, onlineMode: Bool) -> String? {
+        guard path == "whitelist.json" || path == "ops.json" else { return nil }
+        if !onlineMode { return "This server isn't in online mode, so a name here could be anyone. Change online-mode first." }
+        if path == "whitelist.json", hasUsher { return "Usher looks after the allowlist here. Add players from Players → Add, so they get their profile and groups." }
+        return nil
+    }
+
     public struct Commands: Sendable {
         public let add: String
         public let remove: String

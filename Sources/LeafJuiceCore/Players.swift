@@ -173,6 +173,19 @@ public struct PlayerSnapshot: Codable, Identifiable, Equatable, Sendable {
 }
 
 public enum PlayerSnapshots {
+    /// Puts a copy of `source` at `target` without ever leaving `target` missing: copied beside it first, then
+    /// swapped in. A failed copy leaves the old file as it was (K158 audit).
+    static func replaceCopying(_ source: URL, at target: URL) throws {
+        let temp = target.deletingLastPathComponent().appendingPathComponent(".\(target.lastPathComponent).restoring")
+        try? FileManager.default.removeItem(at: temp)
+        try FileManager.default.copyItem(at: source, to: temp)
+        if FileManager.default.fileExists(atPath: target.path) {
+            _ = try FileManager.default.replaceItemAt(target, withItemAt: temp)
+        } else {
+            try FileManager.default.moveItem(at: temp, to: target)
+        }
+    }
+
     public static func folder(_ profile: ServerProfile) -> URL {
         Backups.destination(profile).appendingPathComponent("PlayerSnapshots", isDirectory: true)
     }
@@ -305,15 +318,13 @@ public enum PlayerSnapshots {
                 try NBT.write(doc, to: live)
             } else {
                 try FileOps.ensureDir(live.deletingLastPathComponent())
-                try? FileManager.default.removeItem(at: live)
-                try FileManager.default.copyItem(at: saved, to: live)
+                try Self.replaceCopying(saved, at: live)
             }
         }
         for rel in containers where snapshot.containers.contains(rel) {
             let to = p.inventories.appendingPathComponent(rel)
             try FileOps.ensureDir(to.deletingLastPathComponent())
-            try? FileManager.default.removeItem(at: to)
-            try FileManager.default.copyItem(at: from.appendingPathComponent("inventories").appendingPathComponent(rel), to: to)
+            try Self.replaceCopying(from.appendingPathComponent("inventories").appendingPathComponent(rel), at: to)
         }
     }
 }
@@ -571,6 +582,7 @@ public enum PlayerHistory {
             .sorted { $0.lastPathComponent > $1.lastPathComponent }.prefix(limitFiles)
         for file in archived {
             guard let m = logName.firstMatch(in: file.lastPathComponent),
+                  FileOps.size(file) <= 32 << 20,   // a spam-loop log isn't read whole (K158 audit)
                   let data = try? Data(contentsOf: file), let plain = try? Gzip.decompress(data) else { continue }
             let ns = file.lastPathComponent as NSString
             var parts = DateComponents()
@@ -581,8 +593,8 @@ public enum PlayerHistory {
             out += sessions(inLog: String(decoding: plain, as: UTF8.self), day: day)
         }
         let latest = logs.appendingPathComponent("latest.log")
-        if let text = try? String(contentsOf: latest, encoding: .utf8), let modified = FileOps.modified(latest) {
-            out += sessions(inLog: text, day: calendar.startOfDay(for: modified))
+        if let data = PackGate.tail(latest, bytes: 16 << 20), let modified = FileOps.modified(latest) {
+            out += sessions(inLog: String(decoding: data, as: UTF8.self), day: calendar.startOfDay(for: modified))
         }
         return out.sorted { $0.start > $1.start }
     }

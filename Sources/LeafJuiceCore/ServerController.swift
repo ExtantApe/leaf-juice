@@ -231,6 +231,25 @@ public final class ServerController: Identifiable {
         activityProgress = progress
     }
 
+    // MARK: Busy
+
+    /// A long operation that needs this server stopped: starting, applying changes, renaming, merging, restoring.
+    /// It's set before the operation's first wait, so nothing else can start the server or change its files
+    /// while it runs (the K158 audit: a second Start, or Start during a rename's restore point, ran two servers
+    /// or renamed worlds under a running one).
+    public private(set) var busyWith: String?
+
+    /// Whether Start can be pressed now.
+    public var canStartNow: Bool { state.canStart && process == nil && busyWith == nil }
+
+    /// Takes the busy mark, or refuses if another long operation holds it.
+    func beginBusy(_ what: String) throws {
+        if let other = busyWith { throw LeafError("\(other) is still in progress. Try again when it's done.") }
+        busyWith = what
+    }
+
+    func endBusy() { busyWith = nil }
+
     // MARK: Rename
 
     /// Renames the server. Moving the folder is optional, and only possible while it's stopped.
@@ -326,17 +345,20 @@ public final class ServerController: Identifiable {
     }
 
     public func start() async {
-        guard !AdvisorTrial.isOn, state.canStart, process == nil else { return }
+        guard !AdvisorTrial.isOn, canStartNow else { return }
+        busyWith = "Starting"   // before the first wait, so a second Start can't slip in
+        defer { endBusy() }
         await detectExternalServer()
         guard state.canStart else { return }
         blockers = await preflight()
         guard blockers.isEmpty else { return }
-        await applyPending()
+        await applyPendingHoldingBusy()
         startPackHostIfWanted()
         launch()
     }
 
     private func launch() {
+        guard state.canStart, process == nil else { return }
         guard let java = resolvedJava() else { return }
         let arguments = LaunchCommand.arguments(profile.launch, software: profile.software, javaMajor: java.major)
         try? FileOps.ensureDir(paths.meta)
@@ -504,6 +526,11 @@ public final class ServerController: Identifiable {
     // MARK: Console
 
     public func send(_ command: String) {
+        // The console is line-based: a line break would make the rest a second command (K158 audit).
+        guard !command.contains(where: \.isNewline) else {
+            appendWrapper("Not sent: a console command can't contain a line break.", level: .warn)
+            return
+        }
         let text = command.trimmingCharacters(in: .whitespaces)
         guard !text.isEmpty, let process else { return }
         append(">\u{00A0}\(text)", level: .info, origin: .command)
@@ -559,14 +586,14 @@ public final class ServerController: Identifiable {
                     continue
                 }
             }
-            if parsed.level != .debug, let refused = JoinFailures.parse(parsed.message, online: players) {
+            if parsed.level != .debug, !parsed.isChat, let refused = JoinFailures.parse(parsed.message, online: players) {
                 failedJoins.insert(refused, at: 0)
                 if failedJoins.count > 100 { failedJoins.removeLast() }
                 recordEvent(.player, "\(refused.name) couldn't join", detail: refused.meaning)
             }
             commands.ingest(line)
             append(line, level: parsed.level, origin: .server)
-            analyzer.ingest(line)
+            if !parsed.isChat { analyzer.ingest(line) }
             changedIssues = changedIssues || parsed.level >= .warn || analyzer.dirty
             observe(parsed)
         }
@@ -584,10 +611,12 @@ public final class ServerController: Identifiable {
     }
 
     private static let donePattern = regex(#"^Done \(\d+[.,]\d+s\)!"#)
-    private static let uuidPattern = regex(#"UUID of player (\.?[A-Za-z0-9_]{1,16}) is ([0-9a-fA-F-]{36})"#)
+    private static let uuidPattern = regex(#"^UUID of player (\.?[A-Za-z0-9_]{1,16}) is ([0-9a-fA-F-]{36})$"#)
     private static let joinPattern = regex(#"^(\.?[A-Za-z0-9_]{1,16}) (joined|left) the game"#)
 
     private func observe(_ line: ParsedLogLine) {
+        // A player can type anything, so chat never finishes a wait or teaches the app a uuid.
+        if line.isChat { return }
         if !waiters.isEmpty {
             let lower = line.message.lowercased()
             for (i, waiter) in waiters.enumerated().reversed() where waiter.needles.contains(where: lower.contains) {
@@ -679,10 +708,12 @@ public final class ServerController: Identifiable {
     /// Reads `logs/latest.log` into the catalog. Stable, so scanning twice only raises counts.
     public func scanLatestLog() {
         let file = paths.root.appendingPathComponent("logs/latest.log")
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return }
+        // Only the end: a log from a spam loop can be gigabytes (K158 audit).
+        guard let data = PackGate.tail(file, bytes: 16 << 20) else { return }
+        let text = String(decoding: data, as: UTF8.self)
         let date = FileOps.modified(file) ?? Date()
         analyzer.setPlugins(plugins)
-        for line in text.split(whereSeparator: \.isNewline).suffix(50_000) { analyzer.ingest(String(line), at: date) }
+        for line in text.split(whereSeparator: \.isNewline).suffix(50_000) where !ParsedLogLine(String(line)).isChat { analyzer.ingest(String(line), at: date) }
         issues = analyzer.sorted
         persistIssues()
     }
@@ -728,8 +759,16 @@ public final class ServerController: Identifiable {
         refreshConfigs()
     }
 
-    /// Applies every queued change. The server must be stopped.
+    /// Applies every queued change. The server must be stopped, and nothing else long may be running.
     public func applyPending() async {
+        guard busyWith == nil, state.canStart, !pending.isEmpty else { return }
+        busyWith = "Applying changes"
+        defer { endBusy() }
+        await applyPendingHoldingBusy()
+    }
+
+    /// The work of `applyPending`, for a caller that already holds the busy mark (Start).
+    private func applyPendingHoldingBusy() async {
         guard state.canStart, !pending.isEmpty else { return }
         for i in pending.indices { pending[i].conflict = nil }
         pendingRestorePoint = nil
@@ -1010,6 +1049,8 @@ public final class ServerController: Identifiable {
     /// Rolls back to an archived jar of the same Minecraft version.
     public func rollbackJar(_ name: String) async throws {
         guard state.canStart else { throw LeafError("Stop the server first.") }
+        try beginBusy("Rolling back the server jar")
+        defer { endBusy() }
         let detected = name.range(of: #"^(paper|purpur|folia)-(.+?)-(\d+)\.jar$"#, options: [.regularExpression, .caseInsensitive]) != nil
         if detected {
             let parts = (name as NSString).deletingPathExtension.components(separatedBy: "-")
@@ -1257,6 +1298,8 @@ public final class ServerController: Identifiable {
 
     public func restorePlugin(fileName: String) async throws {
         guard state.canStart else { throw LeafError("Stop the server first.") }
+        try beginBusy("Restoring a plugin")
+        defer { endBusy() }
         let archived = paths.pluginArchive.appendingPathComponent(fileName)
         guard let descriptor = await PluginYAML.read(jar: archived) else { throw LeafError("That jar can't be read.") }
         if let current = plugins.first(where: { $0.key == descriptor.name.lowercased() }) {
@@ -1462,6 +1505,8 @@ public final class ServerController: Identifiable {
 
     public func restoreBackup(_ record: BackupRecord) async throws {
         guard state.canStart else { throw LeafError("Stop the server before restoring a backup.") }
+        try beginBusy("Restoring a backup")
+        defer { endBusy() }
         // Making the safety copy runs retention, which could otherwise remove the very backup being restored.
         let wasPinned = record.pinned
         if !wasPinned { try? Backups.setPinned(record, pinned: true, profile: profile) }
@@ -1690,12 +1735,14 @@ public final class ServerController: Identifiable {
 
     public func loadWorld(_ name: String) async throws {
         let major = try requireMultiverse()
+        guard Multiverse.isValidName(name) else { throw LeafError("Multiverse can't safely be given a world named that. World names can use letters, numbers, - and _.") }
         await runWorldCommand("Loading \(name)", command: Multiverse.loadCommand(name), success: Multiverse.successText(.load, major: major))
     }
 
     public func unloadWorld(_ world: WorldEntry) async throws {
         let major = try requireMultiverse()
         guard !world.isCore else { throw LeafError("The server's own worlds can't be unloaded.") }
+        guard Multiverse.isValidName(world.name) else { throw LeafError("Multiverse can't safely be given a world named that. World names can use letters, numbers, - and _.") }
         await runWorldCommand("Unloading \(world.name)", command: Multiverse.unloadCommand(world.name, removePlayers: multiverseRemovesPlayers), success: Multiverse.successText(.unload, major: major))
     }
 
@@ -1703,18 +1750,19 @@ public final class ServerController: Identifiable {
     public func removeWorldFromMultiverse(_ world: WorldEntry) async throws {
         let major = try requireMultiverse()
         guard !world.isCore else { throw LeafError("The server's own worlds can't be removed.") }
+        guard Multiverse.isValidName(world.name) else { throw LeafError("Multiverse can't safely be given a world named that. World names can use letters, numbers, - and _.") }
         await runWorldCommand("Removing \(world.name) from Multiverse", command: Multiverse.removeCommand(world.name, removePlayers: multiverseRemovesPlayers), success: Multiverse.successText(.remove, major: major))
     }
 
     public func cloneWorld(_ world: WorldEntry, to target: String) async throws {
         let major = try requireMultiverse()
-        guard Multiverse.isValidName(target) else { throw LeafError("World names can use letters, numbers, - and _.") }
+        guard Multiverse.isValidName(target), Multiverse.isValidName(world.name) else { throw LeafError("World names can use letters, numbers, - and _.") }
         await runWorldCommand("Copying \(world.name) to \(target)", command: Multiverse.cloneCommand(world.name, to: target), success: Multiverse.successText(.clone, major: major), timeout: .seconds(600))
     }
 
     public func modifyWorld(_ world: WorldEntry, property: String, value: String) async throws {
         let major = try requireMultiverse()
-        guard value.range(of: #"^[A-Za-z0-9_ .:'&-]*$"#, options: .regularExpression) != nil else {
+        guard Multiverse.isValidName(world.name), value.range(of: #"^[A-Za-z0-9_ .:'&-]*\z"#, options: .regularExpression) != nil else {
             throw LeafError("That value contains characters that can't be sent safely.")
         }
         await runWorldCommand("Setting \(property) on \(world.name)", command: Multiverse.modifyCommand(world.name, property: property, value: value, major: major), success: Multiverse.successText(.modify, major: major), timeout: .seconds(15))

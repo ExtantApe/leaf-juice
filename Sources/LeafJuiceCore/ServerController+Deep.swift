@@ -17,6 +17,8 @@ extension ServerController {
     /// on the way down and the previewed text could be out of date. Choices made in the preview carry over.
     public func applyRename(_ previewed: RenamePlan, rebuild: (@MainActor () -> RenamePlan)? = nil, restart: Bool = true, afterwards: (@MainActor () throws -> Void)? = nil) async throws {
         let wasRunning = state == .running
+        try beginBusy("Renaming")
+        defer { endBusy() }
         try await stopAndWait()
         var plan = rebuild?() ?? previewed
         let unchosen = Set(previewed.items.filter { !$0.selected }.map(\.location))
@@ -47,6 +49,7 @@ extension ServerController {
         await refreshWorlds()
         appendWrapper("\(plan.title): done.", level: .info)
         recordEvent(.rename, plan.title)
+        endBusy()
         if wasRunning, restart { await start() }
     }
 
@@ -182,8 +185,15 @@ extension ServerController {
             try? FileOps.move(jar, to: jar.appendingPathExtension("disabled"))
             report.notes.append("\(plugin.name) is off in the copy, so it can't reach anything outside.")
         }
-        for name in Trial.databasePlugins(copyPaths) {
-            report.notes.append("\(name) uses an outside database, and the copy shares it. Test it with care.")
+        // A plugin on an outside database would share it with the real server, and could change or migrate it from
+        // the copy (K158 audit). It's turned off in the copy instead.
+        let shared = Set(Trial.databasePlugins(copyPaths).map { $0.lowercased() })
+        if !shared.isEmpty {
+            for plugin in await PluginScanner.scan(copyPaths) where plugin.enabled && (shared.contains(plugin.key) || shared.contains(plugin.name.lowercased())) {
+                let jar = copyPaths.plugins.appendingPathComponent(plugin.fileName)
+                try? FileOps.move(jar, to: jar.appendingPathExtension("disabled"))
+                report.notes.append("\(plugin.name) uses an outside database that the real server also uses, so it's off in the copy.")
+            }
         }
 
         var p = profile
@@ -468,7 +478,8 @@ extension ServerController {
         let online = players.contains(snapshot.name)
         // Multiverse-Inventories keeps profiles in memory and can reapply them on join, so with it
         // installed a restore is only safe while the server is stopped.
-        let needsStop = !state.canStart && (online || PlayerPaths(paths).hasInventoriesPlugin)
+        // Starting, stopping or running elsewhere, the player list can't be trusted, so it's staged then too (K158 audit).
+        let needsStop = !state.canStart && (state != .running || online || PlayerPaths(paths).hasInventoriesPlugin)
         if needsStop {
             enqueue(PendingChange(
                 kind: .playerRestore(folder: snapshot.folder, uuid: snapshot.uuid, name: snapshot.name, inventoryOnly: inventoryOnly, containers: containers),
@@ -488,6 +499,8 @@ extension ServerController {
     /// Merges two profiles, after a verified restore point.
     public func mergePlayers(_ plan: MergePlan) async throws {
         let wasRunning = state == .running
+        try beginBusy("Merging players")
+        defer { endBusy() }
         try await stopAndWait()
         let point: BackupRecord? = hasWorld ? try await makeRestorePoint() : nil
         setActivity("Merging \(plan.from.title) into \(plan.to.title)…")
@@ -509,6 +522,7 @@ extension ServerController {
         }
         recordEvent(.player, "Merged \(plan.from.title) into \(plan.to.title)")
         await refreshPlayers()
+        endBusy()
         if wasRunning { await start() }
     }
 

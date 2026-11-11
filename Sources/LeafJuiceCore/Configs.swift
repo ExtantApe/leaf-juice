@@ -80,6 +80,7 @@ public struct PropertiesDocument: Equatable, Sendable {
             switch ch {
             case "\\": out += "\\\\"
             case "\n": out += "\\n"
+            case "\r": out += "\\r"
             case "\t": out += "\\t"
             case "=", ":": out += "\\\(ch)"
             default: out.append(ch)

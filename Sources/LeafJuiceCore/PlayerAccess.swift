@@ -19,7 +19,7 @@ public enum AccountLookup {
     }
 
     public static func isValidName(_ text: String) -> Bool {
-        text.range(of: #"^[A-Za-z0-9_]{1,16}$"#, options: .regularExpression) != nil
+        text.range(of: #"^[A-Za-z0-9_]{1,16}\z"#, options: .regularExpression) != nil
     }
 
     /// Mojang matches any capitals and answers with the account's own spelling. Anything else isn't a match.
@@ -135,7 +135,7 @@ enum LuckPermsText {
     }
 
     static func isValidGroup(_ text: String) -> Bool {
-        text.range(of: #"^[a-z0-9_.-]{1,36}$"#, options: .regularExpression) != nil
+        text.range(of: #"^[a-z0-9_.-]{1,36}\z"#, options: .regularExpression) != nil
     }
 
     /// `[LP] -  name - 0`
@@ -159,7 +159,7 @@ enum LuckPermsText {
     }
 
     static func checkResult(_ lines: [String]) -> SignInAccess {
-        switch lines.lazy.compactMap({ groups(#"Result:\s*(\w+)"#, $0)?.first }).first?.lowercased() {
+        switch lines.lazy.compactMap({ groups(#"\[LP\]\s+Result:\s*(\w+)"#, $0)?.first }).first?.lowercased() {
         case "true": .yes
         case "false": .no
         case "undefined": .noGroupGivesIt
@@ -203,7 +203,7 @@ extension ServerController {
     /// Runs a console command and collects what comes back, until something does or it's clear nothing will.
     func ask(_ command: String, seconds: Double = 8, until done: ([String]) -> Bool) async -> [String] {
         let mark = console.last?.id ?? -1
-        func answer() -> [String] { console.filter { $0.id > mark && $0.origin == .server }.map(\.text) }
+        func answer() -> [String] { console.filter { $0.id > mark && $0.origin == .server && !$0.isChat }.map(\.text) }
         send(command)
         for _ in 0..<Int(seconds * 10) where !done(answer()) {
             try? await Task.sleep(for: .milliseconds(100))
@@ -330,8 +330,18 @@ extension ServerController {
             if let kept = change.removeGroups.first(where: { now.contains($0) }) { return "LuckPerms still has \(kept) for \(change.name)." }
         }
         guard change.addToAllowlist else { return nil }
-        func entry() -> AllowlistEntry? { allowlist.first { $0.name.lowercased() == change.name.lowercased() || $0.uuid == change.uuid } }
-        if entry()?.uuid == change.uuid { return nil }
+        let before = allowlist
+        if before.contains(where: { $0.uuid == change.uuid }) { return nil }
+        // A stale entry for a different account under this name would make "whitelist remove <name>" ambiguous
+        // (the K158 audit), so it's refused rather than guessed at.
+        if let clash = before.first(where: { $0.name.lowercased() == change.name.lowercased() }) {
+            return "The allowlist already has a different account called \(clash.name). Take that entry off first, then add \(change.name)."
+        }
+        // By uuid; otherwise only an entry that's new since the add, so nobody already listed can be matched.
+        func entry() -> AllowlistEntry? {
+            allowlist.first { $0.uuid == change.uuid }
+                ?? allowlist.first { e in e.name.lowercased() == change.name.lowercased() && !before.contains { $0.uuid == e.uuid } }
+        }
         let lines = await ask("whitelist add \(change.name)") { lines in
             lines.contains { $0.contains("does not exist") || $0.contains("Added ") || $0.contains("already") }
         }

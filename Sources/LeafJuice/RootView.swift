@@ -282,7 +282,8 @@ struct ServerToolbar: ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             if server.state.canStart {
                 Button { Task { await server.start() } } label: { Label("Start", systemImage: "play.fill") }
-                    .help("Start the server (⌘R)")
+                    .disabled(!server.canStartNow)
+                    .help(server.busyWith.map { "Wait: \($0)…" } ?? "Start the server (⌘R)")
             } else {
                 Button { server.stop() } label: { Label("Stop", systemImage: "stop.fill") }
                     .disabled(server.state != .running && server.state != .starting)
@@ -361,7 +362,7 @@ struct BlockersSheet: View {
                     Task { await server.start() }
                 }
                 .buttonStyle(.juicePrimary)
-                .disabled(needsEULA && !acceptedEULA)
+                .disabled((needsEULA && !acceptedEULA) || !server.canStartNow)
             }
         }
         .padding(20)

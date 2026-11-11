@@ -10,12 +10,14 @@ public enum Gzip {
         guard isGzip(data), data.count >= 18 else { throw LeafError("That file isn't gzip data.") }
         let flags = data[3]
         var offset = 10
-        if flags & 4 != 0 { offset += 2 + Int(data[offset]) + Int(data[offset + 1]) << 8 }
+        if flags & 4 != 0 { guard offset + 1 < data.count else { throw LeafError("That gzip data is damaged.") }; offset += 2 + Int(data[offset]) + Int(data[offset + 1]) << 8 }
         if flags & 8 != 0 { while offset < data.count, data[offset] != 0 { offset += 1 }; offset += 1 }
         if flags & 16 != 0 { while offset < data.count, data[offset] != 0 { offset += 1 }; offset += 1 }
         if flags & 2 != 0 { offset += 2 }
         let size = Int(data[data.count - 4]) | Int(data[data.count - 3]) << 8 | Int(data[data.count - 2]) << 16 | Int(data[data.count - 1]) << 24
-        var capacity = max(size, 1024)
+        // A crafted header can point past the end, or claim a huge size (K158 audit).
+        guard offset <= data.count - 8 else { throw LeafError("That gzip data is damaged.") }
+        var capacity = min(max(size, 1024), 512 << 20)
         let body = data[offset..<(data.count - 8)]
         for _ in 0..<2 {
             var out = Data(count: capacity)
@@ -25,7 +27,7 @@ public enum Gzip {
                 }
             }
             if written == size || (written > 0 && written < capacity) { return out.prefix(written) }
-            capacity = max(capacity * 8, 1 << 24)   // ISIZE wraps at 4 GB; never relied on beyond a hint.
+            capacity = min(max(capacity * 8, 1 << 24), 512 << 20)   // ISIZE wraps at 4 GB; a hint only, and capped.
         }
         throw LeafError("That file's compressed data is damaged.")
     }

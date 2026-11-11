@@ -35,12 +35,12 @@ public enum CommandArg: Sendable, Equatable {
 public enum PluginCommandWire {
     public static let format = 1
     public static let maxAnswerBytes = 8192
-    static let idPattern = regex(#"^[a-z0-9-]{1,36}$"#)
-    static let labelPattern = regex(#"^[a-z0-9_-]{1,32}$"#)
-    static let wordPattern = regex(#"^[a-z0-9-]{1,32}$"#)
-    static let playerNamePattern = regex(#"^\.?[A-Za-z0-9_]{1,16}$"#)
-    static let uuidPattern = regex(#"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"#)
-    static let choicePattern = regex(#"^[a-z0-9][a-z0-9-]{0,63}$"#)
+    static let idPattern = regex(#"^[a-z0-9-]{1,36}\z"#)
+    static let labelPattern = regex(#"^[a-z0-9_-]{1,32}\z"#)
+    static let wordPattern = regex(#"^[a-z0-9-]{1,32}\z"#)
+    static let playerNamePattern = regex(#"^\.?[A-Za-z0-9_]{1,16}\z"#)
+    static let uuidPattern = regex(#"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z"#)
+    static let choicePattern = regex(#"^[a-z0-9][a-z0-9-]{0,63}\z"#)
 
     /// 32 hex characters from the system's secure random source, so nobody can guess one.
     public static func newID() -> String {
@@ -379,7 +379,7 @@ public struct PluginDescription: Sendable, Equatable {
         guard let head = try? JSONDecoder().decode(Format.self, from: json) else { return .unreadable }
         guard head.format <= PluginCommandWire.format else { return .newerFormat(head.format) }
         guard head.format >= 1, let wire = try? JSONDecoder().decode(Wire.self, from: json),
-              PluginCommandWire.matches(regex(#"^[A-Za-z0-9_-]{1,64}$"#), wire.plugin) else { return .unreadable }
+              PluginCommandWire.matches(regex(#"^[A-Za-z0-9_-]{1,64}\z"#), wire.plugin) else { return .unreadable }
         // A required argument after an optional one would leave Leaf Juice guessing which slot a value fills.
         for command in wire.commands ?? [] {
             guard let firstOptional = command.args.firstIndex(where: \.optional) else { continue }
@@ -415,7 +415,7 @@ public enum OnceSecrets {
     /// Reads the secret and deletes the file, whether or not it could be used.
     /// `plugin` is the plugin's folder name from `describe`; `secretFile` is the answer's `secretFile`.
     public static func take(serverRoot: URL, plugin: String, requestID: String, secretFile: String, now: Date = Date()) -> Result<Secret, Problem> {
-        guard PluginCommandWire.matches(regex(#"^[A-Za-z0-9_-]{1,64}$"#), plugin),
+        guard PluginCommandWire.matches(regex(#"^[A-Za-z0-9_-]{1,64}\z"#), plugin),
               PluginCommandWire.matches(PluginCommandWire.idPattern, requestID),
               secretFile == "once/\(requestID).json" else { return .failure(.badPath) }
         let folder = serverRoot.appendingPathComponent("plugins", isDirectory: true)
