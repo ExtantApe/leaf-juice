@@ -832,6 +832,21 @@ public enum ResourcePacks {
             try FileManager.default.copyItem(at: source.url(file.path), to: target)
         }
 
+        // Before 1.20.2 the interface came as sheets; newer versions read separate sprites. When an older pack is
+        // included, its sheets are sliced into those sprites here, in the build's own copy, so its art still shows
+        // (K159, Mojang's slicer). The sheets stay for older versions, and a sprite already in the build is never
+        // replaced, so a newer pack's own sprites still win.
+        let olderPacks = sources.filter { source in
+            let body = source.meta?["pack"] as? [String: Any]
+            return (formatNumber(body?["pack_format"]) ?? formatNumber(body?["min_format"])).map { $0 < 18 } ?? false
+        }
+        if !olderPacks.isEmpty {
+            let report = try LegacySprites.migrate(packRoot: work)
+            if !report.written.isEmpty {
+                warnings.append("\(report.written.count) interface sprites were cut from older packs' sheets, so they show on 1.20.2 and later.")
+            }
+        }
+
         // pack.mcmeta: wide enough for everything included.
         let metas = sources.compactMap(\.meta)
         let bodies = metas.compactMap { $0["pack"] as? [String: Any] }

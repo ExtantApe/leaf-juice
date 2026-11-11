@@ -4643,6 +4643,7 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
         equal(bad, 3, "bad addresses and hashes are refused")
         await packContributionChecks(recipe: recipe, top: a.id, lower: b.id, stone: stoneA)
     } catch { failures.append("resource packs threw: \(error)") }
+    await runLegacySpritesChecks()
     await packHostingChecks()
     await exactPackChecks()
     await packGateChecks()
