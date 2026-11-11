@@ -2,6 +2,41 @@
 
 Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-10: the code audit's fixes
+
+The fixes from `docs/audit-2026-11-10.md` (the Server lead's code audit). Default run: 2742 passed, 0 failed, with 22 new
+checks in "One long operation at a time". The real sign-in run (`--real-signin`) is updated for Latchkey 0.2+ (whitelist
+on, the bot allowlisted to join and taken off to check the refusal); with the landing page off it waits on Latchkey 0.4.0,
+which fixes sign-in-page in that case.
+
+Covered:
+
+- **One long operation at a time.** A held busy mark turns Start off; Start during a rename does nothing and leaves the
+  rename's mark; a second long operation is refused; queued changes wait; Start holds the server from its first moment, a
+  second Start returns without touching the first, and Start lets go when it's done even when it couldn't start.
+  Removing the mark from Start failed 1 check ("Start holds the server from its first moment").
+- **No line breaks into the console.** A player name, a world name and a seed with a trailing newline are refused, and a
+  newline name never reaches a plugin command; a carriage return is escaped in `server.properties`.
+- **Chat is never the server.** Chat lines are recognised in the console and in log files (including "Not Secure"), a
+  server line isn't, chat saying "Result: true" isn't LuckPerms' yes, and LuckPerms' own line still is.
+  Making `isChat` always false failed 2 checks.
+- **Access around Usher.** With Usher, the raw allowlist add is refused; without online mode, a name-based op is refused;
+  bans work as before.
+- **Files and archives.** A gzip header with no end to its name fails cleanly; a restore swaps the file in whole and
+  leaves nothing behind; a server jar name with a path in it isn't used; no checksum, or MD5 alone, isn't a published hash.
+- **The web side.** A request with no player headers is refused before any file is read; BlueMap on its default address
+  keeps `/map/` off, and with `ip: "127.0.0.1"` it's on.
+
+Gaps:
+
+- Two Starts racing for real, and Start during a real rename, are shown with the busy mark and a stand-in wait, not with
+  two real JVMs.
+- The pack-check pass staying on its own host, and refusing redirects, have no check yet (they need a second host).
+- Map-access checks running one at a time are covered by reading, not by two simultaneous viewers.
+- Left as task K386: a Modrinth hash match offered as a suggestion, real-size pack extraction, and a setting for the
+  Modrinth checksum lookups.
+- Each `leafjuice-check` run leaves a `leafjuice-check-<uuid>` preferences domain behind (about 66 on 2026-11-10).
+
 ## 2026-11-10: packs served only to players joining
 
 The owner's request of 2026-11-10 (see `docs/PLAN.md`). Default run: 2710 passed. With `--real-pack` (throwaway Paper 26.3, bots): 2762 passed.
