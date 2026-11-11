@@ -302,4 +302,4 @@ builds a universal app and publishes the `.dmg` and `.zip`.
 
 ## License
 
-MIT
+MIT. Code adapted from other projects is credited, with its license, in [NOTICE](NOTICE).
