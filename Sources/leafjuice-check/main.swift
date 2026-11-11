@@ -654,6 +654,24 @@ do {
     check(!FileOps.exists(temp.appendingPathComponent(".p.dat.restoring")), "and leaves nothing behind")
 } catch { check(false, "one long operation at a time: \(error)") }
 
+section("The management server (K160)")
+do {
+    let secret = String(repeating: "a", count: 40)
+    let good = "management-server-enabled=true\nmanagement-server-host=127.0.0.1\nmanagement-server-port=41234\nmanagement-server-tls-enabled=false\nmanagement-server-secret=\(secret)\n"
+    equal(ManagementEndpoint.from(properties: good), ManagementEndpoint(port: 41234, secret: secret), "an endpoint on this Mac with a secret is used")
+    check(ManagementEndpoint.from(properties: good.replacingOccurrences(of: "127.0.0.1", with: "0.0.0.0")) == nil, "one on every address isn't")
+    check(ManagementEndpoint.from(properties: good.replacingOccurrences(of: "enabled=true", with: "enabled=false")) == nil, "nor one that's off")
+    check(ManagementEndpoint.from(properties: good.replacingOccurrences(of: secret, with: "short")) == nil, "nor one with a short secret")
+    check(ManagementEndpoint.from(properties: good.replacingOccurrences(of: "tls-enabled=false", with: "tls-enabled=true")) == nil, "nor one with TLS, which this Mac-only link doesn't use")
+    let enabled = ManagementEndpoint.enabling("motd=hi\nmanagement-server-enabled=false\n", port: 41000)
+    let doc = PropertiesDocument(enabled)
+    check(doc.value("management-server-enabled") == "true" && doc.value("management-server-host") == "127.0.0.1" && doc.value("management-server-port") == "41000" && doc.value("management-server-tls-enabled") == "false" && doc.value("motd") == "hi", "turning it on sets it up for this Mac and keeps the rest")
+    equal(ManagementText.players([["id": "AB-CD", "name": "Alice"], ["id": "x", "name": "bad name!"]])?.map(\.name), ["Alice"], "the player list is read, and a bad name is dropped")
+    check(ManagementText.event(["jsonrpc": "2.0", "method": "minecraft:notification/players/joined", "params": [["id": "u1", "name": "Alice"]]]) == .joined(.init(uuid: "u1", name: "Alice")), "a join notification is read")
+    check(ManagementText.event(["jsonrpc": "2.0", "method": "minecraft:notification/players/left", "params": [["id": "u1", "name": "Alice"]]]) == .left(.init(uuid: "u1", name: "Alice")), "a leave notification is read")
+    check(ManagementText.event(["jsonrpc": "2.0", "id": 3, "method": "minecraft:notification/players/joined", "params": [["id": "u1", "name": "Alice"]]]) == nil, "an answer with an id isn't a notification")
+}
+
 section("The change queue")
 do {
     let root = folder("staging")
@@ -2478,6 +2496,13 @@ if let flag = CommandLine.arguments.firstIndex(of: "--real-signin"), flag + 1 < 
         print("Skipping --real-signin: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
     }
 }
+if CommandLine.arguments.contains("--real-management") {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealManagement()
+    } else {
+        print("Skipping --real-management: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
 if CommandLine.arguments.contains("--real-map") {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         await runRealMap()
@@ -3256,6 +3281,44 @@ func localAddresses() -> [String] {
         equal(jars(), before, "switching back on puts every file back as it was")
         equal(await c.switchedOffPlugins().entries.count, 0, "and nothing is listed as off")
     } catch { failures.append("real plugins on upgrade threw: \(error)") }
+}
+
+/// K160 for real: a throwaway Paper server with the management server turned on by Leaf Juice, and a bot joining and
+/// leaving while the player list comes from the management server, not the console.
+@MainActor func runRealManagement() async {
+    section("REAL MANAGEMENT SERVER (EULA accepted by the person running this)")
+    do {
+        let root = folder("real-management")
+        write("server-port=25597\nserver-ip=127.0.0.1\nonline-mode=false\nwhite-list=false\nenforce-whitelist=false\nnetwork-compression-threshold=-1\nview-distance=4\nsimulation-distance=4\nmotd=made up message\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
+        let c = try await ServerController.adopt(root: root, name: "Real management test")
+        defer { c.forceStop(); c.stopTicker() }
+        try EULA.accept(c.paths)
+        try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!)
+        c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
+        try c.enableManagementProtocol()
+        check(c.profile.useManagementProtocol, "turning it on is remembered")
+        await c.start()
+        await checkUntil(240, "real server up: \(c.state)") { c.state == .running }
+        await checkUntil(30, "players come from the management server") { c.management != nil }
+        let text = (try? String(contentsOf: c.paths.properties, encoding: .utf8)) ?? ""
+        guard let endpoint = ManagementEndpoint.from(properties: text) else { throw LeafError("no usable endpoint after start") }
+        let wrong = ManagementLink(ManagementEndpoint(port: endpoint.port, secret: String(repeating: "x", count: 40)))
+        wrong.open()
+        let wrongAnswer = await wrong.call("minecraft:server/status", timeout: .seconds(3))
+        check(wrongAnswer == nil, "a wrong secret gets nothing")
+        wrong.close()
+        let java = c.resolvedJava()?.path ?? ""
+        let table = try await ProtocolTable.load(mc: realMC, cache: folder("management-protocol"), java: java)
+        let bot = try Bot(name: "MadeUpBot", port: 25597, table: table)
+        await checkUntil(60, "bot in game: \(bot.disconnectReason ?? "")") { bot.inGame }
+        await checkUntil(10, "a join arrives from the management server") { c.players.contains("MadeUpBot") }
+        bot.leave()
+        await checkUntil(10, "and so does the leave") { !c.players.contains("MadeUpBot") }
+        check(c.console.contains { $0.text.contains("Players are read from the management server") }, "the console says where players come from")
+        c.stop()
+        await checkUntil(90, "stopped: \(c.state)") { c.state == .stopped }
+        check(c.management == nil, "the link closes with the server")
+    } catch { failures.append("real management: \(error)") }
 }
 
 @MainActor func runRealSignIn(jar: String) async {

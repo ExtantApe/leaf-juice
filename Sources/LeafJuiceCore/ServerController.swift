@@ -232,6 +232,82 @@ public final class ServerController: Identifiable {
         activityProgress = progress
     }
 
+    // MARK: Players, from the console or the management server
+
+    func playerJoined(_ name: String) {
+        players.insert(name)
+        playSeconds[name] = 0
+    }
+
+    func playerLeft(_ name: String) {
+        guard players.contains(name) else { return }
+        players.remove(name)
+        playSeconds[name] = nil
+        // The server writes their data as they leave, so this catches their final state.
+        if profile.playerSnapshots.enabled, Modules.shared.isOn(.players), !isTrialCopy {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                self?.takeAutomaticSnapshot(name: name, trigger: "left")
+            }
+        }
+    }
+
+    // MARK: Management server (K160)
+
+    @ObservationIgnored var management: ManagementLink?
+    /// Where the player list comes from right now, for the Overview.
+    public var playerSource: String { management == nil ? "the console" : "the management server" }
+
+    func connectManagement() {
+        guard profile.useManagementProtocol, management == nil,
+              let text = try? String(contentsOf: paths.properties, encoding: .utf8),
+              let endpoint = ManagementEndpoint.from(properties: text) else { return }
+        let link = ManagementLink(endpoint)
+        link.onEvent = { [weak self] event in
+            Task { @MainActor in
+                switch event {
+                case .joined(let p): self?.playerJoined(p.name)
+                case .left(let p): self?.playerLeft(p.name)
+                }
+            }
+        }
+        link.onClose = { [weak self] in Task { @MainActor in if self?.management === link { self?.management = nil } } }
+        link.open()
+        Task { [weak self] in
+            guard let list = ManagementText.players(await link.call("minecraft:players")) else {
+                link.close()
+                await MainActor.run { self?.appendWrapper("The management server didn't answer, so players are read from the console.", level: .warn) }
+                return
+            }
+            await MainActor.run {
+                guard let self, self.state == .running else { link.close(); return }
+                self.management = link
+                let now = Set(list.map(\.name))
+                for name in self.players.subtracting(now) { self.players.remove(name); self.playSeconds[name] = nil }
+                for name in now.subtracting(self.players) { self.playerJoined(name) }
+                self.appendWrapper("Players are read from the management server.", level: .info)
+            }
+        }
+    }
+
+    func closeManagement() {
+        management?.close()
+        management = nil
+    }
+
+    /// Turns the management server on for this Mac only, on a free port. Takes effect at the next start.
+    public func enableManagementProtocol() throws {
+        let text = (try? String(contentsOf: paths.properties, encoding: .utf8)) ?? ""
+        var port = 0
+        for candidate in (41000...41999).shuffled() where !SystemInfo.isPortBusy(candidate) { port = candidate; break }
+        guard port > 0 else { throw LeafError("No free port was found for the management server.") }
+        let updated = ManagementEndpoint.enabling(text, port: port)
+        if state.canStart { try FileOps.writeAtomic(updated, to: paths.properties) }
+        else { try ConfigStage(paths: paths).stage("server.properties", text: updated) }
+        profile.useManagementProtocol = true
+        saveProfile()
+    }
+
     // MARK: Busy
 
     /// A long operation that needs this server stopped: starting, applying changes, renaming, merging, restoring.
@@ -429,6 +505,7 @@ public final class ServerController: Identifiable {
 
     private func handleExit(_ code: Int32) {
         flushLines()
+        closeManagement()
         // Observed: a broken config makes the server quit with code 0. Giving up isn't a clean stop.
         let failedToStart = state == .starting && !expectingStop
         stopDeadline?.cancel()
@@ -627,27 +704,16 @@ public final class ServerController: Identifiable {
         }
         if state == .starting, Self.donePattern.firstMatch(in: line.message) != nil {
             state = .running
+            connectManagement()
             // The server has just written its settings files, so there's more to show.
             refreshConfigs()
             crashTimes.removeAll()
         }
-        if let m = Self.joinPattern.firstMatch(in: line.message), m.numberOfRanges == 3,
+        // With the management server connected, joins and leaves come from it instead (K160).
+        if management == nil, let m = Self.joinPattern.firstMatch(in: line.message), m.numberOfRanges == 3,
            let nameRange = Range(m.range(at: 1), in: line.message), let verbRange = Range(m.range(at: 2), in: line.message) {
             let name = String(line.message[nameRange])
-            if line.message[verbRange] == "joined" {
-                players.insert(name)
-                playSeconds[name] = 0
-            } else {
-                players.remove(name)
-                playSeconds[name] = nil
-                // The server writes their data as they leave, so this catches their final state.
-                if profile.playerSnapshots.enabled, Modules.shared.isOn(.players), !isTrialCopy {
-                    Task { [weak self] in
-                        try? await Task.sleep(for: .seconds(3))
-                        self?.takeAutomaticSnapshot(name: name, trigger: "left")
-                    }
-                }
-            }
+            if line.message[verbRange] == "joined" { playerJoined(name) } else { playerLeft(name) }
         }
         if let m = Self.uuidPattern.firstMatch(in: line.message), m.numberOfRanges == 3,
            let n = Range(m.range(at: 1), in: line.message), let u = Range(m.range(at: 2), in: line.message) {

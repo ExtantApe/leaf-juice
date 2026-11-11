@@ -229,6 +229,9 @@ public struct ServerProfile: Codable, Identifiable, Equatable, Sendable {
     public var isLab = false
     public var labSeededAt: Date?
     public var labSeededPlayers = false
+    /// Who's online and joins and leaves come from Minecraft's management server instead of the console's text (K160).
+    /// Off by default; turning it on sets the management server up for this Mac only.
+    public var useManagementProtocol = false
     public init() {}
 }
 

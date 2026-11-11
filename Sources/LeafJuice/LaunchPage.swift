@@ -3,6 +3,7 @@ import LeafJuiceCore
 import SwiftUI
 
 struct LaunchPage: View {
+    @State private var managementError: String?
     @Bindable var server: ServerController
     @State private var showFlags = false
 
@@ -165,6 +166,14 @@ struct LaunchPage: View {
             Toggle("Start this server when Leaf Juice opens", isOn: $server.profile.launch.startWithApp)
             Toggle("Keep a log of Java's pauses", isOn: $server.profile.launch.logGC)
             Hint("Costs almost nothing, and shows on the History page whether stutters come from memory.")
+            Toggle("Read players from the management server", isOn: Binding(
+                get: { server.profile.useManagementProtocol },
+                set: { on in
+                    if on { do { try server.enableManagementProtocol() } catch { managementError = error.localizedDescription } }
+                    else { server.profile.useManagementProtocol = false }
+                }))
+            Hint("Minecraft 1.21.9 and later can report who joins and leaves directly, instead of Leaf Juice reading the console. It's set up for this Mac only, and starts at the next start. Now: players come from \(server.playerSource).")
+            if let managementError { Hint(managementError) }
         }
     }
 
