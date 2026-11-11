@@ -1114,8 +1114,10 @@ public final class ServerController: Identifiable {
         refreshConfigs()
     }
 
-    /// Exact Modrinth hash matches can safely set a source without asking.
+    /// An exact Modrinth hash match sets the source only when the project's name agrees with the plugin's own
+    /// (anyone can upload someone else's jar as their project). Otherwise it's left as a suggestion (K158 audit).
     private func identifySources() async {
+        guard Modules.shared.isOn(.sourceLookup) else { return }
         let unset = plugins.filter { !(records[$0.key]?.source.isSet ?? false) }
         let hashes = unset.compactMap { $0.digests?.sha1 }
         guard !hashes.isEmpty else { return }
@@ -1125,8 +1127,14 @@ public final class ServerController: Identifiable {
             guard let sha = plugin.digests?.sha1, let project = matches[sha] else { continue }
             var record = records[plugin.key] ?? PluginRecord()
             guard !record.source.isSet else { continue }
-            record.source = .modrinth(project: project, allowBeta: false)
-            record.note = "Recognised from its file hash."
+            let names = await SourceFinder.modrinthNames(project: project)
+            func plain(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
+            if names.contains(where: { plain($0) == plain(plugin.name) }) {
+                record.source = .modrinth(project: project, allowBeta: false)
+                record.note = "Recognised from its file hash."
+            } else {
+                record.note = "A Modrinth project (\(names.first ?? project)) has this exact file, but under a different name. Set it as the source yourself if it's the right one."
+            }
             records[plugin.key] = record
         }
         saveRecords()

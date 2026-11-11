@@ -4,7 +4,7 @@ import Observation
 /// Major features that can be switched off. All compiled in and all on by default: there's no third-party code here.
 /// Off hides a feature and stops its background work. Its data stays where it is.
 public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
-    case worlds, players, history, cleanup, testCopies, backupDrill, lab, resourcePacks, links, advisor, pluginCommands
+    case worlds, players, history, cleanup, testCopies, backupDrill, lab, resourcePacks, links, advisor, pluginCommands, sourceLookup
 
     public var id: String { rawValue }
     public var title: String {
@@ -20,6 +20,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .links: "Plugin links"
         case .advisor: "Advisor"
         case .pluginCommands: "Plugin commands"
+        case .sourceLookup: "Recognise plugins"
         }
     }
     /// The Advisor sends data to an outside service, and plugin commands wait for plugins that speak the
@@ -38,6 +39,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .links: "Each plugin, its version and a link to its documentation."
         case .advisor: "Optional AI suggestions, using your own Claude account. Off until you turn it on, and shares nothing until you choose a server."
         case .pluginCommands: "Lets Leaf Juice talk to plugins through the shared command format, on servers it started. A preview: off until plugins support it."
+        case .sourceLookup: "Finds where a plugin came from by sending its file's checksum (not the file) to Modrinth. Off keeps every checksum on this Mac."
         }
     }
     public var icon: String {
@@ -53,6 +55,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .links: "link"
         case .advisor: "sparkle.magnifyingglass"
         case .pluginCommands: "terminal"
+        case .sourceLookup: "magnifyingglass"
         }
     }
 }

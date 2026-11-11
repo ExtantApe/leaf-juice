@@ -662,6 +662,14 @@ public enum SourceFinder {
         return object.compactMapValues { $0["project_id"] as? String }
     }
 
+    /// A Modrinth project's slug and title, for checking a hash match against the plugin's own name.
+    public static func modrinthNames(project: String) async -> [String] {
+        guard project.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }),
+              let url = URL(string: "https://api.modrinth.com/v2/project/\(project)"),
+              let object = try? await HTTP.json(url) as? [String: Any] else { return [] }
+        return [object["slug"] as? String, object["title"] as? String].compactMap { $0 }
+    }
+
     public static func suggestions(for plugin: InstalledPlugin) async -> [SourceSuggestion] {
         var out: [SourceSuggestion] = []
         if let website = plugin.descriptor?.website, let source = SourceParser.parse(website) {

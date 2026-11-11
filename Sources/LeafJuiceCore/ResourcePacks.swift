@@ -323,9 +323,15 @@ public enum ResourcePacks {
         }
         try await clear(target)
         try FileOps.ensureDir(target)
-        let result = try await Tool.run("/usr/bin/unzip", ["-q", "-o", zip.path, "-d", target.path, "-x", "__MACOSX/*"])
+        let result = try await Tool.run("/usr/bin/unzip", ["-q", "-o", zip.path, "-d", target.path, "-x", "__MACOSX/*"], timeout: 300)
         // unzip exits 1 for warnings such as odd path separators, which still unpack.
         guard result.code <= 1 else { throw LeafError("Couldn't unpack \(zip.lastPathComponent). \(result.err.prefix(200))") }
+        // The sizes a zip declares can lie, so what actually arrived is measured too (K158 audit).
+        let real = Int64(listing(target).reduce(0) { $0 + FileOps.size(target.appendingPathComponent($1)) })
+        if real > unpackLimit {
+            try? await clear(target)
+            throw LeafError("\(zip.lastPathComponent) unpacked to \(Format.bytes(real)), more than a resource pack should be, so it was removed.")
+        }
         // Observed: real packs can store read-only folders, which then can't be cleared or rebuilt from.
         _ = try await Tool.run("/bin/chmod", ["-R", "u+rwX", target.path])
         // Nothing may go missing quietly, because a build from this would be wrong without saying so.
