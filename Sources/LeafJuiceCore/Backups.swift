@@ -15,6 +15,8 @@ public struct BackupRecord: Codable, Identifiable, Equatable, Sendable {
     /// What was running, so a whole-folder restore can start straight away as it was.
     public var softwareState: SoftwareState?
     public var launch: LaunchConfig?
+    /// The folder it was found in. Set when listing, so a backup on another drive is opened, pinned or deleted there.
+    public var location: String?
 }
 
 public enum Backups {
@@ -30,6 +32,20 @@ public enum Backups {
         var suffix = 2
         while let owner = owner(of: candidate), owner != profile.id {
             candidate = AppPaths.backups.appendingPathComponent("\(base) \(suffix)", isDirectory: true)
+            suffix += 1
+        }
+        return candidate
+    }
+
+    /// This server's own folder inside a storage target, such as `/Volumes/Drive/LeafJuice backups/<server>`. Several
+    /// servers can share a target; each gets a folder of its own, claimed like the default one.
+    public static func targetFolder(_ target: String, for profile: ServerProfile) -> URL {
+        let root = URL(fileURLWithPath: (target as NSString).expandingTildeInPath, isDirectory: true)
+        let base = ServerFolders.folderName(for: profile.name) ?? profile.id.uuidString
+        var candidate = root.appendingPathComponent(base, isDirectory: true)
+        var suffix = 2
+        while let owner = owner(of: candidate), owner != profile.id {
+            candidate = root.appendingPathComponent("\(base) \(suffix)", isDirectory: true)
             suffix += 1
         }
         return candidate
@@ -129,8 +145,10 @@ public enum Backups {
         }
         // A compressed backup can't exceed the source by much; require the full size to be safe.
         let needed = items.reduce(Int64(0)) { $0 + FileOps.directorySize(root.appendingPathComponent($1).resolvingSymlinksInPath()) }
-        if let free = FileOps.freeSpace(at: dest), free < needed {
-            throw LeafError("Not enough free space for a backup. It may need up to \(Format.bytes(needed)), and \(Format.bytes(free)) is free.")
+        // Fails closed, before anything is written: the disk keeps its floor free afterwards (2026-11-14).
+        let room = (DiskGuard.standIn ?? DiskGuard.space)(dest)
+        if let why = DiskGuard.refusal(free: room.free, capacity: room.capacity, needed: needed) {
+            throw LeafError("The backup wasn't started. \(why)")
         }
 
         let date = Date()
@@ -148,7 +166,9 @@ public enum Backups {
         // -H: a linked world folder goes in as its contents, not as a link to somewhere that might be gone later.
         var args = ["-czHf", partial.path, "--exclude", "session.lock", "--exclude", ".DS_Store"]
         args += ["-C", root.path] + items
-        let result = try await Tool.run("/usr/bin/tar", args)
+        // And while it runs: if the disk drops under the in-flight floor anyway, tar stops and the partial file goes.
+        let result = try await Tool.run("/usr/bin/tar", args, stopIf: DiskGuard.watch(dest))
+        if let stopped = result.stoppedBecause { throw LeafError("The backup was stopped part way and its partial file removed. \(stopped)") }
         var warning: String?
         // tar stores a link as a link, so what it points at isn't in the backup. Better said than found out later.
         let linked = items.filter { (try? FileManager.default.destinationOfSymbolicLink(atPath: root.appendingPathComponent($0).path)) != nil }
@@ -176,19 +196,39 @@ public enum Backups {
         let dest = folder ?? destination(profile)
         let decoder = JSONStore.decoder
         return FileOps.children(dest).filter { $0.lastPathComponent.hasSuffix(".tar.gz") }.compactMap { archive in
-            guard let data = try? Data(contentsOf: sidecar(for: archive)) else { return nil }
-            return try? decoder.decode(BackupRecord.self, from: data)
+            guard let data = try? Data(contentsOf: sidecar(for: archive)), var record = try? decoder.decode(BackupRecord.self, from: data) else { return nil }
+            record.location = dest.path
+            return record
         }.sorted { $0.date > $1.date }
+    }
+
+    /// Every backup this server has, in its own folder and in each storage target that's connected now.
+    /// One found in two places is listed once, from the first.
+    public static func listAll(_ profile: ServerProfile) -> [BackupRecord] {
+        var seen = Set<String>()
+        var out: [BackupRecord] = []
+        for folder in [destination(profile)] + profile.backup.smart.targets.map({ targetFolder($0, for: profile) }) {
+            // Only a folder this server claimed: another server's backups are never shown or touched here.
+            if folder != destination(profile), owner(of: folder) != profile.id { continue }
+            for r in list(profile, in: folder) where seen.insert(r.fileName).inserted { out.append(r) }
+        }
+        return out.sorted { $0.date > $1.date }
+    }
+
+    /// Where a record's archive is: the folder it was listed from, or the server's own folder.
+    public static func folder(of record: BackupRecord, profile: ServerProfile) -> URL {
+        record.location.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? destination(profile)
     }
 
     public static func setPinned(_ record: BackupRecord, pinned: Bool, profile: ServerProfile, in folder: URL? = nil) throws {
         var updated = record
         updated.pinned = pinned
-        try JSONStore.save(updated, to: sidecar(for: (folder ?? destination(profile)).appendingPathComponent(record.fileName)))
+        updated.location = nil
+        try JSONStore.save(updated, to: sidecar(for: (folder ?? Self.folder(of: record, profile: profile)).appendingPathComponent(record.fileName)))
     }
 
     public static func delete(_ record: BackupRecord, profile: ServerProfile, in folder: URL? = nil) throws {
-        let archive = (folder ?? destination(profile)).appendingPathComponent(record.fileName)
+        let archive = (folder ?? Self.folder(of: record, profile: profile)).appendingPathComponent(record.fileName)
         try FileManager.default.removeItem(at: archive)
         try? FileManager.default.removeItem(at: sidecar(for: archive))
     }
@@ -209,8 +249,9 @@ public enum Backups {
         do { try FileOps.ensureDir(folder) } catch {
             throw LeafError("Can't write to \(folder.path). If it's on another drive, check it's connected.")
         }
-        if let free = FileOps.freeSpace(at: folder), free < record.size {
-            throw LeafError("Not enough room at \(folder.path) for another \(Format.bytes(record.size)).")
+        let room = (DiskGuard.standIn ?? DiskGuard.space)(folder)
+        if let why = DiskGuard.refusal(free: room.free, capacity: room.capacity, needed: record.size) {
+            throw LeafError("Not copied to \(folder.path). \(why)")
         }
         let part = folder.appendingPathComponent(record.fileName + ".part")
         try? FileManager.default.removeItem(at: part)
@@ -288,7 +329,7 @@ public enum Backups {
 
     /// Replaces the items in a backup with their saved copies. The server must be stopped.
     public static func restore(_ record: BackupRecord, profile: ServerProfile, root: URL, from folder: URL? = nil) async throws {
-        let archive = (folder ?? destination(profile)).appendingPathComponent(record.fileName)
+        let archive = (folder ?? Self.folder(of: record, profile: profile)).appendingPathComponent(record.fileName)
         let meta = ServerPaths(root: root).meta
         let work = meta.appendingPathComponent("restore-\(UUID().uuidString)", isDirectory: true)
         let extracted = work.appendingPathComponent("new", isDirectory: true)

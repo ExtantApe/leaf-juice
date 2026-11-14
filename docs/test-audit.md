@@ -2,6 +2,46 @@
 
 Each audit lists what LeafJuice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-14: disk safety and smart backups
+
+Covered:
+
+- **Every refusal of the disk guard:**
+  - unknown free space;
+  - the real case (47 GB into 50 GB free);
+  - the 20 GB floor, which a normal Mac with 47 GB free still clears;
+  - a restore point refused before anything is written, with no archive or partial file left behind;
+  - a copy to the second location refused the same way;
+  - a drill with no disk that has room, or with only the running server's disk;
+  - a backup with every disk nearly full, refused with the reason.
+- **The in-flight floor:** a running job is stopped when its watch says so, and doesn't count as done. The watch stops
+  below 5 GB and when free space can't be read.
+- **When to back up:** 13 cases.
+  - During play, under and over six hours.
+  - After play, before and after ten idle minutes.
+  - The minimum gap, including a gap set too low.
+  - No backup yet.
+  - Played but not seen empty.
+  - A world that changed with nobody on, before and after a day.
+  - No sign of change.
+- **Settings:** a server from before keeps its schedule and keeping rules, a new one starts smart, missing fields take
+  defaults, and targets survive a save.
+- **Keeping:** everything from the last day, one a day for a week, one a week for eight weeks. Pinned backups and the
+  first one are never deleted.
+- **Where:** an unplugged drive is skipped without making its folder on this Mac, a file in a folder's place is
+  skipped, a nearly full disk is skipped, and the first usable target wins. A real made-up server's backup went to the
+  second target, in its own claimed folder, listed with its location and deleted from there. A restore point stayed
+  home. A second server sharing the drive got its own folder and isn't listed by the first.
+- **Mutations:** removing the gap, letting pinned or first backups go, dropping the floor, treating an unplugged drive
+  as present, and skipping the idle wait each failed checks.
+- **The trial** on a real Paper 26.3 server: `docs/backup-trial.md`.
+
+Not covered by a check:
+
+- The tick's one-hour back-off after a refused backup.
+- The drill's own skip path on a real server. Its rules are covered.
+- The Backups page controls with VoiceOver.
+
 ## 2026-11-14: the owner's Overview bugs and the sidebar
 
 - **Version:** Paper's "running Paper version 26.3-249-…" line gives the build; chat-shaped text doesn't.

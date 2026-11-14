@@ -2,7 +2,7 @@
 // Builds the app icon from the artwork in brand/icon-source.png: brand/icon-1024.png,
 // brand/icon-small.png and brand/AppIcon.icns.
 // The artwork's black background is removed, the glass goes on a pale pistachio tile (896 x 896 on
-// a 1024 canvas, corner radius 200, as in the OnePedigree family), and a pink grapefruit wheel sits on the rim.
+// a 1024 canvas, corner radius 200), and a pink grapefruit wheel sits on the rim.
 import AppKit
 
 func color(_ hex: UInt32) -> CGColor {

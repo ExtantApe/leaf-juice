@@ -140,6 +140,7 @@ if CommandLine.arguments.contains("--connections") {
     paletteChecks()
     sidebarChecks()
     await sessionAccessChecks()
+    await smartBackupChecks()
     // --live: also asks this Mac's own playit agent, read-only, and prints only health and summaries.
     if CommandLine.arguments.contains("--live") {
         section("Connections: this Mac's real agents (read-only)")
@@ -2513,6 +2514,13 @@ if CommandLine.arguments.contains("--sandbox") {
 try runAdvisorChecks()
 await runLifecycleWithStandIn()
 if CommandLine.arguments.contains("--live") { await runLiveAPIs() }
+if CommandLine.arguments.contains("--trial-backups") {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runBackupTrial()
+    } else {
+        print("Skipping --trial-backups: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
 if CommandLine.arguments.contains("--real-session") {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         await runRealSession()
@@ -4257,10 +4265,18 @@ func buildStandIn(jdk: JavaRuntime, into jar: URL) async throws {
             try? FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("DiscordSRV.jar"))
             // The drill proves a backup boots, without touching the real server.
             let drillBackup = try await c.backupNow(trigger: "manual", scope: .everything)
+            // While the server runs, never onto its own disk (2026-11-14): skipped, said so, and nothing unpacked.
+            let before = c.profile.lastDrill
+            await c.runBackupDrill(drillBackup)
+            check(c.profile.lastDrill == before && c.issues.contains { $0.id == "wrapper:drill-skipped" }, "a drill onto the running server's disk is skipped and raised")
+            check(FileOps.children(c.paths.root.deletingLastPathComponent().appendingPathComponent("LeafJuice/test-copies")).isEmpty, "and nothing was unpacked")
+            // With the backup counted as on another disk, the drill runs while the server keeps going.
+            DiskGuard.sameDiskStandIn = { a, _ in !a.path.contains(".test-copies") }
+            defer { DiskGuard.sameDiskStandIn = nil }
             await c.runBackupDrill(drillBackup)
             equal(c.profile.lastDrill?.passed, true, "good backup proven: \(c.profile.lastDrill?.detail ?? "")")
             check(c.state == .running, "real server kept running"); check(c.timeline.contains { $0.kind == .drill }, "on the timeline")
-            check(FileOps.children(c.paths.root.deletingLastPathComponent().appendingPathComponent("LeafJuice/test-copies")).isEmpty, "drill folder removed")
+            check(!FileOps.exists(Backups.destination(c.profile).appendingPathComponent(".test-copies")), "drill folder removed")
             let badArchive = Backups.destination(c.profile).appendingPathComponent(drillBackup.fileName)
             let goodBytes = try Data(contentsOf: badArchive)
             try Data(goodBytes.prefix(goodBytes.count / 2)).write(to: badArchive)
@@ -4710,6 +4726,7 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     paletteChecks()
     sidebarChecks()
     await sessionAccessChecks()
+    await smartBackupChecks()
     await packSongChecks()
     await pluginUpgradeChecks()
     await serverIconChecks()

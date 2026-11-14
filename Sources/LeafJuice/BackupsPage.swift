@@ -68,6 +68,18 @@ struct BackupsPage: View {
     private var settingsCard: some View {
         Card(title: "Schedule", systemImage: "calendar") {
             Toggle("Back up automatically while the server runs", isOn: $server.profile.backup.enabled)
+            Picker("When", selection: $server.profile.backup.smart.timing) {
+                Text("After people play").tag(BackupTiming.afterPlay)
+                Text("On a fixed schedule").tag(BackupTiming.interval)
+            }
+            .disabled(!server.profile.backup.enabled)
+            if server.profile.backup.smart.timing == .afterPlay {
+                Stepper("Once the server's been empty \(server.profile.backup.smart.idleMinutes) minutes", value: $server.profile.backup.smart.idleMinutes, in: 1...240)
+                Stepper("At least \(server.profile.backup.smart.minimumGapMinutes) minutes apart", value: $server.profile.backup.smart.minimumGapMinutes, in: 5...1440, step: 5)
+                Stepper("During a long session, every \(server.profile.backup.smart.duringPlayHours) hours", value: $server.profile.backup.smart.duringPlayHours, in: 1...48)
+                Hint("Backs up only when the world has changed: after people have played, and at most once a day when it changes with nobody on.")
+                if let plan = server.backupPlan { Text("Now: \(plan)").font(.callout).foregroundStyle(Juice.ink) }
+            }
             Picker("How often", selection: $server.profile.backup.intervalHours) {
                 Text("Every hour").tag(1)
                 Text("Every 3 hours").tag(3)
@@ -76,17 +88,27 @@ struct BackupsPage: View {
                 Text("Every day").tag(24)
                 Text("Every week").tag(168)
             }
-            .disabled(!server.profile.backup.enabled)
+            .disabled(!server.profile.backup.enabled || server.profile.backup.smart.timing == .afterPlay)
             Picker("What to include", selection: $server.profile.backup.scope) {
                 ForEach(BackupScope.allCases) { Text($0.title).tag($0) }
             }
             if server.profile.backup.scope == .everything {
                 Hint("Restoring puts the server back exactly as it was, ready to start, even without internet: jar, libraries, plugins, worlds, settings and logs. Anything added since is removed.")
             }
-            Stepper("Always keep the latest \(server.profile.backup.keepLast)", value: $server.profile.backup.keepLast, in: 1...100)
-            Stepper(keepDaysLabel, value: $server.profile.backup.keepDays, in: 0...365)
-            Hint("Older backups are deleted automatically. Pinned ones never are, including restore points for upgrades you haven't decided on.")
+            Toggle("Keep a spread: everything recent, then one a day, then one a week", isOn: $server.profile.backup.smart.tiered)
+            if server.profile.backup.smart.tiered {
+                Stepper("Everything from the last \(server.profile.backup.smart.recentHours) hours", value: $server.profile.backup.smart.recentHours, in: 1...168)
+                Stepper("Then one a day for \(server.profile.backup.smart.dailyDays) days", value: $server.profile.backup.smart.dailyDays, in: 0...60)
+                Stepper("Then one a week for \(server.profile.backup.smart.weeklyWeeks) weeks", value: $server.profile.backup.smart.weeklyWeeks, in: 0...104)
+                Hint("Older ones are deleted. Never a pinned backup, the server's very first backup, or anything LeafJuice didn't make.")
+            } else {
+                Stepper("Always keep the latest \(server.profile.backup.keepLast)", value: $server.profile.backup.keepLast, in: 1...100)
+                Stepper(keepDaysLabel, value: $server.profile.backup.keepDays, in: 0...365)
+                Hint("Older backups are deleted automatically. Pinned ones never are, including restore points for upgrades you haven't decided on.")
+            }
             Toggle("Back up before plugin and server updates", isOn: $server.profile.backup.beforeUpdates)
+            Divider()
+            targetsSection
             Divider()
             mirrorSection
             LabeledContent("Saved to") {
@@ -117,6 +139,54 @@ struct BackupsPage: View {
             server.profile.backup.destination = url.path
             server.refreshBackups()
         }
+    }
+
+    /// Storage in the owner's order. The first that's connected and has room takes each routine backup.
+    @ViewBuilder private var targetsSection: some View {
+        Text("Storage, in order").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
+        let targets = server.profile.backup.smart.targets
+        let checked = SmartBackup.check(targets.map { Backups.targetFolder($0, for: server.profile).path }, needed: 0)
+        ForEach(Array(targets.enumerated()), id: \.offset) { index, path in
+            HStack {
+                Badge(text: checked[index].usable ? "Ready" : "Not available", tone: checked[index].usable ? .good : .warning)
+                Text((path as NSString).abbreviatingWithTildeInPath).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.middle)
+                Spacer()
+                Button { moveTarget(index, by: -1) } label: { Image(systemName: "arrow.up") }.buttonStyle(.juice).disabled(index == 0)
+                    .accessibilityLabel("Use \((path as NSString).lastPathComponent) earlier")
+                Button { moveTarget(index, by: 1) } label: { Image(systemName: "arrow.down") }.buttonStyle(.juice).disabled(index == targets.count - 1)
+                    .accessibilityLabel("Use \((path as NSString).lastPathComponent) later")
+                Button("Remove") { server.profile.backup.smart.targets.remove(at: index); server.refreshBackups() }.buttonStyle(.juice)
+                    .accessibilityLabel("Stop using \((path as NSString).lastPathComponent)")
+            }
+            if !checked[index].usable { Hint(checked[index].reason) }
+        }
+        HStack {
+            Text("Then: this server's own folder").foregroundStyle(Juice.muted)
+            Spacer()
+            Button("Add Storage…") { chooseTarget() }.buttonStyle(.juice)
+        }
+        Hint("Each routine backup goes to the first one that's connected, can be written to, and would still have 20 GB or more free. Restore points stay in the server's own folder. A backup on a drive that's unplugged shows again when it's back.")
+        if let last = server.lastBackupWhere { Hint("Last backup went to \((last as NSString).abbreviatingWithTildeInPath)") }
+    }
+
+    private func moveTarget(_ index: Int, by step: Int) {
+        var t = server.profile.backup.smart.targets
+        let to = index + step
+        guard t.indices.contains(to) else { return }
+        t.swapAt(index, to)
+        server.profile.backup.smart.targets = t
+    }
+
+    private func chooseTarget() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Use for Backups"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let path = url.standardizedFileURL.path
+        if !server.profile.backup.smart.targets.contains(path) { server.profile.backup.smart.targets.append(path) }
+        server.refreshBackups()
     }
 
     @ViewBuilder private var mirrorSection: some View {
@@ -204,6 +274,10 @@ private struct BackupRow: View {
                     if let warning = record.warning { Badge(text: "Note", tone: .warning).help(warning) }
                 }
                 Hint("\(Format.bytes(record.size)) · \(record.scope.title) · \(record.software) · \(triggerTitle)")
+                if let location = record.location {
+                    Text("In \((location as NSString).abbreviatingWithTildeInPath)").font(.caption).foregroundStyle(Juice.muted)
+                        .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                }
             }
             Spacer()
             Button("Compare…", action: onCompare).buttonStyle(.juice)
@@ -217,6 +291,9 @@ private struct BackupRow: View {
         switch record.trigger {
         case "manual": "Manual"
         case "scheduled": "Scheduled"
+        case "after-play": "After play"
+        case "during-play": "During a long session"
+        case "world-changed": "World changed"
         case "before-update": "Before an update"
         case "before-restore": "Before a restore"
         case "before-world-delete": "Before deleting a world"

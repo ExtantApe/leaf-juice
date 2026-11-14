@@ -56,7 +56,7 @@ interface doesn't need to.
 
 ## Shape
 
-The same construction as OnePedigree and OneTaxonomy, with its own colors and without the Captive Origins mark.
+Soft rounded tiles and controls, labels beside every icon, and state shown by shape and word as well as colour.
 
 - Tile: 896 × 896 on a 1024 canvas, corner radius 200.
 - Controls: 32 pt buttons, radius 8, 1 pt border. Cards radius 10. 2 pt focus ring.

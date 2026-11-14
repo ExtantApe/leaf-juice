@@ -270,19 +270,23 @@ public struct ExpectedHashes: Codable, Equatable, Sendable {
 // MARK: - Running tools
 
 public struct ToolResult: Sendable {
-    public init(code: Int32, out: String, err: String) { self.code = code; self.out = out; self.err = err }
+    public init(code: Int32, out: String, err: String, stoppedBecause: String? = nil) { self.code = code; self.out = out; self.err = err; self.stoppedBecause = stoppedBecause }
     public let code: Int32
     public let out: String
     public let err: String
-    public var ok: Bool { code == 0 }
+    /// Set when `stopIf` stopped the tool part way, with its reason.
+    public let stoppedBecause: String?
+    public var ok: Bool { code == 0 && stoppedBecause == nil }
 }
 
 public enum Tool {
     /// Runs a command at utility priority and waits for it, without blocking the caller's actor.
     /// `maxOutput` caps what's kept from each pipe; past it the tool is stopped. `timeout` stops a tool that runs too
     /// long (off by default: backups of big worlds legitimately take a while). Both from the K158 audit.
+    /// `stopIf` is asked every two seconds while the tool runs; a reason stops it (the disk guard uses this).
     public static func run(_ path: String, _ args: [String], cwd: URL? = nil, lowPriority: Bool = true,
-                           maxOutput: Int = 64 << 20, timeout: TimeInterval? = nil) async throws -> ToolResult {
+                           maxOutput: Int = 64 << 20, timeout: TimeInterval? = nil,
+                           stopIf: (@Sendable () -> String?)? = nil) async throws -> ToolResult {
         try await withCheckedThrowingContinuation { continuation in
             // Real threads, not the shared pool: this blocks while the tool runs, and enough blocked pool
             // threads leave none free to finish the work they're waiting on. Observed hanging with 37 plugins.
@@ -300,6 +304,16 @@ public enum Tool {
                     try process.run()
                     if let timeout {
                         DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if process.isRunning { process.terminate() } }
+                    }
+                    final class Reason: @unchecked Sendable { var text: String? }
+                    let stopped = Reason()
+                    if let stopIf {
+                        Thread.detachNewThread {
+                            while process.isRunning {
+                                if let why = stopIf() { stopped.text = why; process.terminate(); break }
+                                Thread.sleep(forTimeInterval: 2)
+                            }
+                        }
                     }
                     // Keeps at most `maxOutput`, and stops the tool once it's past that; reads on to the end so it can exit.
                     func capped(_ handle: FileHandle) -> Data {
@@ -327,7 +341,8 @@ public enum Tool {
                     continuation.resume(returning: ToolResult(
                         code: process.terminationStatus,
                         out: String(decoding: outData, as: UTF8.self),
-                        err: String(decoding: errBox.data, as: UTF8.self)))
+                        err: String(decoding: errBox.data, as: UTF8.self),
+                        stoppedBecause: stopped.text))
                 } catch {
                     continuation.resume(throwing: error)
                 }

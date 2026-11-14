@@ -230,17 +230,42 @@ extension ServerController {
             notice = "A drill needs a whole-folder backup, and there isn't one yet."
             return
         }
+        // Unpacks on the backup's own disk if it has room, else the usual place, else not at all (2026-11-14).
+        let name = "drill-\(paths.root.lastPathComponent)-\(Int(Date().timeIntervalSince1970))"
+        let beside = Backups.folder(of: record, profile: profile).appendingPathComponent(".test-copies", isDirectory: true)
+        let usual = paths.root.deletingLastPathComponent()
+            .appendingPathComponent(AppPaths.ownFolderName, isDirectory: true).appendingPathComponent("test-copies", isDirectory: true)
+        // Never onto the disk the server is using while it runs (2026-11-14): a full disk under a live world can corrupt it.
+        let isRunning: Bool = { if case .external = state { return true }; return state.isLive }()
+        let (candidates, excluded) = DiskGuard.drillCandidates([beside, usual], serverRoot: paths.root, serverRunning: isRunning)
+        var (chosenFolder, reasons) = DiskGuard.drillFolder(candidates: candidates, needed: DiskGuard.unpackedEstimate(archive: record.size))
+        reasons = excluded + reasons
+        guard let base = chosenFolder else {
+            let why = "No disk could take it while keeping space free, or it would be the running server's own disk. \(reasons.joined(separator: " "))"
+            notice = "The backup drill was skipped. \(why)"
+            appendWrapper(notice ?? "", level: .warn)
+            recordEvent(.drill, "Backup drill skipped", detail: why)
+            let now = Date()
+            reportIssue(IssueRecord(
+                id: "wrapper:drill-skipped", ruleID: "wrapper-drill-skipped", title: "A backup drill was skipped to protect the disk", severity: .warning, category: "Backups",
+                explanation: why,
+                steps: ["Add a storage drive with room on the Backups page, so drills can unpack there.", "Or run the drill while the server is stopped, if this disk has room then."],
+                action: IssueAction(page: "backups", label: "Open Backups"), sample: why, firstSeen: now, lastSeen: now))
+            return
+        }
         drillRunning = true
         defer { drillRunning = false }
         var passed = false, detail = ""
-        let folder = paths.root.deletingLastPathComponent()
-            .appendingPathComponent(AppPaths.ownFolderName, isDirectory: true).appendingPathComponent("test-copies", isDirectory: true)
-            .appendingPathComponent("drill-\(paths.root.lastPathComponent)-\(Int(Date().timeIntervalSince1970))", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: folder) }
+        let folder = base.appendingPathComponent(name, isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: folder)
+            if base == beside { try? FileManager.default.removeItem(at: beside) }
+        }
         do {
             try FileOps.ensureDir(folder)
-            let archive = Backups.destination(profile).appendingPathComponent(record.fileName)
-            let result = try await Tool.run("/usr/bin/tar", ["-xzf", archive.path, "-C", folder.path])
+            let archive = Backups.folder(of: record, profile: profile).appendingPathComponent(record.fileName)
+            let result = try await Tool.run("/usr/bin/tar", ["-xzf", archive.path, "-C", folder.path], stopIf: DiskGuard.watch(folder))
+            if let stopped = result.stoppedBecause { throw LeafError("The drill stopped unpacking and removed what it had unpacked. \(stopped)") }
             guard result.ok else { throw LeafError("The archive couldn't be unpacked. \(result.err.prefix(200))") }
             var report = TrialReport()
             let child = try await prepareCopy(folder, report: &report)
@@ -263,6 +288,17 @@ extension ServerController {
             if child.state.isLive { child.forceStop() }
         } catch {
             detail = error.localizedDescription
+        }
+        // Stopped by the disk guard: that says nothing about the backup, so it's a skip, not a failure.
+        if detail.hasPrefix("The drill stopped unpacking") {
+            appendWrapper(detail, level: .warn)
+            recordEvent(.drill, "Backup drill stopped", detail: detail)
+            let now = Date()
+            reportIssue(IssueRecord(
+                id: "wrapper:drill-skipped", ruleID: "wrapper-drill-skipped", title: "A backup drill was stopped to protect the disk", severity: .warning, category: "Backups",
+                explanation: detail, steps: ["Add a storage drive with room on the Backups page, so drills can unpack there."],
+                action: IssueAction(page: "backups", label: "Open Backups"), sample: detail, firstSeen: now, lastSeen: now))
+            return
         }
         profile.lastDrill = DrillResult(date: Date(), backupDate: record.date, fileName: record.fileName, passed: passed, detail: detail)
         recordEvent(.drill, passed ? "Backup proven restorable" : "Backup drill failed", detail: detail)

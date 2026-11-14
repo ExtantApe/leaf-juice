@@ -60,7 +60,6 @@ public enum BackupCompare {
 
     /// Unpacks both into a temporary folder, compares them, and removes it. Reads the backups only.
     public static func compare(_ older: BackupRecord, _ newer: BackupRecord, profile: ServerProfile, paths: ServerPaths) async throws -> BackupDiff {
-        let folder = Backups.destination(profile)
         let work = paths.meta.appendingPathComponent("compare-\(UUID().uuidString)", isDirectory: true)
         let a = work.appendingPathComponent("a", isDirectory: true), b = work.appendingPathComponent("b", isDirectory: true)
         try FileOps.ensureDir(a)
@@ -71,7 +70,7 @@ public enum BackupCompare {
             throw LeafError("Comparing needs about \(Format.bytes(needed)) of free space for a moment, and \(Format.bytes(free)) is free.")
         }
         for (record, target) in [(older, a), (newer, b)] {
-            let result = try await Tool.run("/usr/bin/tar", ["-xzf", folder.appendingPathComponent(record.fileName).path, "-C", target.path])
+            let result = try await Tool.run("/usr/bin/tar", ["-xzf", Backups.folder(of: record, profile: profile).appendingPathComponent(record.fileName).path, "-C", target.path])
             guard result.ok else { throw LeafError("Couldn't read \(record.fileName). \(result.err.prefix(200))") }
         }
         return await compare(old: a, new: b)

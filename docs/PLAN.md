@@ -23,7 +23,7 @@ a single local app with no web server, no daemon and no container.
 
 | Decision | Why |
 |---|---|
-| **SwiftUI + SwiftPM, zero dependencies** | Truly native and accessible; idle cost near zero; builds with just the Command Line Tools. OnePedigree's Tauri stack would add Rust and a web view for no gain here. |
+| **SwiftUI + SwiftPM, zero dependencies** | Truly native and accessible; idle cost near zero; builds with just the Command Line Tools. A Tauri stack would add Rust and a web view for no gain here. |
 | **macOS 14+** | `@Observable`, `.inspector`, `Table` are all solid there. |
 | **The server folder stays yours** | Everything we add lives in `<server>/.leafjuice/`. Deleting it (or LeafJuice) leaves a normal server. Importing changes nothing else. |
 | **The Change Queue is the core idea** | Nothing that needs a restart touches disk while the server runs. See below. |
@@ -65,6 +65,7 @@ Settled by the owner. Follow them without asking again.
 | 2026-11-14 | Safe console access for sessions, ASAP. Owner's words, through Helm: "That should be done ASAP so they can talk and get meaningful status updates without compromising security." Built the same day: a private Unix socket plus a Keychain token, off by default; status and a redacted log; only commands on the owner's list, starting with `latchkey reload`, `save-all` and `list`; every call recorded and shown in Settings. Status gives a count of players, never names, and the log drops chat and replaces names, UUIDs and addresses, because children play on these servers. |
 | 2026-11-14 | Group the sidebar. Owner's words, through Helm: "Menu are good on the left but it's such a long list. Let's make a hierarchy and group "like" things together, and then alphabetize them within the groupings." Built: Overview, then Server, Content, People, Upkeep, alphabetical within each, collapsible and remembered, badges rolled up. The Advisor sits in Upkeep. |
 | 2026-11-14 | No Tailscale for the game (owner, through Helm: "We're getting rid of Tailscale for the game, not adding it"). The connections config builds playit only, plus the map and sign-in addresses, and stays open to another tunnel type later. The Tailscale check was removed the same day. |
+| 2026-11-14 | Smart backups (D186). Owner's words, through Helm: "a dynamic backup system that only backs up when things actually change" and "It should be able to use multiple storage devices, so long as they're there. If they aren't it'll default to another, or try it's its local folder. Rsync might be worth considering ... Try to compress as much as you can ... worth trying and then doing a quick scratch server to see." Built: after-play timing with a minimum gap, tiered keeping, ordered storage targets with a fallback and per-server folders, and a disk guard after a drill nearly filled a disk. Stronger compression and rsync copies were tried on a throwaway server (`--trial-backups`, `docs/backup-trial.md`) and aren't adopted until the owner decides. Existing servers keep their schedule until switched. |
 
 ### From the ops decision feed
 
@@ -75,7 +76,7 @@ Settled decisions reach this repo through `~/Code/ops/decisions/all.md` and `dec
 | D1 | Decision feeds for every area (2026-11-10) | Settled entries are acted on, not re-argued. One may be raised once, with evidence, only under `ops/rules/decision-feeds.md`. |
 | D2 | Agnostic plugins, best architecture first (2026-11-10) | LeafJuice talks to plugins (Usher, Latchkey, Preflight and the rest) only through their own commands and files, never as a hard dependency, and each works without it. New capabilities are built on the right structure from the start, cutting scope rather than structure. |
 | D3 | Owner steps and tests go through `ops/inbox` (2026-11-10) | New owner items go to `~/Code/ops/inbox/<ID>-<slug>.md` with a one-line note to Helm, never straight into `needs-you.md` or `tests.md`. T24, T25 and T28 went in before this. |
-| D4 | Priority order (2026-11-10) | Docker media first, then the Minecraft server, then Captive Origins, then Slothdoku and Theseus. LeafJuice work serves the Minecraft server and follows that order. |
+| D4 | Priority order (2026-11-10) | The owner set an order across all his projects. LeafJuice work serves the Minecraft server and follows that order. |
 | D5 | No private repos because of CI minutes (2026-11-10) | This repo stays public. CI follows `ops/rules/actions-minutes.md`. |
 | D6 | Plugin names need the owner's approval (2026-11-10) | LeafJuice uses only plugin names in `ops/plugin-names.md`. It creates no plugins of its own. Any new one would go to the owner through Helm first. |
 | D22 | One task log for every open task (2026-11-10) | LeafJuice's open work is K61 to K73 in `ops/tasks/log.jsonl`, written only through `task.py`. Nothing is deleted. Moves need an ack, and closes need a reference. |
@@ -234,8 +235,8 @@ A rule engine over console output and `logs/latest.log`:
 
 ## Design
 
-See [brand/README.md](../brand/README.md). Takes the *construction* from OnePedigree and OneTaxonomy
-(tile geometry, 8/10 radii, icon with label, shape as well as color, 3:1 strokes), with its own pastel palette:
+See [brand/README.md](../brand/README.md). Rounded tiles and controls (8 and 10 point radii), an icon with every
+label, shape as well as colour for state, and 3:1 outlines, in its own pastel palette:
 cream and sage surfaces, juice green for structure, pink grapefruit as the single pop of color.
 
 ## Deep changes

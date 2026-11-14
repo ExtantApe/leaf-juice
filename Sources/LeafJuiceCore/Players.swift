@@ -264,7 +264,7 @@ public enum PlayerSnapshots {
 
     /// Pulls one player's data out of a backup, without restoring the world.
     public static func fromBackup(_ record: BackupRecord, uuid: String, name: String, paths: ServerPaths, profile: ServerProfile) async throws -> PlayerSnapshot {
-        let archive = Backups.destination(profile).appendingPathComponent(record.fileName)
+        let archive = Backups.folder(of: record, profile: profile).appendingPathComponent(record.fileName)
         let work = paths.meta.appendingPathComponent("extract-\(UUID().uuidString)", isDirectory: true)
         try FileOps.ensureDir(work)
         defer { try? FileManager.default.removeItem(at: work) }

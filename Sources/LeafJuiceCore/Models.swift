@@ -177,7 +177,16 @@ public struct BackupConfig: Codable, Equatable, Sendable {
     public var autoDrill = true
     public var beforeUpdates = true
     public var lastRun: Date?
-    public init() {}
+    /// Smart backups (D186). Nil in a server set up before them, which keeps its old schedule and keeping rules.
+    public var smartSettings: SmartBackupConfig?
+    /// Whether anyone has played since the last backup. Kept on disk, so a restart of the app doesn't forget it.
+    public var playedSinceBackup: Bool?
+    public var smart: SmartBackupConfig {
+        get { smartSettings ?? SmartBackupConfig.legacy }
+        set { smartSettings = newValue }
+    }
+    /// A new server starts with smart backups and tiered keeping.
+    public init() { smartSettings = SmartBackupConfig() }
 }
 
 // MARK: - Restart schedule

@@ -31,9 +31,14 @@ Not affiliated with Mojang or Microsoft.
   the last player leaves, or at a set time with in-game warnings.
 - **Protects you on upgrades**: see below.
 - **Manages worlds with Multiverse-Core**: create, import, load, unload, copy and delete worlds from the app.
-- **Backs up safely while running**: the whole server folder by default, to `LeafJuice/backups/<server>/` beside your
-  servers, or anywhere you choose. A whole-folder restore comes back exactly as it was and ready to start, even offline.
-  Scheduled, with retention and pinning.
+- **Backs up when the world has changed**: after people have played, once the server has been empty for 10
+  minutes; during a session longer than six hours; and at most once a day when it changes with nobody on. Never two
+  within an hour. It keeps everything from the last day, then one a day for a week, then one a week for eight weeks,
+  and never deletes a pinned backup or the server's first one. Each routine backup goes to the first storage on your
+  list that's connected and has room, then to the server's own folder (`LeafJuice/backups/<server>/` beside your servers, or one you choose), and every
+  backup shows where it lives.
+  Backups and test restores never fill a disk: each one first checks it would leave 20 GB free. Servers set up before this keep their old schedule until you switch. Saving is paused while it runs, and
+  a whole-folder restore comes back exactly as it was and ready to start, even offline.
 - **Tries changes on a test copy first**: clones the server, applies an upgrade, plugin update or rename there, boots it and reports back, with
   nothing reaching the real server. If a plugin is the problem, it can find which one.
 - **Switches off plugins that won't start on a new version**, using Preflight's upgrade tool

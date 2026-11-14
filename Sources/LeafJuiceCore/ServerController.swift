@@ -106,6 +106,14 @@ public final class ServerController: Identifiable {
     public private(set) var activity: String?
     public private(set) var activityProgress: Double?
     public var notice: String?
+    /// When the last player left, while running. For smart backups.
+    var emptySince: Date?
+    /// What smart backups decided at the last tick, in words, for the Backups page.
+    public internal(set) var backupPlan: String?
+    /// Where the last backup went, and why any earlier storage target was passed over.
+    public internal(set) var lastBackupWhere: String?
+    /// After an automatic backup fails, the next try waits until this, so a full disk isn't hit every few seconds.
+    var backupRetryAfter: Date?
     public private(set) var checkingPlugins = false
 
     /// Picks which Java runs a server. The app replaces this list on demand.
@@ -1023,15 +1031,48 @@ public final class ServerController: Identifiable {
         } else if let next = nextScheduledRestart, next <= now {
             nextScheduledRestart = profile.restart.next(after: now)
         }
-        // Scheduled backups run only while the server is up: a stopped world isn't changing.
-        if profile.backup.enabled, !backingUp, state == .running, hasWorld,
-           now.timeIntervalSince(profile.backup.lastRun ?? .distantPast) >= Double(profile.backup.intervalHours) * 3600 {
+        // Who's been on, for smart backups. Kept on disk, so it survives the app restarting.
+        if state == .running {
+            if !players.isEmpty {
+                emptySince = nil
+                if profile.backup.playedSinceBackup != true { profile.backup.playedSinceBackup = true }
+            } else if emptySince == nil {
+                emptySince = now
+            }
+        } else {
+            emptySince = nil
+        }
+        // Automatic backups run only while the server is up: a stopped world isn't changing.
+        var dueTrigger: String?
+        if profile.backup.enabled, !backingUp, state == .running, hasWorld, now >= (backupRetryAfter ?? .distantPast) {
+            switch profile.backup.smart.timing {
+            case .interval:
+                if now.timeIntervalSince(profile.backup.lastRun ?? .distantPast) >= Double(profile.backup.intervalHours) * 3600 { dueTrigger = "scheduled" }
+                backupPlan = nil
+            case .afterPlay:
+                let activity = SmartBackup.Activity(now: now, playersOnline: players.count, emptySince: emptySince,
+                                                    playedSinceBackup: profile.backup.playedSinceBackup ?? false,
+                                                    worldChangedAt: worldChangedAt, lastBackup: profile.backup.lastRun)
+                switch SmartBackup.decide(profile.backup.smart, activity) {
+                case let .backUp(trigger, reason): dueTrigger = trigger; backupPlan = reason
+                case let .wait(reason): backupPlan = reason
+                }
+            }
+        }
+        if let dueTrigger {
             if profile.software.flavor == .folia {
                 appendWrapper("Skipped the scheduled backup: Folia can only be backed up while stopped.", level: .warn)
                 profile.backup.lastRun = now
             } else {
-                do { try await backupNow(trigger: "scheduled") }
+                do { try await backupNow(trigger: dueTrigger); backupRetryAfter = nil }
                 catch {
+                    backupRetryAfter = now.addingTimeInterval(3600)
+                    let detail = error.localizedDescription
+                    reportIssue(IssueRecord(
+                        id: "wrapper:backup-refused", ruleID: "wrapper-backup-refused", title: "An automatic backup didn't run", severity: .error, category: "Backups",
+                        explanation: "\(detail) LeafJuice tries again in an hour.",
+                        steps: ["Free up space, or add a storage drive with room on the Backups page.", "Or back up by hand once there's room."],
+                        action: IssueAction(page: "backups", label: "Open Backups"), sample: detail, firstSeen: now, lastSeen: now))
                     appendWrapper("Scheduled backup failed: \(error.localizedDescription)", level: .error)
                     raiseAlert("\(profile.name)'s backup failed", error.localizedDescription)
                 }
@@ -1049,6 +1090,18 @@ public final class ServerController: Identifiable {
     }
 
     var hasWorld: Bool { !Backups.worldFolders(paths.root).isEmpty }
+
+    /// When the main world last saved. A save writes level.dat, so this is cheap and close enough.
+    var worldChangedAt: Date? {
+        let text = (try? String(contentsOf: paths.properties, encoding: .utf8)) ?? ""
+        let level = PropertiesDocument(text).value("level-name").flatMap { $0.isEmpty ? nil : $0 } ?? "world"
+        let file = paths.root.appendingPathComponent(level).appendingPathComponent("level.dat")
+        return (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date
+    }
+
+    /// Routine backups go to the owner's storage targets in order. Restore points (before an update, a restore, an
+    /// upgrade, deleting a world) always stay in the server's own folder, where the steps that use them look.
+    static let routineTriggers: Set<String> = ["scheduled", "manual", "after-play", "during-play", "world-changed"]
 
     private func tickRestart(_ now: Date) {
         guard var plan = restartPlan, state == .running else { return }
@@ -1534,7 +1587,7 @@ public final class ServerController: Identifiable {
         refreshBackups()
     }
 
-    public func refreshBackups() { backups = Backups.list(profile) }
+    public func refreshBackups() { backups = Backups.listAll(profile) }
 
     /// Takes a consistent backup. While running, saving is paused so the world doesn't change underneath it.
     @discardableResult
@@ -1560,9 +1613,33 @@ public final class ServerController: Identifiable {
             if await !saved.value { appendWrapper("The server didn't confirm its save in time. Backing up anyway.", level: .warn) }
         }
         defer { if wasRunning { self.process?.send("save-on") } }
-        let record = try await Backups.create(profile, root: paths.root, trigger: trigger, scope: scope)
+        var into: URL?
+        if Self.routineTriggers.contains(trigger), !profile.backup.smart.targets.isEmpty {
+            let effectiveScope = scope ?? profile.backup.scope
+            let needed = Backups.items(paths.root, scope: effectiveScope).reduce(Int64(0)) { $0 + FileOps.directorySize(paths.root.appendingPathComponent($1).resolvingSymlinksInPath()) }
+            let folders = profile.backup.smart.targets.map { Backups.targetFolder($0, for: profile) }
+            let checked = SmartBackup.check(folders.map(\.path), needed: needed)
+            let own = SmartBackup.check([Backups.destination(profile).path], needed: needed)[0]
+            guard let chosen = SmartBackup.choose(checked, fallback: own) else {
+                throw LeafError("No storage has room for this backup. " + (checked + [own]).map { "\($0.path): \($0.reason)" }.joined(separator: " "))
+            }
+            let skipped = checked.prefix { $0.path != chosen.path }.map { "\($0.path): \($0.reason)" }
+            lastBackupWhere = chosen.path + (skipped.isEmpty ? "" : ". Passed over: " + skipped.joined(separator: " "))
+            if !skipped.isEmpty { appendWrapper("Backing up to \(chosen.path). Passed over: \(skipped.joined(separator: " "))", level: .info) }
+            into = URL(fileURLWithPath: chosen.path, isDirectory: true)
+            if chosen.path != Backups.destination(profile).path { try Backups.claim(into!, for: profile.id) }
+        }
+        var record = try await Backups.create(profile, root: paths.root, trigger: trigger, scope: scope, into: into)
+        record.location = (into ?? Backups.destination(profile)).path
         profile.backup.lastRun = record.date
-        Backups.prune(profile, protecting: record.fileName)
+        if Self.routineTriggers.contains(trigger) { profile.backup.playedSinceBackup = false }
+        if profile.backup.smart.tiered {
+            for doomed in SmartBackup.tieredPrunable(Backups.listAll(profile), config: profile.backup.smart, protecting: record.fileName) {
+                try? Backups.delete(doomed, profile: profile)
+            }
+        } else {
+            Backups.prune(profile, protecting: record.fileName)
+        }
         await copyToMirror(record)
         refreshBackups()
         appendWrapper("Backup finished: \(Format.bytes(record.size)).", level: .info)

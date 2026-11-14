@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Smart backups:** back up after people play, with a minimum gap; keep everything recent, then one a day, then one
+  a week; use your storage in order, falling back when a drive isn't there, and show where each backup is. New
+  servers start this way; existing ones keep their schedule until you switch.
+- **Disk guard:** backups and test restores check first that they'd leave at least 20 GB free, and
+  a test restore unpacks on the backup's own drive when that has room. Before this, a test restore of a 47 GB backup
+  took a Mac from about 50 GB free to 6 GB.
 - **Session access:** sessions and scripts on this Mac can read a server's status and recent log, and run commands
   from a list you keep, through `leafjuice-session`. Off by default. Chat, player names and addresses are kept out,
   everything else is refused, and every call is listed in Settings. Tested against a real Paper 26.3 server with a
