@@ -363,7 +363,7 @@ struct PlayerListForm: View {
 
     private var running: Bool { server.state == .running }
     private var refusal: String? {
-        PlayerList.rawAddRefusal(path: file.path, hasUsher: server.hasUsher,
+        PlayerList.rawAddRefusal(path: file.path, hasSheriff: server.hasSheriff,
                                  onlineMode: PropertiesDocument((try? String(contentsOf: server.paths.properties, encoding: .utf8)) ?? "").value("online-mode") == "true")
     }
 

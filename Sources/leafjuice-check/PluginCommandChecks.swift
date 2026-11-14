@@ -27,7 +27,7 @@ private let head = "[12:00:00 INFO]: "
 }
 
 @MainActor private func line(_ sub: [String], _ args: [CommandArg], yes: [String] = []) -> String? {
-    try? PluginCommandWire.line(plugin: "usher", subcommand: sub, args: args, yes: yes, id: "abc123").get()
+    try? PluginCommandWire.line(plugin: "sheriff", subcommand: sub, args: args, yes: yes, id: "abc123").get()
 }
 
 @MainActor private func wireChecks() {
@@ -36,10 +36,10 @@ private let head = "[12:00:00 INFO]: "
     equal(Set(ids).count, ids.count, "and don't repeat")
 
     equal(line(["invite", "create"], [.player("Alice_1"), .list([.choice("kid"), .choice("builder")]), .duration(7, .d), .bool(true), .int(-3)]),
-          "usher invite create Alice_1 kid,builder 7d true -3 --json abc123", "every type written the agreed way")
-    equal(line(["show"], [.player("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE")]), "usher show aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee --json abc123", "uuids go lowercase")
-    equal(line(["note"], [.word("x"), .text(#"say "hi" \ bye"#)]), #"usher note x "say \"hi\" \\ bye" --json abc123"#, "free text is quoted and escaped, last")
-    equal(line(["remove"], [.player("Alice")], yes: ["two-circles", "adults-world"]), "usher remove Alice --yes two-circles,adults-world --json abc123", "yes ids go before the request id")
+          "sheriff invite create Alice_1 kid,builder 7d true -3 --json abc123", "every type written the agreed way")
+    equal(line(["show"], [.player("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE")]), "sheriff show aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee --json abc123", "uuids go lowercase")
+    equal(line(["note"], [.word("x"), .text(#"say "hi" \ bye"#)]), #"sheriff note x "say \"hi\" \\ bye" --json abc123"#, "free text is quoted and escaped, last")
+    equal(line(["remove"], [.player("Alice")], yes: ["two-circles", "adults-world"]), "sheriff remove Alice --yes two-circles,adults-world --json abc123", "yes ids go before the request id")
 
     let refused: [(String, [String], [CommandArg])] = [
         ("a word with a space", ["x"], [.word("two words")]),
@@ -60,8 +60,8 @@ private let head = "[12:00:00 INFO]: "
         ("no subcommand", [], []),
     ]
     for (label, sub, args) in refused { check(line(sub, args) == nil, "refused: \(label)") }
-    check((try? PluginCommandWire.line(plugin: "Usher Plugin", subcommand: ["x"], args: [], id: "abc").get()) == nil, "refused: a plugin name with a space")
-    check((try? PluginCommandWire.line(plugin: "usher", subcommand: ["x"], args: [], yes: ["a b"], id: "abc").get()) == nil, "refused: a question id with a space")
+    check((try? PluginCommandWire.line(plugin: "Sheriff Plugin", subcommand: ["x"], args: [], id: "abc").get()) == nil, "refused: a plugin name with a space")
+    check((try? PluginCommandWire.line(plugin: "sheriff", subcommand: ["x"], args: [], yes: ["a b"], id: "abc").get()) == nil, "refused: a question id with a space")
 }
 
 @MainActor private func answerLineChecks() {
@@ -71,7 +71,7 @@ private let head = "[12:00:00 INFO]: "
     // The exact shapes a plugin's console reply took on real Paper 26.1.2, 26.2 and 26.3 (Plugins Lead, 2026-11-09).
     check(PluginCommandWire.answerLine("[04:36:31 INFO]: ea-result probe-1 {\"id\":\"probe-1\",\"ok\":true}")?.id == "probe-1", "Paper 26.x's console form, as seen on real servers")
     check(PluginCommandWire.answerLine("[04:36:31] [Server thread/INFO]: ea-result probe-1 {\"id\":\"probe-1\",\"ok\":true}")?.id == "probe-1", "and its latest.log form")
-    check(PluginCommandWire.answerLine("[04:36:31 INFO]: [Usher] ea-result probe-1 {\"id\":\"probe-1\",\"ok\":true}") == nil, "an answer sent through the plugin's logger isn't read")
+    check(PluginCommandWire.answerLine("[04:36:31 INFO]: [Sheriff] ea-result probe-1 {\"id\":\"probe-1\",\"ok\":true}") == nil, "an answer sent through the plugin's logger isn't read")
     let spoofs = [
         "\(head)<Griefer77> ea-result abc \(json)",
         "\(head)[Not Secure] <Griefer77> ea-result abc \(json)",
@@ -186,13 +186,13 @@ private let head = "[12:00:00 INFO]: "
 
 @MainActor private func describeChecks() {
     let good = #"""
-    {"id":"a","ok":true,"format":1,"plugin":"Usher","version":"0.4.0","later":{"x":1},
-     "commands":[{"name":"invite create","permission":"usher.invite","args":[{"name":"player","type":"player"},{"name":"profiles","type":"list","of":"enum","values":["kid","builder"]},{"name":"for","type":"duration"},{"name":"note","type":"colour"}],
+    {"id":"a","ok":true,"format":1,"plugin":"Sheriff","version":"0.4.0","later":{"x":1},
+     "commands":[{"name":"invite create","permission":"sheriff.invite","args":[{"name":"player","type":"player"},{"name":"profiles","type":"list","of":"enum","values":["kid","builder"]},{"name":"for","type":"duration"},{"name":"note","type":"colour"}],
        "confirms":["two-circles"],"secret":true,"shiny":true},{"name":"list"}],
      "errors":["already-invited"],"lists":[],"forms":[]}
     """#
     if case .described(let d) = PluginDescription.read(Data(good.utf8)) {
-        check(d.plugin == "Usher" && d.version == "0.4.0" && d.format == 1, "describe gives the plugin, its version and the format")
+        check(d.plugin == "Sheriff" && d.version == "0.4.0" && d.format == 1, "describe gives the plugin, its version and the format")
         equal(d.commands.map(\.name), ["invite create", "list"], "and its commands")
         equal(d.commands[0].words, ["invite", "create"], "a command's words are what the runner sends")
         check(d.commands[0].secret && !d.commands[1].secret, "secret is read, and false when left out")
@@ -201,14 +201,14 @@ private let head = "[12:00:00 INFO]: "
         equal(d.commands[0].args[1].values ?? [], ["kid", "builder"], "a list of choices keeps its values")
         equal(d.errors, ["already-invited"], "the plugin's own error codes")
     } else { check(false, "describe read") }
-    let optionals = #"{"format":1,"plugin":"Usher","version":"0.4.0","commands":[{"name":"apply","args":[{"name":"uuid","type":"uuid"},{"name":"whitelist","type":"bool","optional":true},{"name":"via","type":"string","optional":true}]}]}"#
+    let optionals = #"{"format":1,"plugin":"Sheriff","version":"0.4.0","commands":[{"name":"apply","args":[{"name":"uuid","type":"uuid"},{"name":"whitelist","type":"bool","optional":true},{"name":"via","type":"string","optional":true}]}]}"#
     if case .described(let d) = PluginDescription.read(Data(optionals.utf8)) {
         equal(d.commands[0].args.map(\.optional), [false, true, true], "optional arguments are marked, and required ones carry no key")
     } else { check(false, "optional arguments read") }
-    let misordered = #"{"format":1,"plugin":"Usher","version":"0.4.0","commands":[{"name":"apply","args":[{"name":"via","type":"string","optional":true},{"name":"uuid","type":"uuid"}]}]}"#
+    let misordered = #"{"format":1,"plugin":"Sheriff","version":"0.4.0","commands":[{"name":"apply","args":[{"name":"via","type":"string","optional":true},{"name":"uuid","type":"uuid"}]}]}"#
     if case .unreadable = PluginDescription.read(Data(misordered.utf8)) { check(true, "") } else { check(false, "a required argument after an optional one is refused") }
-    if case .newerFormat(2) = PluginDescription.read(Data(#"{"format":2,"plugin":"Usher","version":"9","commands":"changed shape"}"#.utf8)) { check(true, "") } else { check(false, "a newer format is refused, not half-read") }
-    for (label, json) in [("no format", #"{"plugin":"Usher","version":"1"}"#), ("format 0", #"{"format":0,"plugin":"Usher","version":"1"}"#),
+    if case .newerFormat(2) = PluginDescription.read(Data(#"{"format":2,"plugin":"Sheriff","version":"9","commands":"changed shape"}"#.utf8)) { check(true, "") } else { check(false, "a newer format is refused, not half-read") }
+    for (label, json) in [("no format", #"{"plugin":"Sheriff","version":"1"}"#), ("format 0", #"{"format":0,"plugin":"Sheriff","version":"1"}"#),
                           ("a plugin name that's a path", #"{"format":1,"plugin":"../Latchkey","version":"1"}"#), ("not JSON", "nope")] {
         if case .unreadable = PluginDescription.read(Data(json.utf8)) { check(true, "") } else { check(false, "unreadable: \(label)") }
     }
@@ -369,7 +369,7 @@ private let head = "[12:00:00 INFO]: "
         let quiet = await c.commands.run("fakeplug", ["slow"])
         if case .notConfirmed = quiet.outcome { check(true, "") } else { check(false, "a plugin that never answers is 'not confirmed': \(quiet.outcome)") }
 
-        await usherThroughFake(c, root: root)
+        await sheriffThroughFake(c, root: root)
         await latchkeyThroughFake(c, root: root)
         await packmuleThroughFake(c, root: root)
 
@@ -399,14 +399,14 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
       static void answer(String id, String rest) { log("ea-result " + id + " {\"id\":\"" + id + "\"," + rest + "}"); }
       static java.util.Set<String> has = new java.util.TreeSet<>();
       static boolean listed = false;
-      static void usher(String body, String id, String line) throws Exception {
-        Files.writeString(Path.of("usher-commands.txt"), line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+      static void sheriff(String body, String id, String line) throws Exception {
+        Files.writeString(Path.of("sheriff-commands.txt"), line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         String uuid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
         if (body.equals("describe")) {
-          String cmds = new File("usher-old").exists() ? "[{\"name\":\"profiles\"},{\"name\":\"show\"}]"
+          String cmds = new File("sheriff-old").exists() ? "[{\"name\":\"profiles\"},{\"name\":\"show\"}]"
             : "[{\"name\":\"profiles\"},{\"name\":\"show\",\"args\":[{\"name\":\"player\",\"type\":\"player\"}]},{\"name\":\"apply\",\"args\":[{\"name\":\"uuid\",\"type\":\"uuid\"},{\"name\":\"name\",\"type\":\"player\"},{\"name\":\"add\",\"type\":\"list\",\"of\":\"string\"},{\"name\":\"remove\",\"type\":\"list\",\"of\":\"string\"},{\"name\":\"whitelist\",\"type\":\"bool\",\"optional\":true},{\"name\":\"via\",\"type\":\"string\",\"optional\":true}],\"confirms\":[\"bridge\"]},{\"name\":\"attempts\",\"args\":[{\"name\":\"limit\",\"type\":\"int\",\"optional\":true}]}]";
-          int format = new File("usher-format-2").exists() ? 2 : 1;
-          answer(id, "\"ok\":true,\"format\":" + format + ",\"plugin\":\"Usher\",\"version\":\"0.4.0\",\"commands\":" + cmds);
+          int format = new File("sheriff-format-2").exists() ? 2 : 1;
+          answer(id, "\"ok\":true,\"format\":" + format + ",\"plugin\":\"Sheriff\",\"version\":\"0.4.0\",\"commands\":" + cmds);
         } else if (body.equals("profiles")) {
           answer(id, "\"ok\":true,\"luckperms\":true,\"problems\":[\"Profile builders is left out: made up.\"],\"profiles\":[{\"id\":\"young\",\"label\":\"Young explorers\",\"group\":\"young\",\"toggle\":false,\"circle\":\"young\",\"worlds\":[\"young_build\"],\"description\":[\"Made-up young worlds.\"]},{\"id\":\"grown\",\"label\":\"Grown-ups\",\"group\":\"grown\",\"circle\":\"grown\",\"worlds\":[]}]");
         } else if (body.startsWith("show ")) {
@@ -507,7 +507,7 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
         while ((line = reader.readLine()) != null) {
           if (line.equals("stop")) { log("Stopping the server"); socket.close(); System.exit(0); }
           int at = line.lastIndexOf(" --json ");
-          if (line.startsWith("usher ") && at >= 0) { usher(line.substring(6, at), line.substring(at + 8), line); continue; }
+          if (line.startsWith("sheriff ") && at >= 0) { sheriff(line.substring(6, at), line.substring(at + 8), line); continue; }
           if (line.startsWith("latchkey ") && at >= 0) { latchkey(line.substring(9, at), line.substring(at + 8), line); continue; }
           if (line.startsWith("packmule ") && at >= 0) { packmule(line.substring(9, at), line.substring(at + 8), line); continue; }
           if (!line.startsWith("fakeplug ") || at < 0) { log("Unknown command"); continue; }
@@ -556,14 +556,14 @@ extension Result {
     var isSuccess: Bool { if case .success = self { true } else { false } }
 }
 
-/// Real Paper with a real Usher jar (given on the command line) on a throwaway server on 127.0.0.1:
+/// Real Paper with a real Sheriff jar (given on the command line) on a throwaway server on 127.0.0.1:
 /// its describe, a list, a refusal and an unknown command, all through LeafJuice's console.
-@MainActor func runRealUsher(jar: URL, dump: URL?) async {
-    section("REAL USHER THROUGH PLUGIN COMMANDS (EULA accepted by the person running this)")
+@MainActor func runRealSheriff(jar: URL, dump: URL?) async {
+    section("REAL SHERIFF THROUGH PLUGIN COMMANDS (EULA accepted by the person running this)")
     do {
-        let root = folder("real-usher")
+        let root = folder("real-sheriff")
         write("server-port=25592\nserver-ip=127.0.0.1\nonline-mode=false\nwhite-list=false\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\n", root.appendingPathComponent("server.properties"))
-        let c = try await ServerController.adopt(root: root, name: "real-usher")
+        let c = try await ServerController.adopt(root: root, name: "real-sheriff")
         try EULA.accept(c.paths)
         try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!)
         try FileOps.ensureDir(root.appendingPathComponent("plugins"))
@@ -578,16 +578,16 @@ extension Result {
         defer { Modules.shared.set(.pluginCommands, on: false) }
 
         await c.start()
-        await checkUntil(240, "Paper \(realMC) with Usher runs (last: \(c.console.suffix(3).map(\.text)))") { c.state == .running }
+        await checkUntil(240, "Paper \(realMC) with Sheriff runs (last: \(c.console.suffix(3).map(\.text)))") { c.state == .running }
 
-        switch await c.commands.describe("usher") {
+        switch await c.commands.describe("sheriff") {
         case .described(let d):
             print("  describe: \(d.plugin) \(d.version), format \(d.format)")
             for cmd in d.commands {
                 print("    \(cmd.name): " + cmd.args.map { "\($0.name):\($0.type)\($0.of.map { "<\($0)>" } ?? "")\($0.optional ? "?" : "")" }.joined(separator: " ")
                       + (cmd.confirms.isEmpty ? "" : "  asks \(cmd.confirms)") + (cmd.secret ? "  secret" : ""))
             }
-            check(d.plugin == "Usher" && d.format == 1, "Usher answers describe in format 1")
+            check(d.plugin == "Sheriff" && d.format == 1, "Sheriff answers describe in format 1")
             check(d.commands.flatMap(\.args).allSatisfy(\.isKnown), "every argument type is one LeafJuice knows")
             func optionals(_ name: String) -> [String] { d.commands.first { $0.name == name }?.args.filter(\.optional).map(\.name) ?? ["missing"] }
             equal(optionals("apply"), ["whitelist", "via"], "apply's whitelist and via are optional")
@@ -596,141 +596,141 @@ extension Result {
         case let other: check(false, "describe read: \(other)")
         }
         if let dump {
-            let raw = await c.commands.run("usher", ["describe"])
+            let raw = await c.commands.run("sheriff", ["describe"])
             if case .done(let a) = raw.outcome { try a.json.write(to: dump) }
         }
 
-        let profiles = await c.commands.run("usher", ["profiles"])
+        let profiles = await c.commands.run("sheriff", ["profiles"])
         if case .done(let a) = profiles.outcome { print("  profiles: \(String(decoding: a.json, as: UTF8.self).prefix(400))") } else { check(false, "profiles: \(profiles.outcome)") }
 
         if withLuckPerms {
-            await realUsherApproval(c, root: root)
+            await realSheriffApproval(c, root: root)
             c.stop()
             await checkUntil(90, "stops") { c.state == .stopped }
             return
         }
-        let apply = await c.commands.run("usher", ["apply"], [.uuid("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), .player("MadeUpKid"), .word("none"), .word("none")])
+        let apply = await c.commands.run("sheriff", ["apply"], [.uuid("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), .player("MadeUpKid"), .word("none"), .word("none")])
         if case .failed(let e) = apply.outcome {
             print("  apply without LuckPerms: \(e.code): \(e.plainMessage)")
             check(e.code == "luckperms-missing", "without LuckPerms, apply is refused with its own code")
         } else { check(false, "apply without LuckPerms is refused: \(apply.outcome)") }
 
-        let unknown = await c.commands.run("usher", ["nosuchthing"])
+        let unknown = await c.commands.run("sheriff", ["nosuchthing"])
         if case .failed(let e) = unknown.outcome { equal(e.code, "unknown-command", "an unknown subcommand gets the base code") } else { check(false, "unknown subcommand: \(unknown.outcome)") }
 
         c.stop()
         await checkUntil(90, "stops") { c.state == .stopped }
-    } catch { failures.append("real usher: \(error)") }
+    } catch { failures.append("real sheriff: \(error)") }
 }
 
-/// Usher's part of the Allowlist page, against the fake server: refusals that must fail closed, then a whole approval.
-@MainActor private func usherThroughFake(_ c: ServerController, root: URL) async {
+/// Sheriff's part of the Allowlist page, against the fake server: refusals that must fail closed, then a whole approval.
+@MainActor private func sheriffThroughFake(_ c: ServerController, root: URL) async {
     let made = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-    check(!c.hasUsher, "no Usher jar, no Usher")
-    equal(await c.usherStatus(), .notInstalled, "and the page uses its own path")
-    makeJarInPlugins(root, "Usher")
+    check(!c.hasSheriff, "no Sheriff jar, no Sheriff")
+    equal(await c.sheriffStatus(), .notInstalled, "and the page uses its own path")
+    makeJarInPlugins(root, "Sheriff")
     await c.refreshPlugins()
-    check(c.hasUsher, "an Usher jar is noticed")
+    check(c.hasSheriff, "an Sheriff jar is noticed")
 
-    // With Usher on the server, nothing goes around it.
+    // With Sheriff on the server, nothing goes around it.
     c.accessAllowsOffline = true
     defer { c.accessAllowsOffline = false }
     for (label, change) in [("adding someone", AccessChange(uuid: made, name: "MadeUpKid", addGroups: [])),
                             ("adding a group", AccessChange(uuid: made, name: "MadeUpKid", addGroups: ["young"], addToAllowlist: false)),
                             ("removing a group", AccessChange(uuid: made, name: "MadeUpKid", removeGroups: ["young"], addToAllowlist: false))] {
         let refusal = await c.requestAccess(change)
-        check(refusal?.contains("Usher") ?? false, "with Usher here, raw \(label) is refused: \(refusal ?? "allowed")")
+        check(refusal?.contains("Sheriff") ?? false, "with Sheriff here, raw \(label) is refused: \(refusal ?? "allowed")")
     }
     check(c.waitingAccess.isEmpty, "and nothing is queued to happen later")
     check(!c.console.contains { $0.text.contains("lp user") || $0.text.contains("whitelist add") }, "and no LuckPerms or whitelist command was typed")
 
     Modules.shared.set(.pluginCommands, on: false)
-    if case .unavailable(let why) = await c.usherStatus() { check(why.contains("Plugin commands"), "switched off: Usher can't be reached, saying how to fix it") } else { check(false, "switched off is unavailable") }
+    if case .unavailable(let why) = await c.sheriffStatus() { check(why.contains("Plugin commands"), "switched off: Sheriff can't be reached, saying how to fix it") } else { check(false, "switched off is unavailable") }
     Modules.shared.set(.pluginCommands, on: true)
 
-    write("", root.appendingPathComponent("usher-old"))
-    if case .unavailable(let why) = await c.usherStatus() { check(why.contains("0.4.0"), "an Usher without apply is refused, naming the version needed: \(why)") } else { check(false, "old Usher refused") }
-    try? FileManager.default.removeItem(at: root.appendingPathComponent("usher-old"))
-    write("", root.appendingPathComponent("usher-format-2"))
-    if case .unavailable(let why) = await c.usherStatus() { check(why.contains("newer"), "an Usher speaking a newer format is refused") } else { check(false, "newer format refused") }
-    try? FileManager.default.removeItem(at: root.appendingPathComponent("usher-format-2"))
+    write("", root.appendingPathComponent("sheriff-old"))
+    if case .unavailable(let why) = await c.sheriffStatus() { check(why.contains("0.4.0"), "an Sheriff without apply is refused, naming the version needed: \(why)") } else { check(false, "old Sheriff refused") }
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("sheriff-old"))
+    write("", root.appendingPathComponent("sheriff-format-2"))
+    if case .unavailable(let why) = await c.sheriffStatus() { check(why.contains("newer"), "an Sheriff speaking a newer format is refused") } else { check(false, "newer format refused") }
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("sheriff-format-2"))
 
-    guard case .ready(let version, let profiles, let luckPerms, let problems) = await c.usherStatus() else { check(false, "the fake Usher is ready"); return }
-    equal(problems, ["Profile builders is left out: made up."], "Usher's own settings problems come through, to be shown")
+    guard case .ready(let version, let profiles, let luckPerms, let problems) = await c.sheriffStatus() else { check(false, "the fake Sheriff is ready"); return }
+    equal(problems, ["Profile builders is left out: made up."], "Sheriff's own settings problems come through, to be shown")
     check(version == "0.4.0" && luckPerms, "ready, with its version and LuckPerms state")
     equal(profiles.map(\.label), ["Young explorers", "Grown-ups"], "its profiles, with their labels")
     equal(profiles.first?.worlds ?? [], ["young_build"], "and what each opens")
 
-    equal(await c.usherApply(uuid: made, name: "MadeUpKid", add: ["none"], remove: []), .failed("A profile can't be called “none”."), "a profile called none is refused before anything is typed")
-    equal(await c.usherApply(uuid: made, name: "MadeUpKid", add: ["young"], remove: []), .done("MadeUpKid is approved and can join now."), "approving with a profile")
-    if case .success(let p) = await c.usherShow(uuid: made) { check(p.profiles == ["young"] && p.whitelisted, "Usher then shows the profile, and the whitelist") } else { check(false, "show read") }
-    equal(await c.usherApply(uuid: made, name: "MadeUpKid", add: ["grown"], remove: []), .questions([ConfirmQuestion(id: "bridge", question: "This puts them in two chat circles. Go ahead?")]), "a risky change comes back as a question")
-    if case .success(let p) = await c.usherShow(uuid: made) { equal(p.profiles, ["young"], "and nothing changed") } else { check(false, "show read") }
-    equal(await c.usherApply(uuid: made, name: "MadeUpKid", add: ["grown"], remove: ["young"], yes: ["bridge"]), .done("MadeUpKid is approved and can join now."), "it goes ahead with the yes")
-    if case .success(let p) = await c.usherShow(uuid: made) { equal(p.profiles, ["grown"], "added and removed in one go") } else { check(false, "show read") }
-    let typed = (try? String(contentsOf: root.appendingPathComponent("usher-commands.txt"), encoding: .utf8)) ?? ""
-    check(typed.contains("usher apply \(made) MadeUpKid young none true leaf-juice --json "), "the command typed: lists, none for an empty one, whitelist and who asked")
-    check(typed.contains("usher apply \(made) MadeUpKid grown young true leaf-juice --yes bridge --json "), "and the yes goes before the request id")
+    equal(await c.sheriffApply(uuid: made, name: "MadeUpKid", add: ["none"], remove: []), .failed("A profile can't be called “none”."), "a profile called none is refused before anything is typed")
+    equal(await c.sheriffApply(uuid: made, name: "MadeUpKid", add: ["young"], remove: []), .done("MadeUpKid is approved and can join now."), "approving with a profile")
+    if case .success(let p) = await c.sheriffShow(uuid: made) { check(p.profiles == ["young"] && p.whitelisted, "Sheriff then shows the profile, and the whitelist") } else { check(false, "show read") }
+    equal(await c.sheriffApply(uuid: made, name: "MadeUpKid", add: ["grown"], remove: []), .questions([ConfirmQuestion(id: "bridge", question: "This puts them in two chat circles. Go ahead?")]), "a risky change comes back as a question")
+    if case .success(let p) = await c.sheriffShow(uuid: made) { equal(p.profiles, ["young"], "and nothing changed") } else { check(false, "show read") }
+    equal(await c.sheriffApply(uuid: made, name: "MadeUpKid", add: ["grown"], remove: ["young"], yes: ["bridge"]), .done("MadeUpKid is approved and can join now."), "it goes ahead with the yes")
+    if case .success(let p) = await c.sheriffShow(uuid: made) { equal(p.profiles, ["grown"], "added and removed in one go") } else { check(false, "show read") }
+    let typed = (try? String(contentsOf: root.appendingPathComponent("sheriff-commands.txt"), encoding: .utf8)) ?? ""
+    check(typed.contains("sheriff apply \(made) MadeUpKid young none true leaf-juice --json "), "the command typed: lists, none for an empty one, whitelist and who asked")
+    check(typed.contains("sheriff apply \(made) MadeUpKid grown young true leaf-juice --yes bridge --json "), "and the yes goes before the request id")
 
-    if case .success(let list) = await c.usherAttempts() {
-        check(list.count == 1 && list.first?.name == "MadeUpKid" && list.first?.count == 3, "people turned away are read, with Usher 0.4.0's list key and number cursor")
+    if case .success(let list) = await c.sheriffAttempts() {
+        check(list.count == 1 && list.first?.name == "MadeUpKid" && list.first?.count == 3, "people turned away are read, with the 0.4 releases' list key and number cursor")
     } else { check(false, "attempts read") }
 
-    try? FileManager.default.removeItem(at: root.appendingPathComponent("plugins/Usher.jar"))
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("plugins/Sheriff.jar"))
     await c.refreshPlugins()
 }
 
-/// A whole approval through real Usher and LuckPerms, as the Allowlist page does it, on a made-up offline account.
-@MainActor private func realUsherApproval(_ c: ServerController, root: URL) async {
+/// A whole approval through real Sheriff and LuckPerms, as the Allowlist page does it, on a made-up offline account.
+@MainActor private func realSheriffApproval(_ c: ServerController, root: URL) async {
     await c.refreshPlugins()
-    check(c.hasUsher && c.hasLuckPerms, "Usher and LuckPerms are both on the server")
-    if case .ready(_, _, _, let problems) = await c.usherStatus() {
-        check(problems.contains { $0.contains("doesn't exist in LuckPerms") }, "before its groups exist, Usher's problems say so, for the page to show")
+    check(c.hasSheriff && c.hasLuckPerms, "Sheriff and LuckPerms are both on the server")
+    if case .ready(_, _, _, let problems) = await c.sheriffStatus() {
+        check(problems.contains { $0.contains("doesn't exist in LuckPerms") }, "before its groups exist, Sheriff's problems say so, for the page to show")
     }
     for group in ["young", "grown", "grown_sky"] { await expectLine(c, "lp creategroup \(group)", group, "made-up group \(group)") }
-    if case .done = await c.commands.run("usher", ["reload"]).outcome { check(true, "") } else { check(false, "usher reload through plugin commands") }
-    guard case .ready(let version, let profiles, let luckPerms, _) = await c.usherStatus() else { check(false, "real Usher is ready"); return }
-    print("  Usher \(version), LuckPerms \(luckPerms), profiles \(profiles.map(\.id))")
-    check(luckPerms, "Usher sees LuckPerms")
+    if case .done = await c.commands.run("sheriff", ["reload"]).outcome { check(true, "") } else { check(false, "sheriff reload through plugin commands") }
+    guard case .ready(let version, let profiles, let luckPerms, _) = await c.sheriffStatus() else { check(false, "real Sheriff is ready"); return }
+    print("  Sheriff \(version), LuckPerms \(luckPerms), profiles \(profiles.map(\.id))")
+    check(luckPerms, "Sheriff sees LuckPerms")
     let name = "MadeUpKid", uuid = PlayerFiles.offlineUUID(name: name)
 
-    let first = await c.usherApply(uuid: uuid, name: name, add: ["young"], remove: [])
+    let first = await c.sheriffApply(uuid: uuid, name: name, add: ["young"], remove: [])
     print("  approve with young: \(first)")
     if case .done = first { check(true, "") } else { check(false, "approving with one profile goes through: \(first)") }
-    if case .success(let p) = await c.usherShow(uuid: uuid) {
-        check(p.profiles == ["young"] && p.whitelisted, "Usher shows the profile, and they're whitelisted: \(p)")
+    if case .success(let p) = await c.sheriffShow(uuid: uuid) {
+        check(p.profiles == ["young"] && p.whitelisted, "Sheriff shows the profile, and they're whitelisted: \(p)")
     } else { check(false, "show read") }
     check(c.allowlist.contains { $0.uuid == uuid }, "the server's whitelist file has them")
     let groups = await c.currentGroups(uuid: uuid) ?? []
     check(groups.contains("young"), "LuckPerms has the group: \(groups)")
 
-    let risky = await c.usherApply(uuid: uuid, name: name, add: ["grown"], remove: [])
+    let risky = await c.sheriffApply(uuid: uuid, name: name, add: ["grown"], remove: [])
     print("  add grown: \(risky)")
     if case .questions(let qs) = risky {
         check(!qs.isEmpty, "a second chat circle comes back as a question")
-        if case .success(let p) = await c.usherShow(uuid: uuid) { equal(p.profiles, ["young"], "and nothing changed") }
-        let yes = await c.usherApply(uuid: uuid, name: name, add: ["grown"], remove: [], yes: qs.map(\.id))
+        if case .success(let p) = await c.sheriffShow(uuid: uuid) { equal(p.profiles, ["young"], "and nothing changed") }
+        let yes = await c.sheriffApply(uuid: uuid, name: name, add: ["grown"], remove: [], yes: qs.map(\.id))
         if case .done = yes { check(true, "") } else { check(false, "it goes through with every yes: \(yes)") }
     } else { check(false, "adding a second circle asks first: \(risky)") }
 
-    let sky = await c.usherApply(uuid: uuid, name: name, add: ["grown_sky"], remove: ["young"])
+    let sky = await c.sheriffApply(uuid: uuid, name: name, add: ["grown_sky"], remove: ["young"])
     print("  grown sky, minus young: \(sky)")
     if case .questions(let qs) = sky {
         check(qs.contains { $0.id == "confirm-grown-sky" }, "a profile with its own question asks it: \(qs.map(\.id))")
-        let yes = await c.usherApply(uuid: uuid, name: name, add: ["grown_sky"], remove: ["young"], yes: qs.map(\.id))
+        let yes = await c.sheriffApply(uuid: uuid, name: name, add: ["grown_sky"], remove: ["young"], yes: qs.map(\.id))
         if case .done = yes { check(true, "") } else { check(false, "and goes ahead with the yes: \(yes)") }
-        if case .success(let p) = await c.usherShow(uuid: uuid) { equal(Set(p.profiles), ["grown", "grown_sky"], "added and removed in one go") }
+        if case .success(let p) = await c.sheriffShow(uuid: uuid) { equal(Set(p.profiles), ["grown", "grown_sky"], "added and removed in one go") }
     } else { check(false, "a profile with a confirm question asks: \(sky)") }
 
     c.accessAllowsOffline = true
     let raw = await c.requestAccess(AccessChange(uuid: PlayerFiles.offlineUUID(name: "MadeUpOther"), name: "MadeUpOther", addGroups: ["young"]))
     c.accessAllowsOffline = false
-    check(raw?.contains("Usher") ?? false, "the raw LuckPerms path is refused with Usher here: \(raw ?? "allowed")")
+    check(raw?.contains("Sheriff") ?? false, "the raw LuckPerms path is refused with Sheriff here: \(raw ?? "allowed")")
     check(!c.allowlist.contains { $0.name == "MadeUpOther" }, "and nobody was added around it")
 
-    let log = (try? String(contentsOf: root.appendingPathComponent("plugins/Usher/changes.log"), encoding: .utf8)) ?? ""
-    check(log.contains("leaf-juice"), "Usher's change log says the changes came from LeafJuice")
-    if case .success(let list) = await c.usherAttempts() { print("  attempts: \(list.count)") } else { check(false, "attempts read on real Usher") }
+    let log = (try? String(contentsOf: root.appendingPathComponent("plugins/Sheriff/changes.log"), encoding: .utf8)) ?? ""
+    check(log.contains("leaf-juice"), "Sheriff's change log says the changes came from LeafJuice")
+    if case .success(let list) = await c.sheriffAttempts() { print("  attempts: \(list.count)") } else { check(false, "attempts read on real Sheriff") }
 }
 
 /// Invites through a fake Latchkey: the code comes only from the once-file, questions hold the invite back.
@@ -952,14 +952,14 @@ private final class PageClient {
     }
 }
 
-/// Real Paper with LuckPerms, Usher and Latchkey: an invite made through LeafJuice is redeemed on Latchkey's page,
+/// Real Paper with LuckPerms, Sheriff and Latchkey: an invite made through LeafJuice is redeemed on Latchkey's page,
 /// a bot signs in, LeafJuice reads the session file, and taking them off the whitelist ends it. Made-up offline accounts.
-@MainActor func runRealInvites(usher: URL, latchkey: URL) async {
-    section("REAL INVITES THROUGH LATCHKEY AND USHER (EULA accepted by the person running this)")
+@MainActor func runRealInvites(sheriff: URL, latchkey: URL) async {
+    section("REAL INVITES THROUGH LATCHKEY AND SHERIFF (EULA accepted by the person running this)")
     do {
         let port = 25593, web = 25694
         let root = folder("real-invites")
-        let c = try await buildInvitesServer(root: root, port: port, web: web, usher: usher, latchkey: latchkey)
+        let c = try await buildInvitesServer(root: root, port: port, web: web, sheriff: sheriff, latchkey: latchkey)
         defer { c.forceStop(); c.stopTicker() }
         Modules.shared.set(.pluginCommands, on: true)
         defer { Modules.shared.set(.pluginCommands, on: false) }
@@ -968,17 +968,17 @@ private final class PageClient {
         let table = try await ProtocolTable.load(mc: realMC, cache: folder("real-invites-protocol"), java: java.path)
 
         await c.start()
-        await checkUntil(240, "Paper \(realMC) with Usher and Latchkey runs (last: \(c.console.suffix(3).map(\.text)))") { c.state == .running }
+        await checkUntil(240, "Paper \(realMC) with Sheriff and Latchkey runs (last: \(c.console.suffix(3).map(\.text)))") { c.state == .running }
         await c.refreshPlugins()
         for group in ["young", "grown"] { await expectLine(c, "lp creategroup \(group)", group, "made-up group \(group)") }
-        _ = await c.commands.run("usher", ["reload"])
+        _ = await c.commands.run("sheriff", ["reload"])
 
         guard case .ready(let version, let works, let url, let problems, let lobby) = await c.latchkeyStatus() else { check(false, "real Latchkey is ready"); return }
         print("  Latchkey \(version), invites \(works), page \(url ?? "none"), lobby \(lobby.map(String.init) ?? "not said"), problems \(problems)")
         if !version.hasPrefix("0.2.") { check(lobby != nil, "Latchkey \(version) says whether its lobby is on") }
         check(works, "Latchkey takes invites on this throwaway setup")
-        guard case .ready(_, let profiles, _, _) = await c.usherStatus() else { check(false, "Usher ready"); return }
-        check(profiles.contains { $0.id == "young" }, "Usher's young profile is there")
+        guard case .ready(_, let profiles, _, _) = await c.sheriffStatus() else { check(false, "Sheriff ready"); return }
+        check(profiles.contains { $0.id == "young" }, "Sheriff's young profile is there")
 
         let name = "MadeUpKid", uuid = PlayerFiles.offlineUUID(name: name)
         let consoleBefore = c.console.count
@@ -991,7 +991,7 @@ private final class PageClient {
         check(((try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("plugins/Latchkey/once").path)) ?? []).isEmpty, "and the once-file is gone")
 
         let risky = await c.createInvite(name: "MadeUpOther", profiles: ["young", "grown"], days: 7)
-        if case .questions(let qs) = risky { check(qs.contains { $0.id == "bridge" }, "Usher's bridge question comes back through Latchkey, before any invite is made") } else { check(false, "a risky invite asks first: \(risky)") }
+        if case .questions(let qs) = risky { check(qs.contains { $0.id == "bridge" }, "Sheriff's bridge question comes back through Latchkey, before any invite is made") } else { check(false, "a risky invite asks first: \(risky)") }
         guard case .made(let spare) = await c.createInvite(name: "MadeUpSpare", profiles: [], days: 1) else { check(false, "a lobby-only invite"); return }
         equal(await c.revokeInvite(spare.invite.invite), nil, "revoking an invite")
         if case .success(let listed) = await c.listInvites() { let list = listed.invites
@@ -1003,7 +1003,7 @@ private final class PageClient {
         let redeemed = try await browser.request("/invite", form: ["csrf": try await browser.csrf("/"), "code": invite.code.lowercased(), "name": name])
         print("  redeem: HTTP \(redeemed.status)")
         await checkUntil(10, "redeeming whitelists them") { c.allowlist.contains { $0.uuid == uuid } }
-        if case .success(let p) = await c.usherShow(uuid: uuid) { equal(p.profiles, ["young"], "Usher applied the invite's profile") } else { check(false, "show after redeeming") }
+        if case .success(let p) = await c.sheriffShow(uuid: uuid) { equal(p.profiles, ["young"], "Sheriff applied the invite's profile") } else { check(false, "show after redeeming") }
         if case .success(let list) = await c.listInvites() { equal(list.invites.first { $0.name == name }?.stateText(), "Used", "the invite shows as used") }
 
         // A bot signs in, and LeafJuice reads Latchkey's session file.
@@ -1051,20 +1051,20 @@ private final class PageClient {
     } catch { failures.append("real invites: \(error)") }
 }
 
-/// A throwaway offline Paper server with LuckPerms, Usher and Latchkey, set up the way their own tests do it.
+/// A throwaway offline Paper server with LuckPerms, Sheriff and Latchkey, set up the way their own tests do it.
 /// Latchkey's offline-testing flag goes in this server's launch settings only.
-@MainActor func buildInvitesServer(root: URL, port: Int, web: Int, usher: URL, latchkey: URL) async throws -> ServerController {
+@MainActor func buildInvitesServer(root: URL, port: Int, web: Int, sheriff: URL, latchkey: URL) async throws -> ServerController {
         write("server-ip=127.0.0.1\nserver-port=\(port)\nonline-mode=false\nwhite-list=true\nenforce-whitelist=true\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\ngenerate-structures=false\nspawn-protection=0\nnetwork-compression-threshold=-1\n", root.appendingPathComponent("server.properties"))
         let c = try await ServerController.adopt(root: root, name: "real-invites")
         try EULA.accept(c.paths)
         try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!)
         try await c.addPlugin(source: .modrinth(project: "luckperms", allowBeta: false))
-        for jar in [usher, latchkey] { try FileManager.default.copyItem(at: jar, to: root.appendingPathComponent("plugins/\(jar.lastPathComponent)")) }
+        for jar in [sheriff, latchkey] { try FileManager.default.copyItem(at: jar, to: root.appendingPathComponent("plugins/\(jar.lastPathComponent)")) }
         // Each plugin's shipped config, set for a throwaway offline server the way their own tests do it.
-        var usherConfig = try await Tool.run("/usr/bin/unzip", ["-p", usher.path, "config.yml"]).out
-        usherConfig = usherConfig.replacingOccurrences(of: "name-lookup: auto", with: "name-lookup: offline").replacingOccurrences(of: "lobby-world: \"\"", with: "lobby-world: world")
-        try FileOps.ensureDir(root.appendingPathComponent("plugins/Usher"))
-        write(usherConfig, root.appendingPathComponent("plugins/Usher/config.yml"))
+        var sheriffConfig = try await Tool.run("/usr/bin/unzip", ["-p", sheriff.path, "config.yml"]).out
+        sheriffConfig = sheriffConfig.replacingOccurrences(of: "name-lookup: auto", with: "name-lookup: offline").replacingOccurrences(of: "lobby-world: \"\"", with: "lobby-world: world")
+        try FileOps.ensureDir(root.appendingPathComponent("plugins/Sheriff"))
+        write(sheriffConfig, root.appendingPathComponent("plugins/Sheriff/config.yml"))
         var lk = try await Tool.run("/usr/bin/unzip", ["-p", latchkey.path, "config.yml"]).out
         for (a, b) in [("enabled: false", "enabled: true"), ("port: 25680", "port: \(web)"), ("public-url: \"\"", "public-url: \"https://play.example.test\"")] {
             guard lk.contains(a) else { throw LeafError("Latchkey's shipped config no longer has \(a)") }
@@ -1086,7 +1086,7 @@ private final class PageClient {
     try FileOps.ensureDir(jars)
     var got: [URL] = []
     for (name, url, sha) in [
-        ("Usher-0.4.1.jar", "https://github.com/ExtantApe/Usher/releases/download/v0.4.1/Usher-0.4.1.jar", "4d1ff17d7603e58550503975e2aef794645a5b3722468f51363bcc2e44c31b0d"),
+        ("Sheriff-0.4.1.jar", "https://github.com/ExtantApe/Sheriff/releases/download/v0.4.1/Sheriff-0.4.1.jar", "4d1ff17d7603e58550503975e2aef794645a5b3722468f51363bcc2e44c31b0d"),
         ("Latchkey-0.3.0.jar", "https://github.com/ExtantApe/Latchkey/releases/download/v0.3.0/Latchkey-0.3.0.jar", "1dd0c76d88612c613afe84fab1658ddf2bf851d373b96df68d0771b4e9b67032"),
     ] {
         let to = jars.appendingPathComponent(name)
@@ -1095,15 +1095,15 @@ private final class PageClient {
     }
     let root = demo.appendingPathComponent("servers/invites-demo", isDirectory: true)
     try FileOps.ensureDir(root)
-    let c = try await buildInvitesServer(root: root, port: 25595, web: 25695, usher: got[0], latchkey: got[1])
+    let c = try await buildInvitesServer(root: root, port: 25595, web: 25695, sheriff: got[0], latchkey: got[1])
     c.profile.name = "Invites demo"
     Modules.shared.set(.pluginCommands, on: true)
     await c.start()
     guard await until(240, { c.state == .running }) else { throw LeafError("The demo server didn't start: \(c.console.suffix(3).map(\.text))") }
     await c.refreshPlugins()
     for group in ["young", "grown", "young_sky", "grown_sky", "builders"] { _ = await c.ask("lp creategroup \(group)") { $0.contains { $0.contains(group) } } }
-    _ = await c.commands.run("usher", ["reload"])
-    _ = await c.usherApply(uuid: PlayerFiles.offlineUUID(name: "MadeUpBuilder"), name: "MadeUpBuilder", add: ["builders"], remove: [])
+    _ = await c.commands.run("sheriff", ["reload"])
+    _ = await c.sheriffApply(uuid: PlayerFiles.offlineUUID(name: "MadeUpBuilder"), name: "MadeUpBuilder", add: ["builders"], remove: [])
     _ = await c.createInvite(name: "MadeUpExplorer", profiles: ["young"], days: 14)
     c.stop()
     _ = await until(90, { c.state == .stopped })

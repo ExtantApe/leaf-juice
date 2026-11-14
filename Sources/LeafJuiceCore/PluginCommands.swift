@@ -202,7 +202,7 @@ public enum CommandOutcome: Sendable {
             let secretFile: String?
             struct Err: Decodable { let code: String; let message: String? }
         }
-        /// The spec's cursor is a string. Usher 0.4.0 sends a number, so either is taken, as text.
+        /// The spec's cursor is a string. Sheriff's 0.4 releases sent a number, so either is taken, as text.
         struct Cursor: Decodable {
             let text: String
             init(from decoder: Decoder) throws {

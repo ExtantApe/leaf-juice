@@ -1,15 +1,15 @@
 import LeafJuiceCore
 import SwiftUI
 
-/// Choose someone's profiles and approve them, through Usher. Usher's questions appear here, and each needs a tick.
-struct UsherApproval: View {
+/// Choose someone's profiles and approve them, through Sheriff. Sheriff's questions appear here, and each needs a tick.
+struct SheriffApproval: View {
     let server: ServerController
     let uuid: String
     let name: String
-    let profiles: [UsherProfile]
-    /// Called after Usher confirms a change.
+    let profiles: [SheriffProfile]
+    /// Called after Sheriff confirms a change.
     var done: (String) -> Void = { _ in }
-    @State private var current: UsherPlayer?
+    @State private var current: SheriffPlayer?
     @State private var reading = true
     @State private var chosen = Set<String>()
     @State private var questions: [ConfirmQuestion] = []
@@ -26,16 +26,16 @@ struct UsherApproval: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if reading {
-                Hint("Asking Usher what \(name) has…")
+                Hint("Asking Sheriff what \(name) has…")
             } else {
                 if let current {
                     Fact(label: "On the whitelist", value: current.whitelisted ? "Yes" : "Not yet")
                     if !current.throughOtherGroups.isEmpty {
-                        Hint("Also gets \(labels(current.throughOtherGroups)) through another group, which Usher can't change here.")
+                        Hint("Also gets \(labels(current.throughOtherGroups)) through another group, which Sheriff can't change here.")
                     }
                 }
                 Text("Profiles").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
-                if profiles.isEmpty { Hint("Usher has no profiles set up. Approving gives lobby-only access until an admin adds some.") }
+                if profiles.isEmpty { Hint("Sheriff has no profiles set up. Approving gives lobby-only access until an admin adds some.") }
                 ForEach(profiles) { profile in
                     VStack(alignment: .leading, spacing: 2) {
                         Toggle(profile.label, isOn: Binding(get: { chosen.contains(profile.id) }, set: { on in
@@ -48,7 +48,7 @@ struct UsherApproval: View {
                     }
                 }
                 if !questions.isEmpty {
-                    Callout(tone: .warning, title: "Usher asks first", detail: "Nothing has changed yet. Tick each one to go ahead.")
+                    Callout(tone: .warning, title: "Sheriff asks first", detail: "Nothing has changed yet. Tick each one to go ahead.")
                     ForEach(questions, id: \.id) { q in
                         Toggle(q.question, isOn: Binding(get: { answered.contains(q.id) }, set: { on in
                             if on { answered.insert(q.id) } else { answered.remove(q.id) }
@@ -62,7 +62,7 @@ struct UsherApproval: View {
                     Button(working ? "Working…" : buttonTitle, action: apply)
                         .buttonStyle(.juicePrimary)
                         .disabled(working || current == nil || nothingToDo || questions.contains { !answered.contains($0.id) })
-                    Hint("Goes through Usher, with its own checks, and is logged in Usher's change log.")
+                    Hint("Goes through Sheriff, with its own checks, and is logged in Sheriff's change log.")
                 }
             }
         }
@@ -75,7 +75,7 @@ struct UsherApproval: View {
         return "Save Profiles"
     }
 
-    private func detail(_ p: UsherProfile) -> String {
+    private func detail(_ p: SheriffProfile) -> String {
         var parts: [String] = []
         if !p.worlds.isEmpty { parts.append("Worlds: \(p.worlds.joined(separator: ", "))") }
         if let circle = p.circle { parts.append("Chat circle: \(circle)") }
@@ -90,7 +90,7 @@ struct UsherApproval: View {
     private func read() async {
         reading = true
         problem = nil
-        switch await server.usherShow(uuid: uuid) {
+        switch await server.sheriffShow(uuid: uuid) {
         case .success(let p):
             current = p
             chosen = Set(p.profiles)
@@ -108,7 +108,7 @@ struct UsherApproval: View {
         let yes = questions.map(\.id)
         Task {
             defer { working = false }
-            switch await server.usherApply(uuid: uuid, name: name, add: adding, remove: removing, yes: yes) {
+            switch await server.sheriffApply(uuid: uuid, name: name, add: adding, remove: removing, yes: yes) {
             case .done(let message):
                 questions = []; answered = []
                 result = message
@@ -119,7 +119,7 @@ struct UsherApproval: View {
             case .failed(let why):
                 problem = why
             case .notConfirmed:
-                problem = "Usher didn't answer in 15 seconds. The change may still have happened, so this shows what Usher has now."
+                problem = "Sheriff didn't answer in 15 seconds. The change may still have happened, so this shows what Sheriff has now."
                 await read()
             }
         }
@@ -127,17 +127,17 @@ struct UsherApproval: View {
 }
 
 /// The same, in a sheet, for someone already on the list.
-struct UsherProfileSheet: View {
+struct SheriffProfileSheet: View {
     let server: ServerController
     let entry: AllowlistEntry
-    let profiles: [UsherProfile]
+    let profiles: [SheriffProfile]
     let changed: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Profiles for \(entry.name)").font(.title2.weight(.semibold)).foregroundStyle(Juice.ink)
-            UsherApproval(server: server, uuid: entry.uuid, name: entry.name, profiles: profiles) { _ in changed() }
+            SheriffApproval(server: server, uuid: entry.uuid, name: entry.name, profiles: profiles) { _ in changed() }
             if server.hasLatchkey { Divider(); WebSignInSection(server: server, name: entry.name) }
             HStack {
                 Spacer()

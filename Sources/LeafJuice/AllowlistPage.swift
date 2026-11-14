@@ -18,9 +18,9 @@ struct AllowlistPage: View {
     @State private var editing: AllowlistEntry?
     @State private var conflictA = ""
     @State private var conflictB = ""
-    @State private var usher: UsherStatus?
-    @State private var attempts: [UsherAttempt] = []
-    @State private var usherEditing: AllowlistEntry?
+    @State private var sheriff: SheriffStatus?
+    @State private var attempts: [SheriffAttempt] = []
+    @State private var sheriffEditing: AllowlistEntry?
     @State private var modules = Modules.shared
 
     private var running: Bool { server.state == .running }
@@ -29,15 +29,15 @@ struct AllowlistPage: View {
         Page(title: "Allowlist", subtitle: "Who can join \(server.profile.name). This only changes this server.") {
             if let blocked = server.playerAccessBlocked { Callout(tone: .warning, title: "Adding players is off here", detail: blocked) }
             if let message { Callout(tone: .danger, title: message) }
-            if server.hasUsher { usherNote }
+            if server.hasSheriff { sheriffNote }
             addCard
-            if server.hasLatchkey { InvitesCard(server: server, profiles: server.hasUsher ? usherProfiles : nil) }
+            if server.hasLatchkey { InvitesCard(server: server, profiles: server.hasSheriff ? sheriffProfiles : nil) }
             if !waiting.isEmpty { waitingCard }
-            if usherProfiles != nil, !attempts.isEmpty { attemptsCard }
+            if sheriffProfiles != nil, !attempts.isEmpty { attemptsCard }
             listCard
-            if server.hasLuckPerms, !server.hasUsher { groupsCard }
+            if server.hasLuckPerms, !server.hasSheriff { groupsCard }
         }
-        .task(id: "\(server.state)-\(modules.isOn(.pluginCommands))") { await readUsher() }
+        .task(id: "\(server.state)-\(modules.isOn(.pluginCommands))") { await readSheriff() }
         .task {
             await server.refreshPlugins()
             reload()
@@ -49,8 +49,8 @@ struct AllowlistPage: View {
                 waiting = server.waitingAccess
             }
         }
-        .sheet(item: $usherEditing) { entry in
-            UsherProfileSheet(server: server, entry: entry, profiles: usherProfiles ?? []) { reload() }
+        .sheet(item: $sheriffEditing) { entry in
+            SheriffProfileSheet(server: server, entry: entry, profiles: sheriffProfiles ?? []) { reload() }
         }
         .sheet(item: $editing) { entry in
             GroupEditor(server: server, entry: entry, settings: settings) { reload() }
@@ -85,14 +85,14 @@ struct AllowlistPage: View {
     @ViewBuilder private func found(_ account: MojangAccount) -> some View {
         Fact(label: "Account", value: account.name)
         Fact(label: "ID", value: account.uuid)
-        if server.hasUsher {
-            if let profiles = usherProfiles {
-                UsherApproval(server: server, uuid: account.uuid, name: account.name, profiles: profiles) { _ in
+        if server.hasSheriff {
+            if let profiles = sheriffProfiles {
+                SheriffApproval(server: server, uuid: account.uuid, name: account.name, profiles: profiles) { _ in
                     reload()
                     Task { await readAttempts() }
                 }
             } else {
-                Hint("Usher looks after who can join this server, so they can be approved once LeafJuice can reach it.")
+                Hint("Sheriff looks after who can join this server, so they can be approved once LeafJuice can reach it.")
             }
         } else {
             rawFound(account)
@@ -154,8 +154,8 @@ struct AllowlistPage: View {
                 HStack {
                     Text(entry.name).foregroundStyle(Juice.ink).textSelection(.enabled)
                     Spacer()
-                    if server.hasUsher {
-                        Button("Profiles…") { usherEditing = entry }.buttonStyle(.juice).disabled(usherProfiles == nil)
+                    if server.hasSheriff {
+                        Button("Profiles…") { sheriffEditing = entry }.buttonStyle(.juice).disabled(sheriffProfiles == nil)
                             .accessibilityLabel("Profiles for \(entry.name)")
                     } else if server.hasLuckPerms {
                         Button("Groups…") { editing = entry }.buttonStyle(.juice).disabled(!running || server.playerAccessBlocked != nil)
@@ -165,8 +165,8 @@ struct AllowlistPage: View {
                         .accessibilityLabel("Remove \(entry.name)")
                 }
             }
-            if server.hasUsher, usherProfiles == nil { Hint("Profiles can be changed once LeafJuice can reach Usher.") }
-            else if server.hasLuckPerms, !server.hasUsher, !running { Hint("Groups can only be changed while the server runs.") }
+            if server.hasSheriff, sheriffProfiles == nil { Hint("Profiles can be changed once LeafJuice can reach Sheriff.") }
+            else if server.hasLuckPerms, !server.hasSheriff, !running { Hint("Groups can only be changed while the server runs.") }
         }
     }
 
@@ -220,32 +220,32 @@ struct AllowlistPage: View {
         }
     }
 
-    private var usherProfiles: [UsherProfile]? {
-        if case .ready(_, let profiles, _, _) = usher { profiles } else { nil }
+    private var sheriffProfiles: [SheriffProfile]? {
+        if case .ready(_, let profiles, _, _) = sheriff { profiles } else { nil }
     }
 
-    @ViewBuilder private var usherNote: some View {
-        switch usher {
+    @ViewBuilder private var sheriffNote: some View {
+        switch sheriff {
         case .unavailable(let why)?:
-            Callout(tone: .warning, title: "Usher can't be reached", detail: why + " LeafJuice won't add anyone or change groups around it.") {
+            Callout(tone: .warning, title: "Sheriff can't be reached", detail: why + " LeafJuice won't add anyone or change groups around it.") {
                 if !modules.isOn(.pluginCommands) {
                     Button("Turn On Plugin Commands") { modules.set(.pluginCommands, on: true) }.buttonStyle(.juice)
                 }
             }
         case .ready(let version, _, let luckPerms, let problems)?:
-            Callout(tone: .info, title: "Approvals go through Usher \(version)", detail: "Profiles, questions and the change log are Usher's. This works only while LeafJuice runs this server, because it types Usher's commands into the console.") {
+            Callout(tone: .info, title: "Approvals go through Sheriff \(version)", detail: "Profiles, questions and the change log are Sheriff's. This works only while LeafJuice runs this server, because it types Sheriff's commands into the console.") {
                 EmptyView()
             }
-            if !luckPerms { Callout(tone: .warning, title: "LuckPerms isn't running", detail: "Usher refuses every change without it, saying why.") }
-            ForEach(problems, id: \.self) { Callout(tone: .warning, title: "Usher's settings", detail: $0) }
+            if !luckPerms { Callout(tone: .warning, title: "LuckPerms isn't running", detail: "Sheriff refuses every change without it, saying why.") }
+            ForEach(problems, id: \.self) { Callout(tone: .warning, title: "Sheriff's settings", detail: $0) }
         default:
-            Hint("Checking Usher…")
+            Hint("Checking Sheriff…")
         }
     }
 
     private var attemptsCard: some View {
         Card(title: "Turned away recently (\(attempts.count))", systemImage: "hand.raised") {
-            Hint("People the whitelist stopped, newest first in Usher's list. Approving still looks the name up first.")
+            Hint("People the whitelist stopped, newest first in Sheriff's list. Approving still looks the name up first.")
             ForEach(attempts) { attempt in
                 HStack {
                     Text(attempt.name).foregroundStyle(Juice.ink).textSelection(.enabled)
@@ -258,16 +258,16 @@ struct AllowlistPage: View {
         }
     }
 
-    private func readUsher() async {
+    private func readSheriff() async {
         await server.refreshPlugins()
-        guard server.hasUsher else { usher = .notInstalled; return }
-        usher = nil
-        usher = await server.usherStatus()
+        guard server.hasSheriff else { sheriff = .notInstalled; return }
+        sheriff = nil
+        sheriff = await server.sheriffStatus()
         await readAttempts()
     }
 
     private func readAttempts() async {
-        guard usherProfiles != nil, case .success(let list) = await server.usherAttempts() else { attempts = []; return }
+        guard sheriffProfiles != nil, case .success(let list) = await server.sheriffAttempts() else { attempts = []; return }
         attempts = list
     }
 

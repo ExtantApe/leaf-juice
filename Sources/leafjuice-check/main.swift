@@ -80,7 +80,7 @@ let realMC: String = {
     return CommandLine.arguments[flag + 1]
 }()
 
-// ... --demo-invites <folder> --i-accept-the-minecraft-eula  A throwaway server with Usher, Latchkey and made-up players.
+// ... --demo-invites <folder> --i-accept-the-minecraft-eula  A throwaway server with Sheriff, Latchkey and made-up players.
 if let flag = CommandLine.arguments.firstIndex(of: "--demo-invites"), flag + 1 < CommandLine.arguments.count {
     guard CommandLine.arguments.contains("--i-accept-the-minecraft-eula") else {
         print("--demo-invites needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
@@ -699,9 +699,9 @@ do {
     check(!MapGateway.blueMapServer(webserverConf: "port: 8100\n").onlyThisMac, "BlueMap on its default address isn't Mac-only, so /map/ stays off")
     check(MapGateway.blueMapServer(webserverConf: "port: 8100\nip: \"127.0.0.1\"\n").onlyThisMac, "with ip 127.0.0.1 it is")
     // The rest of the audit's area B and the gzip header.
-    check(PlayerList.rawAddRefusal(path: "whitelist.json", hasUsher: true, onlineMode: true) != nil, "with Usher, the raw allowlist add is refused")
-    check(PlayerList.rawAddRefusal(path: "ops.json", hasUsher: false, onlineMode: false) != nil, "without online mode, a name-based op is refused")
-    check(PlayerList.rawAddRefusal(path: "banned-players.json", hasUsher: true, onlineMode: true) == nil, "bans still work as before")
+    check(PlayerList.rawAddRefusal(path: "whitelist.json", hasSheriff: true, onlineMode: true) != nil, "with Sheriff, the raw allowlist add is refused")
+    check(PlayerList.rawAddRefusal(path: "ops.json", hasSheriff: false, onlineMode: false) != nil, "without online mode, a name-based op is refused")
+    check(PlayerList.rawAddRefusal(path: "banned-players.json", hasSheriff: true, onlineMode: true) == nil, "bans still work as before")
     var crafted = Data([0x1f, 0x8b, 8, 8, 0, 0, 0, 0, 0, 3]); crafted.append(contentsOf: [UInt8](repeating: 0x41, count: 12))
     check((try? Gzip.decompress(crafted)) == nil, "a gzip header with no end to its name fails cleanly instead of crashing")
     let temp = folder("replace"); write("old", temp.appendingPathComponent("p.dat")); write("new", temp.appendingPathComponent("s.dat"))
@@ -2603,17 +2603,17 @@ if let flag = CommandLine.arguments.firstIndex(of: "--real-upgrade-plugins"), fl
 }
 if let flag = CommandLine.arguments.firstIndex(of: "--real-invites"), flag + 2 < CommandLine.arguments.count {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
-        await runRealInvites(usher: URL(fileURLWithPath: CommandLine.arguments[flag + 1]), latchkey: URL(fileURLWithPath: CommandLine.arguments[flag + 2]))
+        await runRealInvites(sheriff: URL(fileURLWithPath: CommandLine.arguments[flag + 1]), latchkey: URL(fileURLWithPath: CommandLine.arguments[flag + 2]))
     } else {
         print("Skipping --real-invites: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
     }
 }
-if let flag = CommandLine.arguments.firstIndex(of: "--real-usher"), flag + 1 < CommandLine.arguments.count {
+if let flag = CommandLine.arguments.firstIndex(of: "--real-sheriff"), flag + 1 < CommandLine.arguments.count {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         let dump = CommandLine.arguments.firstIndex(of: "--dump-describe").map { URL(fileURLWithPath: CommandLine.arguments[$0 + 1]) }
-        await runRealUsher(jar: URL(fileURLWithPath: CommandLine.arguments[flag + 1]), dump: dump)
+        await runRealSheriff(jar: URL(fileURLWithPath: CommandLine.arguments[flag + 1]), dump: dump)
     } else {
-        print("Skipping --real-usher: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+        print("Skipping --real-sheriff: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
     }
 }
 if CommandLine.arguments.contains("--real-paper") {

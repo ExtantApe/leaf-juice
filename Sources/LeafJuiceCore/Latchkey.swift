@@ -106,7 +106,7 @@ extension ServerController {
                       problems: wire.problems ?? [], lobby: wire.lobby)
     }
 
-    /// Makes an invite for a name, with Usher profiles. The code comes back once, from Latchkey's once-file.
+    /// Makes an invite for a name, with Sheriff profiles. The code comes back once, from Latchkey's once-file.
     public func createInvite(name: String, profiles: [String], days: Int, yes: [String] = []) async -> InviteResult {
         guard AccountLookup.isValidName(name) else { return .failed("That can't be a Minecraft name.") }
         guard (1...30).contains(days) else { return .failed("An invite lasts from 1 to 30 days.") }
@@ -134,16 +134,16 @@ extension ServerController {
     /// Pages through Latchkey's invites, newest first. Stops at `maxPages`, and says so with `more`.
     /// Latchkey 0.3.0 pages the spec's way (`items`, a string `next`); 0.2.0 answers one page as `invites`,
     /// and its numeric `next` isn't a cursor it takes back, so only the first page of that is read.
-    public func listInvites(pageSize: Int = 50, maxPages: Int = 10) async -> Result<InviteList, UsherProblem> {
+    public func listInvites(pageSize: Int = 50, maxPages: Int = 10) async -> Result<InviteList, SheriffProblem> {
         var all: [LatchkeyInvite] = []
         var cursor: String?
         for _ in 0..<maxPages {
             var args: [CommandArg] = [.int(pageSize)]
             if let cursor { args.append(.word(cursor)) }
             let reply = await commands.run("latchkey", ["invite", "list"], args)
-            guard case .done(let answer) = reply.outcome else { return .failure(UsherProblem(Self.plain(reply.outcome, doing: "Asking Latchkey"))) }
+            guard case .done(let answer) = reply.outcome else { return .failure(SheriffProblem(Self.plain(reply.outcome, doing: "Asking Latchkey"))) }
             struct Wire: Decodable { let items: [LatchkeyInvite]?; let invites: [LatchkeyInvite]? }
-            guard let wire = try? answer.decode(Wire.self) else { return .failure(UsherProblem("Latchkey's list couldn't be read.")) }
+            guard let wire = try? answer.decode(Wire.self) else { return .failure(SheriffProblem("Latchkey's list couldn't be read.")) }
             all += wire.items ?? wire.invites ?? []
             guard wire.items != nil, let next = answer.next else { return .success(InviteList(invites: all, more: false)) }
             // A cursor goes back as a plain word; anything else ends the list here rather than being typed.
@@ -194,13 +194,13 @@ extension ServerController {
     }
 
     /// Ends every browser sign-in someone has. Their allowlist place and profiles stay.
-    public func signOutEverywhere(name: String) async -> Result<Int, UsherProblem> {
-        guard AccountLookup.isValidName(name) else { return .failure(UsherProblem("That account's name isn't valid.")) }
-        guard await latchkeyOffers(Self.latchkeySessionCommands) else { return .failure(UsherProblem("This Latchkey can't sign people out from LeafJuice.")) }
+    public func signOutEverywhere(name: String) async -> Result<Int, SheriffProblem> {
+        guard AccountLookup.isValidName(name) else { return .failure(SheriffProblem("That account's name isn't valid.")) }
+        guard await latchkeyOffers(Self.latchkeySessionCommands) else { return .failure(SheriffProblem("This Latchkey can't sign people out from LeafJuice.")) }
         let reply = await commands.run("latchkey", ["session", "revoke"], [.player(name)])
-        guard case .done(let answer) = reply.outcome else { return .failure(UsherProblem(Self.plain(reply.outcome, doing: "Signing \(name) out"))) }
+        guard case .done(let answer) = reply.outcome else { return .failure(SheriffProblem(Self.plain(reply.outcome, doing: "Signing \(name) out"))) }
         struct Wire: Decodable { let ended: Int }
-        guard let wire = try? answer.decode(Wire.self) else { return .failure(UsherProblem("Latchkey signed them out, but its answer couldn't be read. Check again.")) }
+        guard let wire = try? answer.decode(Wire.self) else { return .failure(SheriffProblem("Latchkey signed them out, but its answer couldn't be read. Check again.")) }
         return .success(wire.ended)
     }
 }

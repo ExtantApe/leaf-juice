@@ -2,11 +2,11 @@ import AppKit
 import LeafJuiceCore
 import SwiftUI
 
-/// Invites through Latchkey: make one with Usher profiles, see the code once, and list or revoke them.
+/// Invites through Latchkey: make one with Sheriff profiles, see the code once, and list or revoke them.
 struct InvitesCard: View {
     let server: ServerController
-    /// Usher's profiles, when Usher can be reached. Without them an invite gives lobby-only access.
-    let profiles: [UsherProfile]?
+    /// Sheriff's profiles, when Sheriff can be reached. Without them an invite gives lobby-only access.
+    let profiles: [SheriffProfile]?
     @State private var status: LatchkeyStatus?
     @State private var name = ""
     @State private var chosen = Set<String>()
@@ -71,7 +71,7 @@ struct InvitesCard: View {
         Hint("Latchkey checks the name with Mojang when the invite is made.")
         if let profiles {
             Text("Profiles").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
-            if profiles.isEmpty { Hint("Usher has no profiles set up, so the invite gives lobby-only access.") }
+            if profiles.isEmpty { Hint("Sheriff has no profiles set up, so the invite gives lobby-only access.") }
             ForEach(profiles) { profile in
                 Toggle(profile.label, isOn: Binding(get: { chosen.contains(profile.id) }, set: { on in
                     if on { chosen.insert(profile.id) } else { chosen.remove(profile.id) }
@@ -81,13 +81,13 @@ struct InvitesCard: View {
             }
             // Always one line here, so the button below doesn't jump as boxes are ticked.
             if !profiles.isEmpty {
-                Hint(chosen.isEmpty ? "With no profiles ticked, they get lobby-only access until an admin adds more." : "Usher checks these now, and gives them when the code is used.")
+                Hint(chosen.isEmpty ? "With no profiles ticked, they get lobby-only access until an admin adds more." : "Sheriff checks these now, and gives them when the code is used.")
             }
         } else {
-            Hint("Without Usher, an invite gives lobby-only access.")
+            Hint("Without Sheriff, an invite gives lobby-only access.")
         }
         if !questions.isEmpty {
-            Callout(tone: .warning, title: "Usher asks first", detail: "No invite has been made yet. Tick each one to go ahead.")
+            Callout(tone: .warning, title: "Sheriff asks first", detail: "No invite has been made yet. Tick each one to go ahead.")
             ForEach(questions, id: \.id) { q in
                 Toggle(q.question, isOn: Binding(get: { answered.contains(q.id) }, set: { on in
                     if on { answered.insert(q.id) } else { answered.remove(q.id) }
