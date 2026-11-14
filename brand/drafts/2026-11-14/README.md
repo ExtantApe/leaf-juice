@@ -4,12 +4,15 @@
 
 ## The idea
 
-The same glass of green juice with a leaf, now drawn as 16 × 16 pixel art. That puts it in the Minecraft family
-without borrowing anything from the game. A grapefruit wedge on the rim is the one pop of colour, as in the app.
+The same glass of green juice with a leaf, now drawn as 16 × 16 pixel art, with a grapefruit wedge on the rim as the
+one pop of colour. It keeps LeafJuice's own colours.
 
-No Minecraft family theme exists yet, and none was found in the plugin repos. EXTANT APE has no shared kit to inherit
-from either. So this draft follows the family rules in `ops/rules/brand-families.md`, and it could become the start of
-a Minecraft family theme if the owner likes it.
+## Which rules it follows
+
+No EXTANT APE kit exists yet, so this follows the rules for one: D147 (the minimum asset list), D148 (inheritance
+and tiers) and D149 (WCAG). LeafJuice is a desktop app, so its tier is a Mac `.icns` and a Windows `.ico` from one
+master, release images, a repo banner, the GitHub social preview and a README header, plus circle and square profile
+marks. It isn't a family theme for anything else.
 
 ## One master
 
@@ -35,7 +38,12 @@ The last build passed all 11 pairs. The lowest was the juice on the dark tile, a
 | `mark.svg` | vector | The mark itself, pixel for pixel |
 | `mark-circle-{light,dark}-{1024,400}.png` | 1024, 400 | Profile marks shown as circles (X, Bluesky) |
 | `mark-square-{light,dark}-{1024,400}.png` | 1024, 400 | Profile marks shown as squares (LinkedIn company, GitHub) |
-| `app-icon-1024.png`, `app-icon-32.png` | 1024, 32 | The Mac app icon, on Apple's 824-point tile |
+| `icon.svg` | vector | The app icon's master |
+| `icon-small.svg` | vector, 32 | The master for 16 to 32 px: the tile runs to the edge and each art pixel is a whole screen pixel |
+| `icon-1024.png`, `icon-32.png` | 1024, 32 | Drawn from the masters |
+| `AppIcon.icns` | 16 to 1024 | macOS, every size at 1× and 2×, made with `iconutil` |
+| `LeafJuice.ico` | 16 to 256 | Windows: 16, 24, 32, 48, 64, 128 and 256, read back to check every size is there |
+| `release-square-1080.png`, `release-landscape-1200x675.png` | 1080, 1200 × 675 | Release posts. The second argument sets the version line: `swift scripts/brand-kit.swift <folder> "Version 0.3.0"` |
 | `github-social-preview-*-1280x640.png` | 1280 × 640 | GitHub's social preview |
 | `readme-header-*-1280x320.png` | 1280 × 320 | The top of the README |
 | `x-header-*-1500x500.png` | 1500 × 500 | X header |
@@ -61,9 +69,7 @@ Sources: [Buffer](https://buffer.com/resources/social-media-image-sizes/),
 
 ## Still to do, once the direction is approved
 
-- **The `.icns`:** build it from `app-icon-1024.png` and replace `brand/AppIcon.icns`.
-- **A release post template,** in square and landscape.
-- **The decision on Minecraft plugins:** whether they share this pixel style as the family theme.
-- **The dark-mode leaf.** Its dark outline sits close to the dark tile. The light green carries the shape, but the owner
+- Swap `brand/AppIcon.icns` and the README header for these, and retire `brand/icon-source.png`.
+- The dark-mode leaf: its dark outline sits close to the dark tile. The light green carries the shape, but the owner
   should judge it at real sizes.
-- **Real devices.** Nothing has been seen at size on a phone or in the Dock.
+- Nothing has been seen at size on a phone, in the Dock, or on Windows.

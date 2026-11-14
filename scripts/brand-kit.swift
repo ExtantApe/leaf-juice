@@ -126,6 +126,75 @@ func appIcon(_ m: Mark, size: Int) -> CGImage {
     return ctx.makeImage()!
 }
 
+/// At 32 px and under, the tile runs to the edge and each art pixel is a whole number of screen pixels, so the pixel
+/// art stays sharp. This is what icon-small.svg describes.
+func smallIcon(_ m: Mark, size: Int) -> CGImage {
+    let ctx = canvas(size, size)
+    let s = CGFloat(size)
+    let tile = CGRect(x: 0, y: 0, width: s, height: s)
+    ctx.addPath(CGPath(roundedRect: tile, cornerWidth: s * 0.2, cornerHeight: s * 0.2, transform: nil)); ctx.clip()
+    gradient(ctx, tileTop, tileBottom, tile)
+    let cell = CGFloat(max(1, size / m.size))
+    let art = cell * CGFloat(m.size)
+    drawMark(m, in: ctx, x: ((s - art) / 2).rounded(.down), y: ((s - art) / 2).rounded(.down), cell: cell, height: size)
+    return ctx.makeImage()!
+}
+
+/// The app icon as SVG: the master the PNGs, .icns and .ico are made from. `small` is the 16 to 32 px version.
+func iconSVG(_ m: Mark, small: Bool) -> String {
+    let side = small ? 32.0 : 1024.0
+    let inset = small ? 0.0 : 1024 * 0.0977
+    let tile = side - inset * 2
+    let radius = small ? side * 0.2 : tile * 0.225
+    let cell = small ? Double(32 / m.size) : (tile * 0.78 / Double(m.size)).rounded(.down)
+    let origin = ((side - cell * Double(m.size)) / 2).rounded(.down)
+    func hex(_ v: UInt32) -> String { "#" + String(format: "%06X", v) }
+    var out = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"\(Int(side))\" height=\"\(Int(side))\" viewBox=\"0 0 \(Int(side)) \(Int(side))\" shape-rendering=\"crispEdges\" role=\"img\" aria-label=\"LeafJuice\">\n"
+    out += "<title>LeafJuice</title>\n<defs><linearGradient id=\"t\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"\(hex(tileTop))\"/><stop offset=\"1\" stop-color=\"\(hex(tileBottom))\"/></linearGradient></defs>\n"
+    out += "<rect x=\"\(inset)\" y=\"\(inset)\" width=\"\(tile)\" height=\"\(tile)\" rx=\"\(radius)\" fill=\"url(#t)\" shape-rendering=\"geometricPrecision\"/>\n"
+    for (y, row) in m.cells.enumerated() {
+        var x = 0
+        while x < row.count {
+            guard let v = row[x] else { x += 1; continue }
+            var run = 1
+            while x + run < row.count, row[x + run] == v { run += 1 }
+            out += "<rect x=\"\(origin + Double(x) * cell)\" y=\"\(origin + Double(y) * cell)\" width=\"\(Double(run) * cell)\" height=\"\(cell)\" fill=\"\(hex(v))\"/>\n"
+            x += run
+        }
+    }
+    return out + "</svg>\n"
+}
+
+func png(_ image: CGImage) -> Data {
+    guard let data = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { fail("Couldn't encode a PNG.") }
+    return data
+}
+
+/// A Windows .ico holding PNG images, which Windows Vista and later read at every size.
+func ico(_ images: [(Int, Data)]) -> Data {
+    var out = Data()
+    func le16(_ v: Int) { out.append(contentsOf: [UInt8(v & 0xFF), UInt8(v >> 8 & 0xFF)]) }
+    func le32(_ v: Int) { le16(v & 0xFFFF); le16(v >> 16 & 0xFFFF) }
+    le16(0); le16(1); le16(images.count)
+    var offset = 6 + 16 * images.count
+    for (size, data) in images {
+        out.append(UInt8(size >= 256 ? 0 : size)); out.append(UInt8(size >= 256 ? 0 : size))
+        out.append(0); out.append(0)
+        le16(1); le16(32); le32(data.count); le32(offset)
+        offset += data.count
+    }
+    for (_, data) in images { out.append(data) }
+    return out
+}
+
+/// Reads an .ico's own directory back, to prove it holds what was written.
+func icoSizes(_ data: Data) -> [Int] {
+    let b = [UInt8](data)
+    guard b.count > 6, b[2] == 1, b[3] == 0 else { return [] }
+    let n = Int(b[4]) | Int(b[5]) << 8
+    return (0..<n).map { i in let w = Int(b[6 + i * 16]); return w == 0 ? 256 : w }
+}
+
 func text(_ ctx: CGContext, _ string: String, size: CGFloat, weight: NSFont.Weight, color: UInt32, x: CGFloat, baseline: CGFloat, height: Int) {
     let line = CTLineCreateWithAttributedString(NSAttributedString(string: string, attributes: [.font: font(size, weight), .foregroundColor: NSColor(cgColor: cg(color))!]))
     ctx.textPosition = CGPoint(x: x, y: CGFloat(height) - baseline)
@@ -164,6 +233,23 @@ func banner(_ m: Mark, w: Int, h: Int, dark: Bool, showTagline: Bool = true) -> 
     if showTagline {
         text(ctx, tagline, size: tagSize, weight: .medium, color: dark ? darkMuted : muted, x: textX, baseline: H * 0.68, height: h)
     }
+    return ctx.makeImage()!
+}
+
+/// A release post: the mark, the name, and the version, for a release's announcement.
+let releaseLine = CommandLine.arguments.count >= 3 ? CommandLine.arguments[2] : "New version"
+func release(_ m: Mark, w: Int, h: Int) -> CGImage {
+    let ctx = canvas(w, h)
+    ctx.setFillColor(cg(cream)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+    ctx.setFillColor(cg(grapefruit)); ctx.fill(CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h) * 0.03))
+    let short = CGFloat(min(w, h))
+    let cell = (short * 0.4 / CGFloat(m.size)).rounded(.down)
+    let art = cell * CGFloat(m.size)
+    drawMark(m, in: ctx, x: (CGFloat(w) - art) / 2, y: CGFloat(h) * 0.12, cell: cell, height: h)
+    let nameSize = short * 0.11, lineSize = short * 0.055
+    let nameW = width("LeafJuice", size: nameSize, weight: .bold), lineW = width(releaseLine, size: lineSize, weight: .semibold)
+    text(ctx, "LeafJuice", size: nameSize, weight: .bold, color: ink, x: (CGFloat(w) - nameW) / 2, baseline: CGFloat(h) * 0.12 + art + nameSize * 1.25, height: h)
+    text(ctx, releaseLine, size: lineSize, weight: .semibold, color: muted, x: (CGFloat(w) - lineW) / 2, baseline: CGFloat(h) * 0.12 + art + nameSize * 1.25 + lineSize * 1.6, height: h)
     return ctx.makeImage()!
 }
 
@@ -234,8 +320,34 @@ for dark in [false, true] {
     save(banner(mark, w: 1584, h: 396, dark: dark), out.appendingPathComponent("linkedin-banner-\(tone)-1584x396.png"))
     save(banner(mark, w: 1128, h: 191, dark: dark, showTagline: false), out.appendingPathComponent("linkedin-company-banner-\(tone)-1128x191.png"))
 }
-save(appIcon(mark, size: 1024), out.appendingPathComponent("app-icon-1024.png"))
-save(appIcon(mark, size: 32), out.appendingPathComponent("app-icon-32.png"))
+// The app icon from one master: icon.svg (and icon-small.svg for 16 to 32 px), drawn here as PNGs at every size.
+try! iconSVG(mark, small: false).write(to: out.appendingPathComponent("icon.svg"), atomically: true, encoding: .utf8)
+try! iconSVG(mark, small: true).write(to: out.appendingPathComponent("icon-small.svg"), atomically: true, encoding: .utf8)
+func icon(_ size: Int) -> CGImage { size <= 32 ? smallIcon(mark, size: size) : appIcon(mark, size: size) }
+save(icon(1024), out.appendingPathComponent("icon-1024.png"))
+save(icon(32), out.appendingPathComponent("icon-32.png"))
+// macOS: an iconset of every size and scale, then iconutil.
+let iconset = out.appendingPathComponent("AppIcon.iconset", isDirectory: true)
+try? FileManager.default.removeItem(at: iconset)
+try! FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
+for base in [16, 32, 128, 256, 512] {
+    save(icon(base), iconset.appendingPathComponent("icon_\(base)x\(base).png"))
+    save(icon(base * 2), iconset.appendingPathComponent("icon_\(base)x\(base)@2x.png"))
+}
+let iconutil = Process()
+iconutil.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
+iconutil.arguments = ["-c", "icns", iconset.path, "-o", out.appendingPathComponent("AppIcon.icns").path]
+try! iconutil.run(); iconutil.waitUntilExit()
+guard iconutil.terminationStatus == 0 else { fail("iconutil couldn't make the .icns.") }
+try? FileManager.default.removeItem(at: iconset)
+// Windows: the sizes Explorer and the taskbar ask for.
+let icoSizesWanted = [16, 24, 32, 48, 64, 128, 256]
+let icoData = ico(icoSizesWanted.map { ($0, png(icon($0))) })
+try! icoData.write(to: out.appendingPathComponent("LeafJuice.ico"))
+guard icoSizes(icoData) == icoSizesWanted else { fail("The .ico didn't read back with every size.") }
+// Release post templates, square and landscape (D150's set): the name and a version line to fill in.
+save(release(mark, w: 1080, h: 1080), out.appendingPathComponent("release-square-1080.png"))
+save(release(mark, w: 1200, h: 675), out.appendingPathComponent("release-landscape-1200x675.png"))
 // Bluesky refuses images over 1,000,000 bytes (its lexicon limit), so a banner that grows past it fails the build.
 for name in ["bluesky-banner-light-3000x1000.png", "bluesky-banner-dark-3000x1000.png"] {
     let size = (try? FileManager.default.attributesOfItem(atPath: out.appendingPathComponent(name).path)[.size] as? Int) ?? 0
