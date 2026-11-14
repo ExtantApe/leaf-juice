@@ -1,6 +1,6 @@
 # LeafJuice brand kit
 
-**The icon is adopted** (owner, 2026-11-14, K628) and built into the app. The banners, README header and release images are still being settled: the tagline and the tile colour behind the mark on banners. Until then they're built into `out/` but not published.
+**Adopted** by the owner on 2026-11-14 (K628): the icon, and the banners, headers and release images. The tagline is **A little pulp goes a long way.** On banners the mark sits on its pistachio square with a ring in the tagline's colour (5.99:1 on cream, 8.00:1 on dark), and the tagline is set to the wordmark's exact width. The README header and app icon are copied into `brand/`; the rest are built into `out/`.
 
 ## The idea
 
@@ -43,7 +43,7 @@ The last build passed all 11 pairs. The lowest was the juice on the dark tile, a
 | `icon-1024.png`, `icon-32.png` | 1024, 32 | Drawn from the masters |
 | `AppIcon.icns` | 16 to 1024 | macOS, every size at 1× and 2×, made with `iconutil` |
 | `LeafJuice.ico` | 16 to 256 | Windows: 16, 24, 32, 48, 64, 128 and 256, read back to check every size is there |
-| `release-square-1080.png`, `release-landscape-1200x675.png` | 1080, 1200 × 675 | Release posts. The second argument sets the version line: `swift scripts/brand-kit.swift brand/kit "Version 0.3.0"` |
+| `release-square-1080.png`, `release-landscape-1200x675.png` | 1080, 1200 × 675 | Release posts, the mark on its ringed square. The second argument sets the version line: `swift scripts/brand-kit.swift brand/kit "Version 0.3.0"` |
 | `github-social-preview-*-1280x640.png` | 1280 × 640 | GitHub's social preview |
 | `readme-header-*-1280x320.png` | 1280 × 320 | The top of the README |
 | `x-header-*-1500x500.png` | 1500 × 500 | X header |
@@ -69,6 +69,6 @@ Sources: [Buffer](https://buffer.com/resources/social-media-image-sizes/),
 
 ## Still to do
 
-- The tagline and the banner tile colour (B, pistachio with a sage ring, or C, grapefruit wash), then the banners,
-  README header and release images.
-- Seeing the icon in the Dock, on a phone, and on Windows.
+- Upload the GitHub social preview (`out/github-social-preview-light-1280x640.png`) in the repo's settings. GitHub has no
+  command for it, so it's done by hand.
+- See the icon in the Dock, on a phone and on Windows.

@@ -210,7 +210,7 @@ func wordmark(_ ctx: CGContext, size: CGFloat, dark: Bool, x: CGFloat, baseline:
     CTLineDraw(CTLineCreateWithAttributedString(s), ctx)
 }
 
-let tagline = "Now with extra pulp."
+let tagline = "A little pulp goes a long way."
 let leafOnLight: UInt32 = 0x4A6E22, leafOnDark: UInt32 = 0xC3E491
 let tagOnLight: UInt32 = 0xA33C25, tagOnDark: UInt32 = 0xFFB8A6
 
@@ -244,10 +244,12 @@ func width(_ string: String, size: CGFloat, weight: NSFont.Weight) -> CGFloat {
 /// How the mark sits on a banner: bare, or on the same square tile or circle as the profile marks.
 enum Holder: String, CaseIterable { case bare, square, circle }
 
-/// The tile's colours. Pistachio keeps grapefruit as the one pop; the ring gives its edge 3:1 on cream, where the
-/// tile alone is 1.28:1. Grapefruit wash is the bolder choice to compare against.
+/// The tile's colours. Chosen on 2026-11-14: pistachio with a ring in the tagline's colour (`taglineRing`), which gives
+/// the tile's edge 5.99:1 on cream and 8.00:1 on dark. The others were the options compared on the way there.
 enum Accent: String, CaseIterable {
     case pistachio, pistachioRing = "pistachio-ring", grapefruitWash = "grapefruit-wash"
+    /// Pistachio with a ring in the tagline's colour, or in the bottom trim's (owner, 2026-11-14).
+    case taglineRing = "tagline-ring", trimRing = "trim-ring"
     var top: UInt32 { self == .grapefruitWash ? 0xFFE6DD : tileTop }
     var bottom: UInt32 { self == .grapefruitWash ? 0xFBC9B8 : tileBottom }
     /// The ring on each background, or nil. On dark, pistachio stands at 11.8:1 without one.
@@ -256,6 +258,8 @@ enum Accent: String, CaseIterable {
         case .pistachio: nil
         case .pistachioRing: dark ? nil : 0x76845F
         case .grapefruitWash: dark ? nil : 0xA33C25
+        case .taglineRing: dark ? tagOnDark : tagOnLight
+        case .trimRing: grapefruit
         }
     }
 }
@@ -267,7 +271,7 @@ let bannerMargin: CGFloat = 0.06
 /// text, away from the bottom-left corner where X and Bluesky put the profile picture. A tagline too wide for the
 /// image goes onto two lines, and if that's still too wide, everything is scaled down to fit.
 func banner(_ m: Mark, w: Int, h: Int, dark: Bool, showTagline: Bool = true, holder: Holder = .square,
-            accent: Accent = .pistachioRing, markRight: Bool = false, name: String = "banner") -> CGImage {
+            accent: Accent = .taglineRing, markRight: Bool = false, name: String = "banner") -> CGImage {
     let ctx = canvas(w, h)
     ctx.setFillColor(cg(dark ? darkBack : cream)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
     // A band of grapefruit along the bottom: the one pop of colour, as in the app.
@@ -275,25 +279,17 @@ func banner(_ m: Mark, w: Int, h: Int, dark: Bool, showTagline: Bool = true, hol
     let W = CGFloat(w), H = CGFloat(h)
     let room = W * (1 - bannerMargin * 2)
     var scale: CGFloat = 1
-    var lines = showTagline ? [tagline] : []
+    let lines = showTagline ? [tagline] : []
     func layout(_ s: CGFloat) -> (slot: CGFloat, gap: CGFloat, nameSize: CGFloat, tagSize: CGFloat, textWidth: CGFloat) {
         let slot = (H * (holder == .bare ? 0.5 : 0.62) * s).rounded(.down)
-        let nameSize = H * 0.22 * s, tagSize = H * (lines.count > 1 ? 0.07 : 0.075) * s
-        let textWidth = max(width("LeafJuice", size: nameSize, weight: .bold), lines.map { width($0, size: tagSize, weight: .medium) }.max() ?? 0)
+        let nameSize = H * 0.22 * s
+        let nameWidth = width("LeafJuice", size: nameSize, weight: .bold)
+        // The tagline is set to exactly the wordmark's width (owner, 2026-11-14).
+        let tagSize = lines.isEmpty ? 0 : nameSize * nameWidth / max(1, lines.map { width($0, size: nameSize, weight: .medium) }.max()!)
+        let textWidth = nameWidth
         return (slot, H * 0.08 * s, nameSize, tagSize, textWidth)
     }
     var L = layout(scale)
-    if L.slot + L.gap + L.textWidth > room, showTagline {
-        // Two lines, split at the space nearest the middle.
-        let words = tagline.split(separator: " ")
-        var best = 1, bestDiff = Int.max
-        for i in 1..<words.count {
-            let diff = abs(words[..<i].joined(separator: " ").count - words[i...].joined(separator: " ").count)
-            if diff < bestDiff { best = i; bestDiff = diff }
-        }
-        lines = [words[..<best].joined(separator: " "), words[best...].joined(separator: " ")]
-        L = layout(scale)
-    }
     while L.slot + L.gap + L.textWidth > room, scale > 0.4 { scale -= 0.02; L = layout(scale) }
     let group = L.slot + L.gap + L.textWidth
     let left = (W - group) / 2
@@ -335,14 +331,25 @@ func release(_ m: Mark, w: Int, h: Int) -> CGImage {
     let ctx = canvas(w, h)
     ctx.setFillColor(cg(cream)); ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
     ctx.setFillColor(cg(grapefruit)); ctx.fill(CGRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h) * 0.03))
-    let short = CGFloat(min(w, h))
-    let cell = (short * 0.4 / CGFloat(m.size)).rounded(.down)
+    let short = CGFloat(min(w, h)), H = CGFloat(h)
+    // The mark on its square with the tagline-coloured ring, as on the banners.
+    let slot = (short * 0.44).rounded(.down)
+    let top = H * 0.1
+    let rect = CGRect(x: (CGFloat(w) - slot) / 2, y: H - top - slot, width: slot, height: slot)
+    let path = CGPath(roundedRect: rect, cornerWidth: slot * 0.2, cornerHeight: slot * 0.2, transform: nil)
+    ctx.saveGState(); ctx.addPath(path); ctx.clip(); gradient(ctx, tileTop, tileBottom, rect)
+    ctx.setStrokeColor(cg(tagOnLight)); ctx.setLineWidth(max(4, slot * 0.04)); ctx.addPath(path); ctx.strokePath(); ctx.restoreGState()
+    let cell = (slot * 0.7 / CGFloat(m.size)).rounded(.down)
     let art = cell * CGFloat(m.size)
-    drawMark(m, in: ctx, x: (CGFloat(w) - art) / 2, y: CGFloat(h) * 0.12, cell: cell, height: h)
-    let nameSize = short * 0.11, lineSize = short * 0.055
-    let nameW = width("LeafJuice", size: nameSize, weight: .bold), lineW = width(releaseLine, size: lineSize, weight: .semibold)
-    wordmark(ctx, size: nameSize, dark: false, x: (CGFloat(w) - nameW) / 2, baseline: CGFloat(h) * 0.12 + art + nameSize * 1.25, height: h)
-    text(ctx, releaseLine, size: lineSize, weight: .semibold, color: tagOnLight, x: (CGFloat(w) - lineW) / 2, baseline: CGFloat(h) * 0.12 + art + nameSize * 1.25 + lineSize * 1.6, height: h)
+    drawMark(m, in: ctx, x: ((CGFloat(w) - art) / 2).rounded(.down), y: (top + (slot - art) / 2).rounded(.down), cell: cell, height: h)
+    let nameSize = short * 0.11
+    let nameW = width("LeafJuice", size: nameSize, weight: .bold)
+    // The version line matches the name's width, like the tagline on the banners, up to a sensible size.
+    let lineSize = min(short * 0.07, nameSize * nameW / max(1, width(releaseLine, size: nameSize, weight: .semibold)))
+    let lineW = width(releaseLine, size: lineSize, weight: .semibold)
+    let nameBaseline = top + slot + nameSize * 1.3
+    wordmark(ctx, size: nameSize, dark: false, x: (CGFloat(w) - nameW) / 2, baseline: nameBaseline, height: h)
+    text(ctx, releaseLine, size: lineSize, weight: .semibold, color: tagOnLight, x: (CGFloat(w) - lineW) / 2, baseline: nameBaseline + lineSize * 1.6, height: h)
     return ctx.makeImage()!
 }
 
@@ -383,6 +390,8 @@ var pairs: [Pair] = [
     Pair(what: "Leaf in the name on dark (large text)", fg: leafOnDark, bg: darkBack, minimum: 3),
     Pair(what: "tagline on cream (held to small text)", fg: tagOnLight, bg: cream, minimum: 4.5),
     Pair(what: "tagline on dark (held to small text)", fg: tagOnDark, bg: darkBack, minimum: 4.5),
+    Pair(what: "square's ring (tagline colour) on cream", fg: tagOnLight, bg: cream, minimum: 3),
+    Pair(what: "square's ring (tagline colour) on dark", fg: tagOnDark, bg: darkBack, minimum: 3),
 ]
 // The mark's outline has to stand off every background it's put on, so its shape reads.
 let outline = mark.palette["o"] ?? ink
@@ -402,7 +411,7 @@ guard failures.isEmpty else { fail("WCAG check failed, nothing written:\n  " + f
 let out = folder.appendingPathComponent("out")
 try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
 try! svg(mark, scale: 64).write(to: out.appendingPathComponent("mark.svg"), atomically: true, encoding: .utf8)
-try? FileManager.default.removeItem(at: out.appendingPathComponent("variants"))
+try? FileManager.default.removeItem(at: out.appendingPathComponent("variants"))  // Left from the comparison rounds.
 for dark in [false, true] {
     let tone = dark ? "dark" : "light"
     for circle in [true, false] {
@@ -415,16 +424,6 @@ for dark in [false, true] {
     save(banner(mark, w: 3000, h: 1000, dark: dark), out.appendingPathComponent("bluesky-banner-\(tone)-3000x1000.png"))
     save(banner(mark, w: 1584, h: 396, dark: dark), out.appendingPathComponent("linkedin-banner-\(tone)-1584x396.png"))
     save(banner(mark, w: 1128, h: 191, dark: dark, showTagline: false), out.appendingPathComponent("linkedin-company-banner-\(tone)-1128x191.png"))
-    // Tile colours to choose between, on the square: each banner with each accent.
-    let variants = out.appendingPathComponent("variants", isDirectory: true)
-    try? FileManager.default.createDirectory(at: variants, withIntermediateDirectories: true)
-    let kinds: [(String, Int, Int, Bool)] = [("github-social-preview", 1280, 640, true), ("readme-header", 1280, 320, true), ("x-header", 1500, 500, true),
-                                             ("bluesky-banner", 3000, 1000, true), ("linkedin-banner", 1584, 396, true), ("linkedin-company-banner", 1128, 191, false)]
-    for (kind, w, h, tag) in kinds {
-        for accent in Accent.allCases {
-            save(banner(mark, w: w, h: h, dark: dark, showTagline: tag, accent: accent, name: kind), variants.appendingPathComponent("\(kind)-\(tone)-\(accent.rawValue).png"))
-        }
-    }
 }
 // The app icon from one master: icon.svg (and icon-small.svg for 16 to 32 px), drawn here as PNGs at every size.
 try! iconSVG(mark, small: false).write(to: out.appendingPathComponent("icon.svg"), atomically: true, encoding: .utf8)
@@ -461,7 +460,8 @@ for name in ["bluesky-banner-light-3000x1000.png", "bluesky-banner-dark-3000x100
 }
 // The adopted app icon (owner, 2026-11-14) goes where the app build and the README look for it: brand/.
 let brandFolder = folder.deletingLastPathComponent()
-for name in ["AppIcon.icns", "LeafJuice.ico", "icon.svg", "icon-small.svg", "icon-1024.png"] {
+for name in ["AppIcon.icns", "LeafJuice.ico", "icon.svg", "icon-small.svg", "icon-1024.png",
+             "readme-header-light-1280x320.png", "readme-header-dark-1280x320.png"] {
     let target = brandFolder.appendingPathComponent(name)
     try? FileManager.default.removeItem(at: target)
     try! FileManager.default.copyItem(at: out.appendingPathComponent(name), to: target)

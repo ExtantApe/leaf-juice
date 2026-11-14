@@ -1,4 +1,7 @@
-<p align="center"><img src="brand/icon-1024.png" width="128" alt="LeafJuice icon: a pixel-art glass of green juice with a leaf and a grapefruit wedge"></p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/readme-header-dark-1280x320.png">
+  <img src="brand/readme-header-light-1280x320.png" width="640" alt="LeafJuice: a pixel-art glass of green juice with a leaf and a grapefruit wedge. A little pulp goes a long way.">
+</picture>
 
 # LeafJuice
 

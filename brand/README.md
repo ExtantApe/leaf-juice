@@ -27,6 +27,11 @@ here in `brand/`, where the app build and the README look for it:
 Profile marks, banners, release images and the README header are built into `kit/out/`. [`kit/README.md`](kit/README.md)
 lists them, with the platform sizes and where they came from.
 
+## Tagline
+
+**A little pulp goes a long way.** In Fredoka, in the tagline's grapefruit, set to the wordmark's exact width. On
+banners the mark sits on its pistachio square, ringed in the same colour.
+
 ## Fonts
 
 Open-licence fonts only (owner, 2026-11-14). They live in [`fonts/`](fonts/), each with its SIL Open Font License,
