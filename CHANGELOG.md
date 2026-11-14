@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Publish packs to your web server** (D189): each build under a new random path in the folder Caddy serves, named by
+  its SHA-1, checked after copying, with the old build removed once nobody who might need it is online. Packmule's
+  config still needs the new link by hand until it offers a command for it.
 - **Printed invite tickets** (Latchkey 0.5): the server's name, where to go, the code, the expiry and a QR code that
   fills the code in, as a print, a PDF or plain text. Tested with a stand-in for Latchkey and macOS's own QR reader;
   not yet printed on paper or scanned with a phone.

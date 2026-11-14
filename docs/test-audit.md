@@ -2,6 +2,17 @@
 
 Each audit lists what LeafJuice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-14: publishing packs
+
+- **Settings:** no folder and four bad web addresses refused.
+- **Publishing:** a 64-character random path, the SHA-1 as the name, byte for byte, 0644. A new path every time. A build
+  that doesn't match its hash isn't published and leaves nothing behind. Nothing else in the folder is touched, the
+  record never goes there, and the disk guard applies.
+- **Cleanup:** not within ten minutes, not while someone online at the switch is on, then the old one goes; the current
+  build never does. A record that isn't a random path removes nothing, and a folder holding anything else is left alone.
+- **Through a made-up server:** publishing the same build twice is refused; old waits, then goes after the grace time.
+- **Not covered:** a real Caddy serving the folder, and a real client loading the published link.
+
 ## 2026-11-14: printed invite tickets
 
 - **Latchkey's ticket:** the code goes after `#`; a join address under a path is used exactly. Ten bad shapes are

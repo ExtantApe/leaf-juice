@@ -1012,7 +1012,7 @@ public final class ServerController: Identifiable {
         tickPlayerSnapshots(elapsed: now.timeIntervalSince(lastTick ?? now))
         lastTick = now
         tickCount += 1
-        if tickCount % 12 == 1 { tickDisk() }
+        if tickCount % 12 == 1 { tickDisk(); tidyPublishedPacks(now: now) }
         if isTrialCopy { return }
         if state == .running { await applyWaitingAccess() }
         tickAnalytics(now: now)

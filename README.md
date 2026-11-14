@@ -147,6 +147,19 @@ LeafJuice sets the address on your server through the usual Change Queue. A chan
 
 A real game client hasn't loaded a served pack yet. Bots have shown a real Paper 26.3 server offering the address and hash, and that a download from it matches. With only players joining on, a download sent with the game's headers for a whitelisted bot that just joined succeeded, without them or for an unlisted UUID it got 404, and the bot stayed on. That the 26.x game sends those headers is taken from how the game has worked since 1.20.3, and hasn't been seen yet. If it doesn't, every player would be refused the pack, and kept out if it's required. The 250 MB warning hasn't been checked against a real client either.
 
+### Publishing to your web server
+
+If a web server such as Caddy serves a folder on this Mac, LeafJuice can publish each build there: choose the folder
+and its https address on the Resource Packs page, then **Publish the Newest Build**. Each build goes in under a new
+random 64-character folder, named by its SHA-1, so Packmule reads the hash straight from the link. The copy is checked
+against the build before it's used. The build before stays until everyone who was online at the switch has left, and
+at least 10 minutes have passed, then LeafJuice removes it. It only ever removes folders it made, holding nothing but
+that build, so anything else in the served folder is left alone. Its record of what it published stays in the
+server's `.leafjuice` folder, never in the served folder.
+
+Packmule can't be told the new link yet: put it in Packmule's `config.yml` and run `/packmule reload`. When Packmule
+offers a command for it, LeafJuice will send it.
+
 ## Connections: tunnels and services
 
 The **Connections** card on the Overview page lists how people reach the server: the address players type, and each

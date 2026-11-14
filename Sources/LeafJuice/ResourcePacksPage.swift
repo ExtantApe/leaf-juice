@@ -54,6 +54,7 @@ struct ResourcePacksPage: View {
             if !history.isEmpty { buildsCard }
             if !packs.isEmpty {
                 PackHostingCard(server: server, recipeNames: recipeNames, live: live) { hostingRefresh += 1 }
+                PackPublishCard(server: server, recipeNames: recipeNames)
             }
             if let browsing { PackBrowser(pack: browsing) { self.browsing = nil } }
         }
