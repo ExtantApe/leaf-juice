@@ -142,6 +142,61 @@ Leaf Juice sets the address on your server through the usual Change Queue. A cha
 
 A real game client hasn't loaded a served pack yet. Bots have shown a real Paper 26.3 server offering the address and hash, and that a download from it matches. With only players joining on, a download sent with the game's headers for a whitelisted bot that just joined succeeded, without them or for an unlisted UUID it got 404, and the bot stayed on. That the 26.x game sends those headers is taken from how the game has worked since 1.20.3, and hasn't been seen yet. If it doesn't, every player would be refused the pack, and kept out if it's required. The 250 MB warning hasn't been checked against a real client either.
 
+## Connections: tunnels and services
+
+The **Connections** card on the Overview page lists how people reach the server: the address players type, and each
+tunnel or service that carries players or web traffic. Each one has a type, an on or off switch, a check and a status
+in plain words: Ready, Needs a look, Not ready, Not checked, or Off.
+
+- **playit.gg:** asks the playit agent on this Mac whether it's running and has its secret, reads its log for recent
+  failures to reach the local address, and checks something answers there. A tunnel that forwards somewhere the server
+  doesn't listen, such as another address when the server only listens on 127.0.0.1, is not ready, with the fix.
+- **Tailscale:** asks the Tailscale app whether it's connected.
+- **Anything else:** a port forward or tunnel for players, a web service (the map, a sign-in page, a reverse proxy, a
+  pack address, an outside API), or a domain name. These get the same address and secret checks.
+
+**Check** stays on this Mac. **Check From Outside** also connects to each public address over the internet, the way a
+player would: a status ping for players, an HTTP request for web addresses, and a lookup for names. It only runs when
+you click it. When a piece is missing, the check says which one and shows the service as not ready.
+
+The settings are in the server's `.leafjuice/connections.json`. Secrets are never saved there. A service's secret
+either goes in your login Keychain (Edit Connections, paste it into the secure field), or stays in the service's own
+file, which Leaf Juice only checks is there and readable by you alone, or is kept by the provider's own agent. If a
+field that looks like a secret turns up in the file, it's ignored and named on the card. The fields, with made-up
+values:
+
+```json
+{
+  "playerAddress": "play.example.net",
+  "services": [
+    { "id": "play", "name": "Game tunnel", "provider": "playit", "traffic": "game", "enabled": true,
+      "localAddress": "127.0.0.1:25565", "publicAddress": "play.example.net", "secret": { "agent": {} } },
+    { "id": "site", "name": "Web tunnel", "provider": "playit", "traffic": "web", "enabled": true,
+      "localAddress": "127.0.0.1:8443", "publicAddress": "https://example.net" },
+    { "id": "status-api", "name": "Status page", "provider": "other", "traffic": "web", "enabled": false,
+      "publicAddress": "https://status.example.net", "secret": { "keychain": { "account": "status-api" } } },
+    { "id": "dns", "name": "Domain name", "provider": "other", "traffic": "dns", "enabled": true,
+      "publicAddress": "example.net" }
+  ]
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `playerAddress` | What players type in Minecraft. Shown on the card, with a Copy button. |
+| `id` | Short name: lowercase letters, numbers and hyphens. Also names its Keychain item. |
+| `provider` | `playit`, `tailscale` or `other`. An unknown one reads as `other`. |
+| `traffic` | `game` (status ping), `web` (HTTP), `dns` (lookup) or `access` (nothing checked end to end). |
+| `enabled` | Off unless the file says `true`. |
+| `localAddress` | What a tunnel forwards to on this Mac, as host:port. |
+| `publicAddress` | What people outside use: a name, a name with a port, or a web address. |
+| `secret` | Where the secret lives: `{"keychain":{"account":"…"}}`, `{"file":{"path":"…"}}` or `{"agent":{}}`. Never the secret. |
+| `note` | Free text for your own reference. |
+
+Limits: names are looked up as plain address records, so a game address that only works through an SRV record shows as
+not answering. A web tunnel that expects a PROXY header still answers a plain connection, which is all the local check
+does. Checked against the real playit agent and Tailscale on one Mac, read-only. Not yet run against the real servers.
+
 ## Staying safe when you're not looking
 
 Every backup can also be copied to a **second location**, ideally another drive, with each copy checked against the original. If the main backups are lost, they can be copied back. Leaf Juice also sends a **Mac notification** for crashes, failed backups and low disk space, and you can turn that off in Settings.

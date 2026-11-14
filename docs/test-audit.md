@@ -2,6 +2,32 @@
 
 Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-14: connections (tunnels and services)
+
+The owner's request of 2026-11-14 (see `docs/PLAN.md`). `leafjuice-check --connections`: 88 passed, also part of the default run.
+
+Covered:
+
+- **The file.** No file means no connections and no complaint. An unreadable file is reported, kept, and moved aside as `connections.json.unreadable` on the next save. Broken entries, a bad id and a repeated id are skipped, each with a reason. An unknown provider reads as Other and unknown traffic as admin access. An entry that doesn't say it's on is off.
+- **Secrets pasted into the file.** Fields named like `token` or `authKey` are ignored and named, the value is never repeated, and saving drops them.
+- **Addresses.** host:port, IPv6 in brackets and a bare name with the game's port are read. Nine bad shapes are refused.
+- **Shown as not ready,** with a plain reason, for each of these: no playit agent, an agent that won't answer or answers garbage, a stopped agent, an agent with no secret, a secret missing from the Keychain, a secret file that isn't there or is empty, addresses that can't be read, a playit tunnel with no local address, a running server that doesn't answer where the tunnel points, Tailscale logged out, not answering or not installed.
+- **Unknown, never ready:** an agent that doesn't say whether it has its secret, and a locked Keychain.
+- **Needs a look:** a secret file other accounts can read, recent refusals in playit's log for this address (older ones and other addresses don't count), a stopped server, Tailscale running but offline.
+- **The 2026-11-10 case:** a tunnel forwarding to a Tailscale address while the server only listens on 127.0.0.1 is not ready, and the summary gives the fix. So is a tunnel to the wrong port.
+- **Nothing over the internet unless asked.** The quiet check makes no public ping, HTTP request or lookup. From outside: game addresses get a status ping, web addresses an HTTP request (any answer counts, since pack serving answers strangers 404), names a lookup.
+- **Off means off:** nothing about it is checked.
+- **Real sockets on 127.0.0.1:** the status ping sees a fake server that answers it, doesn't mistake an HTTP answer for Minecraft, and a closed port isn't seen. The real lookup finds localhost.
+- **A real keychain:** a throwaway keychain file, never the login Keychain. Missing, saved, replaced, removed, an empty secret refused, and a locked keychain not mistaken for a missing secret.
+- **Mutations:** ignoring a missing Keychain secret, ignoring an agent with no secret, always checking from outside, checking a service that's off, and not flagging pasted secrets each failed at least one check.
+- **Read-only against this Mac's real agents** (`--connections --live`): the playit agent was found running with its secret, and its log showed the pack tunnel refused while pack serving was off. Tailscale read as connected.
+
+Gaps skipped:
+
+- **The real servers' values.** The Server lead enters them on this Mac; a check run on them comes after.
+- **The editor sheet with a keyboard and VoiceOver.** Labels are set, but nobody has used it that way yet.
+- **SRV records and PROXY headers.** Stated as limits in the README rather than handled.
+
 ## 2026-11-10: the code audit's fixes
 
 The fixes from `docs/audit-2026-11-10.md` (the Server lead's code audit). Default run: 2742 passed, 0 failed, with 22 new

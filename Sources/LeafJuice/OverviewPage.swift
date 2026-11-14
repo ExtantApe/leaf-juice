@@ -48,6 +48,7 @@ struct OverviewPage: View {
 
             LazyVGrid(columns: columns, alignment: .leading, spacing: 14) {
                 connectCard
+                if !server.isLab { ConnectionsCard(server: server) }
                 performanceCard
                 softwareCard
                 pluginsCard

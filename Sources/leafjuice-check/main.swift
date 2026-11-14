@@ -133,6 +133,23 @@ defer { try? FileManager.default.removeItem(at: scratch) }
 nonisolated(unsafe) var passed = 0
 nonisolated(unsafe) var failures: [String] = []
 
+// ... --connections  Only the connection checks, which need no server or network.
+if CommandLine.arguments.contains("--connections") {
+    await connectionChecks()
+    // --live: also asks this Mac's own playit agent and Tailscale, read-only, and prints only health and summaries.
+    if CommandLine.arguments.contains("--live") {
+        section("Connections: this Mac's real agents (read-only)")
+        let context = ConnectionContext(serverRunning: false, serverIP: "127.0.0.1", serverPort: 25565, packHostPort: nil)
+        for service in [ConnectionService.preset(.playit, .web, id: "playit-web"), .preset(.tailscale, .access, id: "tailscale")] {
+            let status = await ConnectionCheck.run(service, context: context, probe: SystemConnectionProbe())
+            print("  \(service.id): \(status.health.title). \(status.summary)")
+        }
+    }
+    print(failures.isEmpty ? "\(passed) passed" : "\(failures.count) FAILED:\n" + failures.joined(separator: "\n"))
+    exit(failures.isEmpty ? 0 : 1)
+}
+
+
 @MainActor func check(_ condition: @autoclosure () throws -> Bool, _ label: String, line: Int = #line) {
     if (try? condition()) == true { passed += 1 } else { failures.append("line \(line): \(label)"); print("  FAIL \(label) (line \(line))") }
 }
@@ -4647,6 +4664,7 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     await packHostingChecks()
     await exactPackChecks()
     await packGateChecks()
+    await connectionChecks()
     await packSongChecks()
     await pluginUpgradeChecks()
     await serverIconChecks()

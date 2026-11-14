@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Connections:** a card on the Overview page for the address players type and each tunnel or service: playit,
+  Tailscale, and anything else that carries players or web traffic, or a domain name. Each has an on or off switch,
+  a check and a plain-language status. Settings live in `.leafjuice/connections.json`; secrets stay in the Keychain
+  or the service's own file, and a missing one shows as not ready. Checking from outside only runs when you click it.
+  Tested with made-up answers, a throwaway keychain and local sockets, and read-only against a real playit agent and
+  Tailscale. Not yet run against the real servers.
+
 ## 0.2.0
 
 Tested against real Paper 26.x servers started for the tests, with made-up players, and with the real plugins named
