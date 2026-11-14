@@ -786,19 +786,19 @@ public enum MinecraftPing {
     }
 }
 
-/// Which sign-in address goes beside an invite code: the one in Connections, else the one Latchkey reports.
+/// Which sign-in address goes beside an invite code: the one in Connections, else the one WelcomeWagon reports.
 public enum InviteAddress {
     public struct Choice: Equatable, Sendable { public var url: String?; public var note: String? }
-    public static func choose(configured: String, latchkey: String?) -> Choice {
+    public static func choose(configured: String, welcomewagon: String?) -> Choice {
         let mine = configured.trimmingCharacters(in: .whitespaces)
-        let theirs = (latchkey ?? "").trimmingCharacters(in: .whitespaces)
+        let theirs = (welcomewagon ?? "").trimmingCharacters(in: .whitespaces)
         if !mine.isEmpty {
             if !theirs.isEmpty, theirs != mine {
-                return Choice(url: mine, note: "Latchkey's own setting says \(theirs). Check which one is right before sending this.")
+                return Choice(url: mine, note: "WelcomeWagon's own setting says \(theirs). Check which one is right before sending this.")
             }
             return Choice(url: mine, note: nil)
         }
-        if !theirs.isEmpty { return Choice(url: theirs, note: "This is Latchkey's own setting. Add the sign-in page in Connections to keep it with the server's other addresses.") }
+        if !theirs.isEmpty { return Choice(url: theirs, note: "This is WelcomeWagon's own setting. Add the sign-in page in Connections to keep it with the server's other addresses.") }
         return Choice(url: nil, note: "No sign-in page is set, so only the code is shown. Add the address in Connections on the Overview page.")
     }
 }

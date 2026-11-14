@@ -292,13 +292,13 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     equal((await ConnectionCheck.runURL("http://map.example.test", probe: p, outside: true)).health, .warning, "an http page that answers is still flagged")
 
     // Beside the invite code.
-    let both = InviteAddress.choose(configured: "https://example.test/signin", latchkey: "https://example.test/signin")
-    check(both.url == "https://example.test/signin" && both.note == nil, "the configured address is shown, with nothing to add when Latchkey agrees")
-    let differ = InviteAddress.choose(configured: "https://example.test/signin", latchkey: "https://old.example.test")
-    check(differ.url == "https://example.test/signin" && differ.note?.contains("old.example.test") == true, "when Latchkey disagrees, the configured one is shown and the other named")
-    let fallback = InviteAddress.choose(configured: "", latchkey: "https://example.test/join")
-    check(fallback.url == "https://example.test/join" && fallback.note != nil, "with none configured, Latchkey's is shown and said to be Latchkey's")
-    let none = InviteAddress.choose(configured: " ", latchkey: nil)
+    let both = InviteAddress.choose(configured: "https://example.test/signin", welcomewagon: "https://example.test/signin")
+    check(both.url == "https://example.test/signin" && both.note == nil, "the configured address is shown, with nothing to add when WelcomeWagon agrees")
+    let differ = InviteAddress.choose(configured: "https://example.test/signin", welcomewagon: "https://old.example.test")
+    check(differ.url == "https://example.test/signin" && differ.note?.contains("old.example.test") == true, "when WelcomeWagon disagrees, the configured one is shown and the other named")
+    let fallback = InviteAddress.choose(configured: "", welcomewagon: "https://example.test/join")
+    check(fallback.url == "https://example.test/join" && fallback.note != nil, "with none configured, WelcomeWagon's is shown and said to be WelcomeWagon's")
+    let none = InviteAddress.choose(configured: " ", welcomewagon: nil)
     check(none.url == nil && none.note?.contains("only the code") == true, "with neither, the screen says so and still shows the code")
 
     section("Connections: the game's status ping, on real sockets")

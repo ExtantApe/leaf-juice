@@ -2,19 +2,19 @@ import CoreImage
 import Foundation
 
 /// A printable invite (D187): the server's name, where to go, the code, when it runs out, and a QR code whose link
-/// carries the code after `#`, so the code never reaches a server's logs. The data comes from Latchkey 0.5's answer
+/// carries the code after `#`, so the code never reaches a server's logs. The data comes from WelcomeWagon's answer
 /// to `invite create`. Nothing secret beyond the invite's own one-time code is on it.
 public struct InviteTicket: Equatable, Sendable, Identifiable {
     public var id: String { link }
     public let server: String
-    /// Where to go, exactly as Latchkey gives it, such as https://join.example.test/.
+    /// Where to go, exactly as WelcomeWagon gives it, such as https://join.example.test/.
     public let join: String
     /// `join` + "#" + the code: what the QR code opens.
     public let link: String
     public let code: String
     public let expires: Date
 
-    /// Latchkey's `ticket` object, before the code is put in.
+    /// WelcomeWagon's `ticket` object, before the code is put in.
     public struct Wire: Decodable, Sendable {
         public let server: String?
         public let join: String?
@@ -31,7 +31,7 @@ public struct InviteTicket: Equatable, Sendable, Identifiable {
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil, !join.contains("#") else { return nil }
         // The link must be exactly the join address, "#", and the code. Nothing else may be added.
         guard template == join + "#{code}" else { return nil }
-        // Latchkey's codes are short letters and digits. Anything else isn't put into a link.
+        // WelcomeWagon's codes are short letters and digits. Anything else isn't put into a link.
         guard (4...16).contains(code.count), code.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { return nil }
         let server = String((wire.server ?? "").filter { !$0.isNewline && !($0.asciiValue.map { $0 < 0x20 } ?? false) }.prefix(60))
             .trimmingCharacters(in: .whitespaces)

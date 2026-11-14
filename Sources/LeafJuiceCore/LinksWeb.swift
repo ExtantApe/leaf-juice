@@ -4,7 +4,7 @@ import Network
 
 // The plugin links page for people provisioned on the server. It only listens on this Mac. Whatever carries it
 // to the internet has to end in HTTPS on this Mac too, so sign-in links and cookies can't be read along the way.
-// A player proves who they are in game: the Latchkey plugin gives them a one-time link and leaves its hash in a file.
+// A player proves who they are in game: the WelcomeWagon plugin gives them a one-time link and leaves its hash in a file.
 
 public struct LinksPageSettings: Codable, Equatable, Sendable {
     public var on = false
@@ -204,9 +204,9 @@ public final class LinksWeb {
 
     private func session(for request: Request, now: Date) -> Session? {
         if let own = ownSession(for: request, now: now) { return own }
-        // Latchkey's sign-in, read from its session file on every request. The file is Latchkey's, so nothing is written here.
-        guard let value = LatchkeySessions.cookieValue(request.headers["cookie"]),
-              let found = LatchkeySessions.read(plugins: paths.plugins, cookieValue: value, now: now),
+        // WelcomeWagon's sign-in, read from its session file on every request. The file is WelcomeWagon's, so nothing is written here.
+        guard let value = WelcomeWagonSessions.cookieValue(request.headers["cookie"]),
+              let found = WelcomeWagonSessions.read(plugins: paths.plugins, cookieValue: value, now: now),
               accessProblem(found.uuid) == nil else { return nil }
         return Session(uuid: found.uuid, name: found.name, started: found.since, expires: found.expires)
     }
@@ -233,7 +233,7 @@ public final class LinksWeb {
         let failed = page(400, "That link didn't work", "<p>It may have been used already, or be more than two minutes old. Type <code>/signin</code> in game for a new one.</p>")
         guard let token = Self.formValue("token", request.body), token.count == 43,
               token.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else { return failed }
-        let file = paths.plugins.appendingPathComponent("Latchkey/pending/\(Self.hash(token)).json")
+        let file = paths.plugins.appendingPathComponent("WelcomeWagon/pending/\(Self.hash(token)).json")
         guard let data = try? Data(contentsOf: file),
               // Deleting it is what makes the link single use. If that fails, the link isn't honoured.
               (try? FileManager.default.removeItem(at: file)) != nil,
@@ -608,7 +608,7 @@ extension ServerController {
         (linksWeb ?? LinksWeb(paths: paths, settings: { LinksPageSettings() }, content: { LinksPageContent() })).tidy()
     }
 
-    public var hasLatchkey: Bool { plugins.contains { $0.enabled && $0.key == "latchkey" } }
+    public var hasWelcomeWagon: Bool { plugins.contains { $0.enabled && $0.key == "welcomewagon" } }
 
     public var onlineModeIsOn: Bool {
         guard let text = try? String(contentsOf: paths.properties, encoding: .utf8) else { return false }

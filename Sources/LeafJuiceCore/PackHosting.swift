@@ -82,8 +82,7 @@ public struct PackURLCheck: Equatable, Sendable {
 
 public enum PackHosting {
     /// Plugins that send packs per world. With one present, server.properties isn't how packs reach players.
-    /// Packmule was called ResourcePackButler before 0.2.0; servers still on 0.1.x keep the old name.
-    public static let perWorldPlugins: [String: String] = ["packmule": "Packmule", "resourcepackbutler": "Packmule", "worldresourcepacks": "WorldResourcepacks"]
+    public static let perWorldPlugins: [String: String] = ["packmule": "Packmule", "worldresourcepacks": "WorldResourcepacks"]
     public static let fileName = "pack.zip"
     static let tokenBytes = 32
 

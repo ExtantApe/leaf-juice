@@ -252,7 +252,7 @@ extension ServerController {
 
     public func signInAccess(uuid: String) async -> SignInAccess {
         guard state == .running, hasLuckPerms, AccountLookup.dashed(uuid) != nil else { return .unknown }
-        return LuckPermsText.checkResult(await ask("lp user \(uuid) permission check latchkey.signin") { $0.contains { $0.contains("Result:") } })
+        return LuckPermsText.checkResult(await ask("lp user \(uuid) permission check welcomewagon.signin") { $0.contains { $0.contains("Result:") } })
     }
 
     /// Anything that would go into a console command has to pass here first.

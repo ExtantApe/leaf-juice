@@ -2,7 +2,7 @@ import CoreImage
 import Foundation
 import LeafJuiceCore
 
-/// Printed invite tickets (D187): what Latchkey's ticket may say, the QR code, and the text version.
+/// Printed invite tickets (D187): what WelcomeWagon's ticket may say, the QR code, and the text version.
 @MainActor func inviteTicketChecks() {
     section("Invite tickets")
     func wire(server: String? = "Made-up Realm", join: String? = "https://join.example.test/", link: String? = "https://join.example.test/#{code}", expires: Double? = 4_000_000_000) -> InviteTicket.Wire {
@@ -10,11 +10,11 @@ import LeafJuiceCore
     }
     let t = InviteTicket.make(wire(), code: "QW3RTY")
     equal(t?.link, "https://join.example.test/#QW3RTY", "the code goes after #, so it never reaches a server's logs")
-    equal(t?.expires, Date(timeIntervalSince1970: 4_000_000_000), "the expiry is Latchkey's")
+    equal(t?.expires, Date(timeIntervalSince1970: 4_000_000_000), "the expiry is WelcomeWagon's")
     equal(t?.spokenCode, "QW3 RTY", "the code reads in threes")
     equal(InviteTicket.make(wire(join: "https://example.test/join/", link: "https://example.test/join/#{code}"), code: "QW3RTY")?.link,
           "https://example.test/join/#QW3RTY", "a join address under a path is used exactly as given")
-    check(InviteTicket.make(nil, code: "QW3RTY") == nil, "no ticket from Latchkey: none to print")
+    check(InviteTicket.make(nil, code: "QW3RTY") == nil, "no ticket from WelcomeWagon: none to print")
     for (label, w) in [("plain http", wire(join: "http://join.example.test/", link: "http://join.example.test/#{code}")),
                        ("a user name in the address", wire(join: "https://kid@join.example.test/", link: "https://kid@join.example.test/#{code}")),
                        ("a query", wire(join: "https://join.example.test/?a=1", link: "https://join.example.test/?a=1#{code}")),

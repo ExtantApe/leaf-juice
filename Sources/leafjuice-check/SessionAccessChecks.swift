@@ -12,7 +12,7 @@ import Security
     }
     func ok(_ extra: String) -> String { #"{"token":"\#(token)","caller":"Made-up Session",\#(extra)}"# }
 
-    equal(SessionAccessSettings(), { var d = SessionAccessSettings(); d.enabled = false; d.commands = ["latchkey reload", "save-all", "list"]; return d }(), "off by default, with the three starting commands")
+    equal(SessionAccessSettings(), { var d = SessionAccessSettings(); d.enabled = false; d.commands = ["welcomewagon reload", "save-all", "list"]; return d }(), "off by default, with the three starting commands")
     equal(decide(ok(#""call":"status""#), SessionAccessSettings()), .failure(.off), "off: refused, even with the right token")
     equal(decide("not json"), .failure(.unreadable), "unreadable: refused")
     equal(decide(String(repeating: "x", count: SessionAccess.maxRequestBytes + 1)), .failure(.tooLong), "too long: refused")
@@ -28,9 +28,9 @@ import Security
     equal(decide(ok(#""call":"log","lines":100000"#)), .success(.log(lines: 200)), "log is capped at 200 lines")
     equal(decide(ok(#""call":"log","lines":-5"#)), .success(.log(lines: 1)), "and at least one")
     equal(decide(ok(#""call":"run","command":"save-all""#)), .success(.run(command: "save-all")), "a listed command: allowed")
-    equal(decide(ok(#""call":"run","command":"  /latchkey   reload ""#)), .success(.run(command: "latchkey reload")), "with a slash and extra spaces, it's the same command")
+    equal(decide(ok(#""call":"run","command":"  /welcomewagon   reload ""#)), .success(.run(command: "welcomewagon reload")), "with a slash and extra spaces, it's the same command")
     for (bad, label) in [("save-all flush", "a listed command with arguments added"), ("op MadeUpPlayer", "a command that isn't listed"),
-                         ("SAVE-ALL", "a listed command in other letters"), ("stop", "stop"), ("", "nothing"), ("latchkey", "part of a listed command")] {
+                         ("SAVE-ALL", "a listed command in other letters"), ("stop", "stop"), ("", "nothing"), ("welcomewagon", "part of a listed command")] {
         if case .failure(.notOnList) = decide(ok(#""call":"run","command":"\#(bad)""#)) { check(true, "refused: \(label)") } else { check(false, "refused: \(label)") }
     }
     equal(decide(ok(#""call":"run","command":"list\nop MadeUp""#)), .failure(.lineBreak), "a second command after a line break: refused")

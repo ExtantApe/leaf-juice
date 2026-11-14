@@ -31,7 +31,7 @@ struct AllowlistPage: View {
             if let message { Callout(tone: .danger, title: message) }
             if server.hasSheriff { sheriffNote }
             addCard
-            if server.hasLatchkey { InvitesCard(server: server, profiles: server.hasSheriff ? sheriffProfiles : nil) }
+            if server.hasWelcomeWagon { InvitesCard(server: server, profiles: server.hasSheriff ? sheriffProfiles : nil) }
             if !waiting.isEmpty { waitingCard }
             if sheriffProfiles != nil, !attempts.isEmpty { attemptsCard }
             listCard
@@ -360,7 +360,7 @@ private struct GroupEditor: View {
             Fact(label: "Can sign in to the plugin page", value: signInText)
             ForEach(warnings, id: \.self) { Callout(tone: .warning, title: $0) }
             if let problem { Callout(tone: .danger, title: problem) }
-            if server.hasLatchkey { Divider(); WebSignInSection(server: server, name: entry.name) }
+            if server.hasWelcomeWagon { Divider(); WebSignInSection(server: server, name: entry.name) }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }.buttonStyle(.juice).keyboardShortcut(.cancelAction)

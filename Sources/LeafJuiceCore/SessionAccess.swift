@@ -12,7 +12,7 @@ import Observation
 public struct SessionAccessSettings: Codable, Equatable, Sendable {
     public var enabled = false
     /// Exactly these console commands, with exactly these words. Nothing else is sent.
-    public var commands: [String] = ["latchkey reload", "save-all", "list"]
+    public var commands: [String] = ["welcomewagon reload", "save-all", "list"]
     public init() {}
 
     enum CodingKeys: String, CodingKey { case enabled, commands }

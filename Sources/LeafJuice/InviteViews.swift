@@ -2,12 +2,12 @@ import AppKit
 import LeafJuiceCore
 import SwiftUI
 
-/// Invites through Latchkey: make one with Sheriff profiles, see the code once, and list or revoke them.
+/// Invites through WelcomeWagon: make one with Sheriff profiles, see the code once, and list or revoke them.
 struct InvitesCard: View {
     let server: ServerController
     /// Sheriff's profiles, when Sheriff can be reached. Without them an invite gives lobby-only access.
     let profiles: [SheriffProfile]?
-    @State private var status: LatchkeyStatus?
+    @State private var status: WelcomeWagonStatus?
     @State private var name = ""
     @State private var chosen = Set<String>()
     @State private var days = 14
@@ -18,9 +18,9 @@ struct InvitesCard: View {
     @State private var printing: InviteTicket?
     @State private var problem: String?
     @State private var working = false
-    @State private var invites: [LatchkeyInvite] = []
+    @State private var invites: [WelcomeWagonInvite] = []
     @State private var more = false
-    @State private var revoking: LatchkeyInvite?
+    @State private var revoking: WelcomeWagonInvite?
     @State private var modules = Modules.shared
 
     private var nameIsValid: Bool { AccountLookup.isValidName(name.trimmingCharacters(in: .whitespacesAndNewlines)) }
@@ -29,7 +29,7 @@ struct InvitesCard: View {
         Card(title: "Invites", systemImage: "envelope.badge.person.crop") {
             Hint("An invite is a six-character code for one Minecraft name. They type it on your sign-up page, and they're on the allowlist with the profiles you chose. Invites from LeafJuice only work while LeafJuice runs this server.")
             switch status {
-            case nil: Hint("Checking Latchkey…")
+            case nil: Hint("Checking WelcomeWagon…")
             case .notInstalled?: EmptyView()
             case .unavailable(let why)?:
                 Callout(tone: .warning, title: "Invites can't be made right now", detail: why) {
@@ -38,16 +38,16 @@ struct InvitesCard: View {
                     }
                 }
             case .ready(let version, let invitesWork, let publicURL, let problems, let lobby)?:
-                ForEach(problems, id: \.self) { Callout(tone: .warning, title: "Latchkey's settings", detail: $0) }
+                ForEach(problems, id: \.self) { Callout(tone: .warning, title: "WelcomeWagon's settings", detail: $0) }
                 if let lobby {
-                    Fact(label: "Lobby", value: lobby ? "On: new players arrive in Latchkey's lobby" : "Off: players arrive at the usual spawn")
+                    Fact(label: "Lobby", value: lobby ? "On: new players arrive in WelcomeWagon's lobby" : "Off: players arrive at the usual spawn")
                 }
                 if !invitesWork {
-                    Callout(tone: .warning, title: "Latchkey \(version) isn't taking invites", detail: "Until its settings pass its checks, it won't make any. The problems above say what to change.")
+                    Callout(tone: .warning, title: "WelcomeWagon \(version) isn't taking invites", detail: "Until its settings pass its checks, it won't make any. The problems above say what to change.")
                 } else {
                     if let publicURL, !publicURL.isEmpty { Fact(label: "Sign-up page", value: publicURL) }
-                    Hint("Signing in to the web pages with /signin needs the latchkey.signin permission, which only operators have until you give it to a group in LuckPerms.")
-                    if let made { codeView(made, latchkeyURL: publicURL) } else { form }
+                    Hint("Signing in to the web pages with /signin needs the welcomewagon.signin permission, which only operators have until you give it to a group in LuckPerms.")
+                    if let made { codeView(made, welcomewagonURL: publicURL) } else { form }
                 }
                 listView
             }
@@ -68,7 +68,7 @@ struct InvitesCard: View {
             Stepper("Lasts \(days) day\(days == 1 ? "" : "s")", value: $days, in: 1...30)
                 .accessibilityValue("\(days) days")
         }
-        Hint("Latchkey checks the name with Mojang when the invite is made.")
+        Hint("WelcomeWagon checks the name with Mojang when the invite is made.")
         if let profiles {
             Text("Profiles").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
             if profiles.isEmpty { Hint("Sheriff has no profiles set up, so the invite gives lobby-only access.") }
@@ -101,8 +101,8 @@ struct InvitesCard: View {
             .disabled(working || !nameIsValid || questions.contains { !answered.contains($0.id) })
     }
 
-    @ViewBuilder private func codeView(_ new: NewInvite, latchkeyURL: String?) -> some View {
-        let address = InviteAddress.choose(configured: server.savedConnections.settings.signInURL, latchkey: latchkeyURL)
+    @ViewBuilder private func codeView(_ new: NewInvite, welcomewagonURL: String?) -> some View {
+        let address = InviteAddress.choose(configured: server.savedConnections.settings.signInURL, welcomewagon: welcomewagonURL)
         Callout(tone: .good, title: "Invite for \(new.invite.name)", detail: "Shown once. Send it to them privately. It works once, until \(new.invite.expires.formatted(date: .abbreviated, time: .shortened)).") { EmptyView() }
         if let warning = new.warning { Callout(tone: .warning, title: warning) }
         HStack(spacing: 12) {
@@ -144,7 +144,7 @@ struct InvitesCard: View {
             Button("Print Ticket…") { printing = ticket }.buttonStyle(.juice)
                 .help("A printable card with the code, where to go and a QR code that fills the code in.")
         } else {
-            Hint("Printed tickets need Latchkey 0.5 or later, with invites on and its page taking codes.")
+            Hint("Printed tickets need invites on in WelcomeWagon, and its page taking codes.")
         }
         Button("Done") { made = nil; copied = false; name = ""; chosen = [] }
             .buttonStyle(.juicePrimary).keyboardShortcut(.defaultAction)
@@ -155,7 +155,7 @@ struct InvitesCard: View {
         let open = invites.filter { $0.isOpen() }
         Text("Invites (\(open.count) waiting)").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
         if invites.isEmpty { Hint("None yet.") }
-        if more { Hint("Showing the newest \(invites.count). Older invites are in Latchkey's own list: /latchkey invite list.") }
+        if more { Hint("Showing the newest \(invites.count). Older invites are in WelcomeWagon's own list: /welcomewagon invite list.") }
         ForEach(invites) { invite in
             HStack {
                 Text(invite.name).foregroundStyle(Juice.ink).textSelection(.enabled)
@@ -176,9 +176,9 @@ struct InvitesCard: View {
 
     private func refresh() async {
         await server.refreshPlugins()
-        guard server.hasLatchkey else { status = .notInstalled; return }
+        guard server.hasWelcomeWagon else { status = .notInstalled; return }
         status = nil
-        status = await server.latchkeyStatus()
+        status = await server.welcomewagonStatus()
         if case .ready = status { await reloadList() } else { invites = []; more = false }
     }
 
@@ -199,7 +199,7 @@ struct InvitesCard: View {
             case .questions(let qs): questions = qs; answered = []
             case .failed(let why): problem = why
             case .notConfirmed:
-                problem = "Latchkey didn't answer in 15 seconds. An invite may still have been made, so check the list below and revoke anything you don't want."
+                problem = "WelcomeWagon didn't answer in 15 seconds. An invite may still have been made, so check the list below and revoke anything you don't want."
                 await reloadList()
             }
         }
@@ -215,11 +215,11 @@ struct InvitesCard: View {
     }
 }
 
-/// Someone's sign-ins on the web pages, through Latchkey. Shown only when Latchkey's `describe` offers it.
+/// Someone's sign-ins on the web pages, through WelcomeWagon. Shown only when WelcomeWagon's `describe` offers it.
 struct WebSignInSection: View {
     let server: ServerController
     let name: String
-    @State private var state: LatchkeySignIns?
+    @State private var state: WelcomeWagonSignIns?
     @State private var confirming = false
     @State private var working = false
     @State private var result: String?
@@ -228,7 +228,7 @@ struct WebSignInSection: View {
     var body: some View {
         Group {
             switch state {
-            case nil: Hint("Asking Latchkey about web sign-ins…")
+            case nil: Hint("Asking WelcomeWagon about web sign-ins…")
             case .unsupported?: EmptyView()
             case .problem(let why)?:
                 Text("Web sign-in").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)
@@ -248,7 +248,7 @@ struct WebSignInSection: View {
             if let result { Callout(tone: .good, title: result) }
             if let problem { Callout(tone: .danger, title: problem) }
         }
-        .task(id: name) { state = await server.latchkeySignIns(name: name) }
+        .task(id: name) { state = await server.welcomewagonSignIns(name: name) }
         .confirmationDialog("Sign \(name) out of the web pages everywhere?", isPresented: $confirming) {
             Button("Sign Out Everywhere", role: .destructive, action: signOut)
         } message: {
@@ -264,7 +264,7 @@ struct WebSignInSection: View {
             case .success(let n): result = n == 0 ? "\(name) wasn't signed in anywhere." : "Signed \(name) out of \(n) browser\(n == 1 ? "" : "s")."
             case .failure(let e): problem = e.message
             }
-            state = await server.latchkeySignIns(name: name)
+            state = await server.welcomewagonSignIns(name: name)
         }
     }
 }

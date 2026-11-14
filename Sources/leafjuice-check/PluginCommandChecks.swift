@@ -20,8 +20,8 @@ private let head = "[12:00:00 INFO]: "
     onceFileChecks()
     section("Plugin commands: the module switch")
     moduleSwitchChecks()
-    section("Latchkey session files")
-    latchkeySessionChecks()
+    section("WelcomeWagon session files")
+    welcomewagonSessionChecks()
     section("Plugin commands: a fake plugin through a real console")
     await fakePluginServerChecks()
 }
@@ -209,7 +209,7 @@ private let head = "[12:00:00 INFO]: "
     if case .unreadable = PluginDescription.read(Data(misordered.utf8)) { check(true, "") } else { check(false, "a required argument after an optional one is refused") }
     if case .newerFormat(2) = PluginDescription.read(Data(#"{"format":2,"plugin":"Sheriff","version":"9","commands":"changed shape"}"#.utf8)) { check(true, "") } else { check(false, "a newer format is refused, not half-read") }
     for (label, json) in [("no format", #"{"plugin":"Sheriff","version":"1"}"#), ("format 0", #"{"format":0,"plugin":"Sheriff","version":"1"}"#),
-                          ("a plugin name that's a path", #"{"format":1,"plugin":"../Latchkey","version":"1"}"#), ("not JSON", "nope")] {
+                          ("a plugin name that's a path", #"{"format":1,"plugin":"../WelcomeWagon","version":"1"}"#), ("not JSON", "nope")] {
         if case .unreadable = PluginDescription.read(Data(json.utf8)) { check(true, "") } else { check(false, "unreadable: \(label)") }
     }
 }
@@ -217,7 +217,7 @@ private let head = "[12:00:00 INFO]: "
 @MainActor private func onceFileChecks() {
     let root = folder("once-files")
     let plugins = root.appendingPathComponent("plugins", isDirectory: true)
-    let once = plugins.appendingPathComponent("Latchkey/once", isDirectory: true)
+    let once = plugins.appendingPathComponent("WelcomeWagon/once", isDirectory: true)
     try? FileManager.default.createDirectory(at: once, withIntermediateDirectories: true)
     chmod(once.path, 0o700)
     let future = Date().timeIntervalSince1970 + 3600
@@ -228,7 +228,7 @@ private let head = "[12:00:00 INFO]: "
         chmod(url.path, mode)
         return url
     }
-    func take(_ id: String, file: String? = nil, plugin: String = "Latchkey") -> Result<OnceSecrets.Secret, OnceSecrets.Problem> {
+    func take(_ id: String, file: String? = nil, plugin: String = "WelcomeWagon") -> Result<OnceSecrets.Secret, OnceSecrets.Problem> {
         OnceSecrets.take(serverRoot: root, plugin: plugin, requestID: id, secretFile: file ?? "once/\(id).json")
     }
     let exists = { (u: URL) in FileManager.default.fileExists(atPath: u.path) }
@@ -267,16 +267,16 @@ private let head = "[12:00:00 INFO]: "
     let g = PluginCommandWire.newID(); _ = plant(g)
     equal(take(g, file: "once/../../../x.json").failureValue, .badPath, "an answer naming another path is refused")
     equal(take(g, file: "once/\(PluginCommandWire.newID()).json").failureValue, .badPath, "so is one naming another request's file")
-    equal(take(g, plugin: "../Latchkey").failureValue, .badPath, "and a plugin name that's a path")
+    equal(take(g, plugin: "../WelcomeWagon").failureValue, .badPath, "and a plugin name that's a path")
     equal(take("../\(g)").failureValue, .badPath, "and a request id that's a path")
     check(take(g).isSuccess, "the right file is still read after all that")
 
     // The plugin's folder is a link somewhere else.
     let linked = folder("once-linked-root")
     try? FileManager.default.createDirectory(at: linked.appendingPathComponent("plugins"), withIntermediateDirectories: true)
-    try? FileManager.default.createSymbolicLink(at: linked.appendingPathComponent("plugins/Latchkey"), withDestinationURL: plugins.appendingPathComponent("Latchkey"))
+    try? FileManager.default.createSymbolicLink(at: linked.appendingPathComponent("plugins/WelcomeWagon"), withDestinationURL: plugins.appendingPathComponent("WelcomeWagon"))
     let h = PluginCommandWire.newID(); let hURL = plant(h)
-    equal(OnceSecrets.take(serverRoot: linked, plugin: "Latchkey", requestID: h, secretFile: "once/\(h).json").failureValue, .badPath, "a plugin folder that's a link elsewhere isn't read")
+    equal(OnceSecrets.take(serverRoot: linked, plugin: "WelcomeWagon", requestID: h, secretFile: "once/\(h).json").failureValue, .badPath, "a plugin folder that's a link elsewhere isn't read")
     check(exists(hURL), "and nothing is deleted through it")
 
     // The folder others can read.
@@ -370,7 +370,7 @@ private let head = "[12:00:00 INFO]: "
         if case .notConfirmed = quiet.outcome { check(true, "") } else { check(false, "a plugin that never answers is 'not confirmed': \(quiet.outcome)") }
 
         await sheriffThroughFake(c, root: root)
-        await latchkeyThroughFake(c, root: root)
+        await welcomewagonThroughFake(c, root: root)
         await packmuleThroughFake(c, root: root)
 
         store.set(.pluginCommands, on: false)
@@ -450,13 +450,13 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
       static String invite(String id, String name, String profiles, String status) {
         return "{\"invite\":\"" + id + "\",\"uuid\":\"AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE\",\"name\":\"" + name + "\",\"profiles\":[" + profiles + "],\"confirmed\":[],\"status\":\"" + status + "\",\"created\":1800000000,\"expires\":4000000000}";
       }
-      static void latchkey(String body, String id, String line) throws Exception {
-        Files.writeString(Path.of("latchkey-commands.txt"), line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+      static void welcomewagon(String body, String id, String line) throws Exception {
+        Files.writeString(Path.of("welcomewagon-commands.txt"), line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         if (body.equals("describe")) {
-          answer(id, "\"ok\":true,\"format\":1,\"plugin\":\"Latchkey\",\"version\":\"" + (new File("latchkey-v3").exists() ? "0.3.0" : "0.2.0") + "\",\"commands\":[{\"name\":\"invite create\",\"secret\":true},{\"name\":\"invite list\"},{\"name\":\"invite revoke\"},{\"name\":\"status\"}" + (new File("latchkey-v3").exists() ? ",{\"name\":\"session list\"},{\"name\":\"session revoke\"}" : "") + "]");
+          answer(id, "\"ok\":true,\"format\":1,\"plugin\":\"WelcomeWagon\",\"version\":\"" + (new File("welcomewagon-v3").exists() ? "0.3.0" : "0.2.0") + "\",\"commands\":[{\"name\":\"invite create\",\"secret\":true},{\"name\":\"invite list\"},{\"name\":\"invite revoke\"},{\"name\":\"status\"}" + (new File("welcomewagon-v3").exists() ? ",{\"name\":\"session list\"},{\"name\":\"session revoke\"}" : "") + "]");
         } else if (body.equals("status")) {
-          boolean closed = new File("latchkey-closed").exists();
-          answer(id, "\"ok\":true,\"landing\":true,\"redemption\":" + !closed + ",\"signIn\":true,\"whitelist\":true,\"publicUrl\":\"https://play.example.test\"," + (new File("latchkey-v3").exists() ? "\"lobby\":true," : "") + "\"problems\":[" + (closed ? "\"online-mode is off, so invites are off.\"" : "") + "]");
+          boolean closed = new File("welcomewagon-closed").exists();
+          answer(id, "\"ok\":true,\"landing\":true,\"redemption\":" + !closed + ",\"signIn\":true,\"whitelist\":true,\"publicUrl\":\"https://play.example.test\"," + (new File("welcomewagon-v3").exists() ? "\"lobby\":true," : "") + "\"problems\":[" + (closed ? "\"online-mode is off, so invites are off.\"" : "") + "]");
         } else if (body.startsWith("invite create ")) {
           String[] p = body.split(" ");
           if (p[3].contains("grown") && !line.contains("--yes bridge")) {
@@ -466,30 +466,30 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
           String profiles = p[3].equals("none") ? "" : "\"" + String.join("\",\"", p[3].split(",")) + "\"";
           String inviteId = String.format("%08x", invites.size() + 0x1a2b3c4d);
           invites.add(invite(inviteId, p[2], profiles, "pending"));
-          Path dir = Path.of("plugins/Latchkey/once");
+          Path dir = Path.of("plugins/WelcomeWagon/once");
           Files.createDirectories(dir);
           Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"));
           Path tmp = Files.createTempFile(dir, "w", ".tmp", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
           Files.writeString(tmp, "{\"id\":\"" + id + "\",\"kind\":\"invite-code\",\"value\":\"QW3RTY\",\"expires\":4000000000}");
           Files.move(tmp, dir.resolve(id + ".json"), StandardCopyOption.ATOMIC_MOVE);
           String fields = invites.get(invites.size() - 1);
-          // 0.5.0 adds a ticket while invites can be used on the page (D187). latchkey-v5-odd sends a link that adds a query.
-          String ticket = !new File("latchkey-v5").exists() ? "" : ",\"ticket\":{\"server\":\"Made-up Realm\",\"join\":\"https://join.example.test/\",\"link\":\"https://join.example.test/" + (new File("latchkey-v5-odd").exists() ? "?x=1" : "") + "#{code}\",\"expires\":4000000000}";
+          // 0.5.0 adds a ticket while invites can be used on the page (D187). welcomewagon-v5-odd sends a link that adds a query.
+          String ticket = !new File("welcomewagon-v5").exists() ? "" : ",\"ticket\":{\"server\":\"Made-up Realm\",\"join\":\"https://join.example.test/\",\"link\":\"https://join.example.test/" + (new File("welcomewagon-v5-odd").exists() ? "?x=1" : "") + "#{code}\",\"expires\":4000000000}";
           answer(id, "\"ok\":true,\"secretFile\":\"once/" + id + ".json\"," + fields.substring(1, fields.length() - 1) + ticket);
         } else if (body.startsWith("invite list")) {
-          if (!new File("latchkey-v3").exists()) { answer(id, "\"ok\":true,\"invites\":[" + String.join(",", invites) + "],\"next\":null"); return; }
-          // 0.3.0: the spec's paging, items and a string cursor. latchkey-bad-cursor hands out one LeafJuice must not type.
+          if (!new File("welcomewagon-v3").exists()) { answer(id, "\"ok\":true,\"invites\":[" + String.join(",", invites) + "],\"next\":null"); return; }
+          // 0.3.0: the spec's paging, items and a string cursor. welcomewagon-bad-cursor hands out one LeafJuice must not type.
           String[] a = body.split(" ");
           int limit = a.length > 2 ? Integer.parseInt(a[2]) : 20, from = a.length > 3 ? Integer.parseInt(a[3]) : 0;
           int to = Math.min(from + limit, invites.size());
-          String next = to < invites.size() ? (new File("latchkey-bad-cursor").exists() ? "\"--yes\"" : "\"" + to + "\"") : "null";
+          String next = to < invites.size() ? (new File("welcomewagon-bad-cursor").exists() ? "\"--yes\"" : "\"" + to + "\"") : "null";
           answer(id, "\"ok\":true,\"items\":[" + String.join(",", invites.subList(from, to)) + "],\"next\":" + next);
         } else if (body.startsWith("session list ") || body.startsWith("session revoke ")) {
           // Made-up counts: MadeUpKid is signed in on two browsers until signed out.
           String who = body.substring(body.lastIndexOf(' ') + 1);
-          int n = who.equals("MadeUpKid") && !new File("latchkey-signed-out").exists() ? 2 : 0;
+          int n = who.equals("MadeUpKid") && !new File("welcomewagon-signed-out").exists() ? 2 : 0;
           if (body.startsWith("session list ")) answer(id, "\"ok\":true,\"uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"name\":\"" + who + "\",\"sessions\":" + n);
-          else { new File("latchkey-signed-out").createNewFile(); answer(id, "\"ok\":true,\"uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"name\":\"" + who + "\",\"ended\":" + n); }
+          else { new File("welcomewagon-signed-out").createNewFile(); answer(id, "\"ok\":true,\"uuid\":\"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee\",\"name\":\"" + who + "\",\"ended\":" + n); }
         } else if (body.startsWith("invite revoke ")) {
           String which = body.substring(14);
           for (int i = 0; i < invites.size(); i++) if (invites.get(i).contains("\"" + which + "\"")) invites.set(i, invites.get(i).replace("\"pending\"", "\"revoked\""));
@@ -507,9 +507,9 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
         while ((line = reader.readLine()) != null) {
           if (line.equals("stop")) { log("Stopping the server"); socket.close(); System.exit(0); }
           int at = line.lastIndexOf(" --json ");
-          if (line.startsWith("sheriff ") && at >= 0) { sheriff(line.substring(6, at), line.substring(at + 8), line); continue; }
-          if (line.startsWith("latchkey ") && at >= 0) { latchkey(line.substring(9, at), line.substring(at + 8), line); continue; }
-          if (line.startsWith("packmule ") && at >= 0) { packmule(line.substring(9, at), line.substring(at + 8), line); continue; }
+          if (line.startsWith("sheriff ") && at >= 0) { sheriff(line.substring("sheriff ".length(), at), line.substring(at + 8), line); continue; }
+          if (line.startsWith("welcomewagon ") && at >= 0) { welcomewagon(line.substring("welcomewagon ".length(), at), line.substring(at + 8), line); continue; }
+          if (line.startsWith("packmule ") && at >= 0) { packmule(line.substring("packmule ".length(), at), line.substring(at + 8), line); continue; }
           if (!line.startsWith("fakeplug ") || at < 0) { log("Unknown command"); continue; }
           String id = line.substring(at + 8);
           String body = line.substring(9, at);
@@ -630,7 +630,7 @@ extension Result {
     equal(await c.sheriffStatus(), .notInstalled, "and the page uses its own path")
     makeJarInPlugins(root, "Sheriff")
     await c.refreshPlugins()
-    check(c.hasSheriff, "an Sheriff jar is noticed")
+    check(c.hasSheriff, "a Sheriff jar is noticed")
 
     // With Sheriff on the server, nothing goes around it.
     c.accessAllowsOffline = true
@@ -649,10 +649,10 @@ extension Result {
     Modules.shared.set(.pluginCommands, on: true)
 
     write("", root.appendingPathComponent("sheriff-old"))
-    if case .unavailable(let why) = await c.sheriffStatus() { check(why.contains("0.4.0"), "an Sheriff without apply is refused, naming the version needed: \(why)") } else { check(false, "old Sheriff refused") }
+    if case .unavailable(let why) = await c.sheriffStatus() { check(why.contains("0.4.0"), "a Sheriff without apply is refused, naming the version needed: \(why)") } else { check(false, "old Sheriff refused") }
     try? FileManager.default.removeItem(at: root.appendingPathComponent("sheriff-old"))
     write("", root.appendingPathComponent("sheriff-format-2"))
-    if case .unavailable(let why) = await c.sheriffStatus() { check(why.contains("newer"), "an Sheriff speaking a newer format is refused") } else { check(false, "newer format refused") }
+    if case .unavailable(let why) = await c.sheriffStatus() { check(why.contains("newer"), "a Sheriff speaking a newer format is refused") } else { check(false, "newer format refused") }
     try? FileManager.default.removeItem(at: root.appendingPathComponent("sheriff-format-2"))
 
     guard case .ready(let version, let profiles, let luckPerms, let problems) = await c.sheriffStatus() else { check(false, "the fake Sheriff is ready"); return }
@@ -733,26 +733,26 @@ extension Result {
     if case .success(let list) = await c.sheriffAttempts() { print("  attempts: \(list.count)") } else { check(false, "attempts read on real Sheriff") }
 }
 
-/// Invites through a fake Latchkey: the code comes only from the once-file, questions hold the invite back.
-@MainActor private func latchkeyThroughFake(_ c: ServerController, root: URL) async {
-    check(!c.hasLatchkey, "no Latchkey jar, no invites card")
-    equal(await c.latchkeyStatus(), .notInstalled, "and no Latchkey status")
-    makeJarInPlugins(root, "Latchkey")
+/// Invites through a fake WelcomeWagon: the code comes only from the once-file, questions hold the invite back.
+@MainActor private func welcomewagonThroughFake(_ c: ServerController, root: URL) async {
+    check(!c.hasWelcomeWagon, "no WelcomeWagon jar, no invites card")
+    equal(await c.welcomewagonStatus(), .notInstalled, "and no WelcomeWagon status")
+    makeJarInPlugins(root, "WelcomeWagon")
     await c.refreshPlugins()
-    defer { try? FileManager.default.removeItem(at: root.appendingPathComponent("plugins/Latchkey.jar")) }
+    defer { try? FileManager.default.removeItem(at: root.appendingPathComponent("plugins/WelcomeWagon.jar")) }
 
     Modules.shared.set(.pluginCommands, on: false)
-    if case .unavailable(let why) = await c.latchkeyStatus() { check(why.contains("Plugin commands"), "switched off, invites say how to turn them on") } else { check(false, "switched off is unavailable") }
+    if case .unavailable(let why) = await c.welcomewagonStatus() { check(why.contains("Plugin commands"), "switched off, invites say how to turn them on") } else { check(false, "switched off is unavailable") }
     Modules.shared.set(.pluginCommands, on: true)
 
-    write("", root.appendingPathComponent("latchkey-closed"))
-    if case .ready(_, let works, _, let problems, _) = await c.latchkeyStatus() {
-        check(!works && problems == ["online-mode is off, so invites are off."], "Latchkey not taking invites is shown, with its reason")
-    } else { check(false, "closed Latchkey read") }
-    try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-closed"))
-    guard case .ready(let version, true, let url, _, let lobby) = await c.latchkeyStatus() else { check(false, "the fake Latchkey is ready"); return }
+    write("", root.appendingPathComponent("welcomewagon-closed"))
+    if case .ready(_, let works, _, let problems, _) = await c.welcomewagonStatus() {
+        check(!works && problems == ["online-mode is off, so invites are off."], "WelcomeWagon not taking invites is shown, with its reason")
+    } else { check(false, "closed WelcomeWagon read") }
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("welcomewagon-closed"))
+    guard case .ready(let version, true, let url, _, let lobby) = await c.welcomewagonStatus() else { check(false, "the fake WelcomeWagon is ready"); return }
     check(version == "0.2.0" && url == "https://play.example.test", "ready, with its version and sign-up page")
-    check(lobby == nil, "Latchkey 0.2.0 says nothing about a lobby, so none is shown")
+    check(lobby == nil, "the 0.2.0 release says nothing about a lobby, so none is shown")
 
     for (label, result) in [("a bad name", await c.createInvite(name: "Not A Name", profiles: [], days: 14)),
                             ("0 days", await c.createInvite(name: "MadeUpKid", profiles: [], days: 0)),
@@ -760,16 +760,16 @@ extension Result {
                             ("a profile called none", await c.createInvite(name: "MadeUpKid", profiles: ["none"], days: 14))] {
         if case .failed = result { check(true, "") } else { check(false, "refused before anything is typed: \(label)") }
     }
-    check(!FileManager.default.fileExists(atPath: root.appendingPathComponent("latchkey-commands.txt").path) ||
-          !((try? String(contentsOf: root.appendingPathComponent("latchkey-commands.txt"), encoding: .utf8)) ?? "").contains("invite create"), "and none of them reached Latchkey")
+    check(!FileManager.default.fileExists(atPath: root.appendingPathComponent("welcomewagon-commands.txt").path) ||
+          !((try? String(contentsOf: root.appendingPathComponent("welcomewagon-commands.txt"), encoding: .utf8)) ?? "").contains("invite create"), "and none of them reached WelcomeWagon")
 
     let consoleBefore = c.console.count
     guard case .made(let lobby) = await c.createInvite(name: "MadeUpKid", profiles: [], days: 14) else { check(false, "a lobby-only invite is made"); return }
-    equal(lobby.code, "QW3RTY", "the code is read from Latchkey's once-file")
+    equal(lobby.code, "QW3RTY", "the code is read from WelcomeWagon's once-file")
     check(lobby.invite.profiles.isEmpty && lobby.invite.isOpen(), "lobby only, and waiting")
     check(!c.console.dropFirst(consoleBefore).contains { $0.text.contains("QW3RTY") }, "the code never reaches the console")
-    check(((try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("plugins/Latchkey/once").path)) ?? []).isEmpty, "and its file is gone")
-    check(lobby.ticket == nil, "before Latchkey 0.5 there's no ticket to print")
+    check(((try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("plugins/WelcomeWagon/once").path)) ?? []).isEmpty, "and its file is gone")
+    check(lobby.ticket == nil, "before the 0.5 release there's no ticket to print")
 
     if case .questions(let qs) = await c.createInvite(name: "MadeUpKid", profiles: ["young", "grown"], days: 7) {
         equal(qs.map(\.id), ["bridge"], "an invite with a risky mix asks first")
@@ -777,39 +777,39 @@ extension Result {
             equal(new.invite.profiles, ["young", "grown"], "and is made with the yes, with its profiles")
         } else { check(false, "made with the yes") }
     } else { check(false, "risky invite asks") }
-    let typed = (try? String(contentsOf: root.appendingPathComponent("latchkey-commands.txt"), encoding: .utf8)) ?? ""
-    check(typed.contains("latchkey invite create MadeUpKid none 14d --json "), "the command typed for a lobby-only invite")
-    check(typed.contains("latchkey invite create MadeUpKid young,grown 7d --yes bridge --json "), "and for one with profiles and a yes")
+    let typed = (try? String(contentsOf: root.appendingPathComponent("welcomewagon-commands.txt"), encoding: .utf8)) ?? ""
+    check(typed.contains("welcomewagon invite create MadeUpKid none 14d --json "), "the command typed for a lobby-only invite")
+    check(typed.contains("welcomewagon invite create MadeUpKid young,grown 7d --yes bridge --json "), "and for one with profiles and a yes")
 
     guard case .success(let listed) = await c.listInvites() else { check(false, "invites listed"); return }
     let list = listed.invites
-    equal(list.count, 2, "both invites listed, from Latchkey 0.2.0's own list key")
+    equal(list.count, 2, "both invites listed, from the 0.2.0 release's own list key")
     check(!listed.more, "and that's all of them")
     equal(await c.revokeInvite("not-an-id"), "That isn't an invite id.", "a bad invite id is refused before anything is typed")
     equal(await c.revokeInvite(list[0].invite), nil, "revoking an invite")
     if case .success(let after) = await c.listInvites() { equal(after.invites.first?.stateText(), "Revoked", "and it shows as revoked") }
 
-    equal(await c.latchkeySignIns(name: "MadeUpKid"), .unsupported, "Latchkey 0.2.0's describe has no session commands, so no web sign-in section")
+    equal(await c.welcomewagonSignIns(name: "MadeUpKid"), .unsupported, "the 0.2.0 release's describe has no session commands, so no web sign-in section")
     if case .failure = await c.signOutEverywhere(name: "MadeUpKid") { check(true, "") } else { check(false, "and signing out is refused without them") }
-    check(!((try? String(contentsOf: root.appendingPathComponent("latchkey-commands.txt"), encoding: .utf8)) ?? "").contains("session "), "and nothing about sessions is typed")
+    check(!((try? String(contentsOf: root.appendingPathComponent("welcomewagon-commands.txt"), encoding: .utf8)) ?? "").contains("session "), "and nothing about sessions is typed")
 
-    // Latchkey 0.3.0: the lobby in its status, and the list paged the spec's way.
-    write("", root.appendingPathComponent("latchkey-v3"))
-    equal(await c.latchkeySignIns(name: "MadeUpKid"), .signedIn(browsers: 2), "Latchkey 0.3.0 offers session commands: two browsers")
-    equal(await c.latchkeySignIns(name: "MadeUpPal"), .signedIn(browsers: 0), "and none for someone not signed in")
-    equal(await c.latchkeySignIns(name: "Not A Name"), .problem("That account's name isn't valid."), "a bad name is refused before anything is typed")
+    // The 0.3.0 release: the lobby in its status, and the list paged the spec's way.
+    write("", root.appendingPathComponent("welcomewagon-v3"))
+    equal(await c.welcomewagonSignIns(name: "MadeUpKid"), .signedIn(browsers: 2), "the 0.3.0 release offers session commands: two browsers")
+    equal(await c.welcomewagonSignIns(name: "MadeUpPal"), .signedIn(browsers: 0), "and none for someone not signed in")
+    equal(await c.welcomewagonSignIns(name: "Not A Name"), .problem("That account's name isn't valid."), "a bad name is refused before anything is typed")
     if case .success(let ended) = await c.signOutEverywhere(name: "MadeUpKid") { equal(ended, 2, "signing out everywhere ends both") } else { check(false, "signed out") }
-    equal(await c.latchkeySignIns(name: "MadeUpKid"), .signedIn(browsers: 0), "and afterwards there are none")
-    try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-signed-out"))
+    equal(await c.welcomewagonSignIns(name: "MadeUpKid"), .signedIn(browsers: 0), "and afterwards there are none")
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("welcomewagon-signed-out"))
     Modules.shared.set(.pluginCommands, on: false)
-    equal(await c.latchkeySignIns(name: "MadeUpKid"), .unsupported, "with Plugin commands off, nothing is asked")
+    equal(await c.welcomewagonSignIns(name: "MadeUpKid"), .unsupported, "with Plugin commands off, nothing is asked")
     Modules.shared.set(.pluginCommands, on: true)
-    defer { try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-v3")) }
-    if case .ready(let v3, _, _, _, let lobby) = await c.latchkeyStatus() {
-        check(v3 == "0.3.0" && lobby == true, "Latchkey 0.3.0's lobby shows as on")
-    } else { check(false, "Latchkey 0.3.0 is ready") }
+    defer { try? FileManager.default.removeItem(at: root.appendingPathComponent("welcomewagon-v3")) }
+    if case .ready(let v3, _, _, _, let lobby) = await c.welcomewagonStatus() {
+        check(v3 == "0.3.0" && lobby == true, "the 0.3.0 release's lobby shows as on")
+    } else { check(false, "the 0.3.0 release is ready") }
     for n in 0..<5 { _ = await c.createInvite(name: "MadeUpPal\(n)", profiles: [], days: 3) }
-    let logFile = root.appendingPathComponent("latchkey-commands.txt")
+    let logFile = root.appendingPathComponent("welcomewagon-commands.txt")
     try? FileManager.default.removeItem(at: logFile)
     if case .success(let paged) = await c.listInvites(pageSize: 2) {
         equal(paged.invites.count, 7, "every invite is read, two to a page")
@@ -817,36 +817,36 @@ extension Result {
         equal(Set(paged.invites.map(\.invite)).count, 7, "with none read twice")
     } else { check(false, "paged list read") }
     let pages = ((try? String(contentsOf: logFile, encoding: .utf8)) ?? "").split(separator: "\n")
-    check(pages.count == 4 && pages[1].hasPrefix("latchkey invite list 2 2 --json ") && pages[3].hasPrefix("latchkey invite list 2 6 --json "), "each page asks from the last page's cursor")
+    check(pages.count == 4 && pages[1].hasPrefix("welcomewagon invite list 2 2 --json ") && pages[3].hasPrefix("welcomewagon invite list 2 6 --json "), "each page asks from the last page's cursor")
     if case .success(let capped) = await c.listInvites(pageSize: 2, maxPages: 2) {
         check(capped.invites.count == 4 && capped.more, "a long list stops at the page limit and says there's more")
     } else { check(false, "capped list read") }
-    write("", root.appendingPathComponent("latchkey-bad-cursor"))
-    defer { try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-bad-cursor")) }
+    write("", root.appendingPathComponent("welcomewagon-bad-cursor"))
+    defer { try? FileManager.default.removeItem(at: root.appendingPathComponent("welcomewagon-bad-cursor")) }
     try? FileManager.default.removeItem(at: logFile)
     if case .success(let odd) = await c.listInvites(pageSize: 2) {
         check(odd.invites.count == 2 && odd.more, "a cursor that looks like a flag ends the list instead of being typed")
     } else { check(false, "odd cursor list read") }
     check(!((try? String(contentsOf: logFile, encoding: .utf8)) ?? "").contains("--yes"), "and it never reaches the console")
-    // Latchkey 0.5 tickets (D187), last, since each adds an invite to the stand-in's list.
-    write("", root.appendingPathComponent("latchkey-v5"))
+    // Tickets from the 0.5 release (D187), last, since each adds an invite to the stand-in's list.
+    write("", root.appendingPathComponent("welcomewagon-v5"))
     if case .made(let printable) = await c.createInvite(name: "MadeUpKid", profiles: [], days: 14) {
-        equal(printable.ticket?.link, "https://join.example.test/#QW3RTY", "Latchkey 0.5's ticket gets the code from the once-file, after #")
+        equal(printable.ticket?.link, "https://join.example.test/#QW3RTY", "the 0.5 release's ticket gets the code from the once-file, after #")
         equal(printable.ticket?.server, "Made-up Realm", "with the server's name")
     } else { check(false, "an invite with a ticket is made") }
-    write("", root.appendingPathComponent("latchkey-v5-odd"))
+    write("", root.appendingPathComponent("welcomewagon-v5-odd"))
     if case .made(let odd) = await c.createInvite(name: "MadeUpKid", profiles: [], days: 14) {
         check(odd.ticket == nil && odd.code == "QW3RTY", "a ticket whose link adds anything is dropped, and the code still shown")
     } else { check(false, "an invite with an odd ticket is still made") }
-    try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-v5"))
-    try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-v5-odd"))
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("welcomewagon-v5"))
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("welcomewagon-v5-odd"))
 }
 
-/// Latchkey's session files, read the agreed way, and the links page signing someone in by them.
-@MainActor private func latchkeySessionChecks() {
-    let root = folder("latchkey-sessions")
+/// WelcomeWagon's session files, read the agreed way, and the links page signing someone in by them.
+@MainActor private func welcomewagonSessionChecks() {
+    let root = folder("welcomewagon-sessions")
     let paths = ServerPaths(root: root)
-    let sessions = paths.plugins.appendingPathComponent("Latchkey/sessions", isDirectory: true)
+    let sessions = paths.plugins.appendingPathComponent("WelcomeWagon/sessions", isDirectory: true)
     try? FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
     chmod(sessions.path, 0o700)
     let uuid = "00000000-0000-4000-8000-0000000000aa"
@@ -863,7 +863,7 @@ extension Result {
         if let since { j += ",\"since\":\(Int(since.timeIntervalSince1970))" }
         return j + ",\"later\":true}"
     }
-    func read(_ cookie: String) -> LatchkeySessions.Session? { LatchkeySessions.read(plugins: paths.plugins, cookieValue: cookie, now: now) }
+    func read(_ cookie: String) -> WelcomeWagonSessions.Session? { WelcomeWagonSessions.read(plugins: paths.plugins, cookieValue: cookie, now: now) }
 
     let good = LinksWeb.randomSecret()
     plant(good, body())
@@ -884,7 +884,7 @@ extension Result {
         plant(cookie, json, mode: mode)
         check(read(cookie) == nil, "no session: \(label)")
     }
-    let linkTarget = folder("latchkey-elsewhere").appendingPathComponent("s.json")
+    let linkTarget = folder("welcomewagon-elsewhere").appendingPathComponent("s.json")
     write(body(), linkTarget); chmod(linkTarget.path, 0o600)
     let linked = LinksWeb.randomSecret()
     try? FileManager.default.createSymbolicLink(at: sessions.appendingPathComponent("\(sha(linked)).json"), withDestinationURL: linkTarget)
@@ -893,18 +893,18 @@ extension Result {
     chmod(sessions.path, 0o755)
     check(read(good) == nil, "no session: a folder others can look in")
     chmod(sessions.path, 0o700)
-    check(LatchkeySessions.cookieValue("a=b; latchkey_session=\(good); c=d") == good, "the cookie is found among others")
-    check(LatchkeySessions.cookieValue("latchkey_session=../../x") == nil && LatchkeySessions.cookieValue("latchkey_session=short") == nil, "an odd cookie isn't used")
+    check(WelcomeWagonSessions.cookieValue("a=b; welcomewagon_session=\(good); c=d") == good, "the cookie is found among others")
+    check(WelcomeWagonSessions.cookieValue("welcomewagon_session=../../x") == nil && WelcomeWagonSessions.cookieValue("welcomewagon_session=short") == nil, "an odd cookie isn't used")
 
-    // The links page signs someone in by Latchkey's cookie, checking the allowlist and bans itself.
+    // The links page signs someone in by WelcomeWagon's cookie, checking the allowlist and bans itself.
     write("online-mode=true\n", paths.properties)
     write(#"[{"uuid":"\#(uuid)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
     var settings = LinksPageSettings(); settings.address = "https://links.example.test/"
     let web = LinksWeb(paths: paths, settings: { settings }, content: { LinksPageContent(serverVersion: "Paper 26.3", plugins: []) })
     func page(_ cookie: String) -> String {
-        String(decoding: web.handle(.init(method: "GET", path: "/", headers: ["host": "links.example.test", "cookie": "latchkey_session=\(cookie)"], body: Data()), now: now).body, as: UTF8.self)
+        String(decoding: web.handle(.init(method: "GET", path: "/", headers: ["host": "links.example.test", "cookie": "welcomewagon_session=\(cookie)"], body: Data()), now: now).body, as: UTF8.self)
     }
-    check(page(good).contains("Signed in as MadeUp"), "the links page signs someone in by Latchkey's session")
+    check(page(good).contains("Signed in as MadeUp"), "the links page signs someone in by WelcomeWagon's session")
     write(#"[{"uuid":"\#(uuid)","name":"MadeUp"}]"#, root.appendingPathComponent("banned-players.json"))
     check(!page(good).contains("Signed in as"), "but not once they're banned")
     try? FileManager.default.removeItem(at: root.appendingPathComponent("banned-players.json"))
@@ -912,12 +912,12 @@ extension Result {
     check(!page(good).contains("Signed in as"), "or off the allowlist")
     write(#"[{"uuid":"\#(uuid)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
     try? FileManager.default.removeItem(at: sessions.appendingPathComponent("\(sha(good)).json"))
-    check(!page(good).contains("Signed in as"), "or once Latchkey deletes the file")
+    check(!page(good).contains("Signed in as"), "or once WelcomeWagon deletes the file")
     plant(good, body(expires: now.addingTimeInterval(86400 * 2)))
     check(page(good).contains("Signed in as MadeUp"), "an extended session counts at once, since the file is read every time")
 }
 
-/// A tiny browser for Latchkey's page, using curl, keeping cookies itself (they're Secure, and this is plain HTTP on 127.0.0.1).
+/// A tiny browser for WelcomeWagon's page, using curl, keeping cookies itself (they're Secure, and this is plain HTTP on 127.0.0.1).
 private final class PageClient {
     let port: Int
     var cookies: [String: String] = [:]
@@ -952,14 +952,14 @@ private final class PageClient {
     }
 }
 
-/// Real Paper with LuckPerms, Sheriff and Latchkey: an invite made through LeafJuice is redeemed on Latchkey's page,
+/// Real Paper with LuckPerms, Sheriff and WelcomeWagon: an invite made through LeafJuice is redeemed on WelcomeWagon's page,
 /// a bot signs in, LeafJuice reads the session file, and taking them off the whitelist ends it. Made-up offline accounts.
-@MainActor func runRealInvites(sheriff: URL, latchkey: URL) async {
-    section("REAL INVITES THROUGH LATCHKEY AND SHERIFF (EULA accepted by the person running this)")
+@MainActor func runRealInvites(sheriff: URL, welcomewagon: URL) async {
+    section("REAL INVITES THROUGH WELCOMEWAGON AND SHERIFF (EULA accepted by the person running this)")
     do {
         let port = 25593, web = 25694
         let root = folder("real-invites")
-        let c = try await buildInvitesServer(root: root, port: port, web: web, sheriff: sheriff, latchkey: latchkey)
+        let c = try await buildInvitesServer(root: root, port: port, web: web, sheriff: sheriff, welcomewagon: welcomewagon)
         defer { c.forceStop(); c.stopTicker() }
         Modules.shared.set(.pluginCommands, on: true)
         defer { Modules.shared.set(.pluginCommands, on: false) }
@@ -968,15 +968,15 @@ private final class PageClient {
         let table = try await ProtocolTable.load(mc: realMC, cache: folder("real-invites-protocol"), java: java.path)
 
         await c.start()
-        await checkUntil(240, "Paper \(realMC) with Sheriff and Latchkey runs (last: \(c.console.suffix(3).map(\.text)))") { c.state == .running }
+        await checkUntil(240, "Paper \(realMC) with Sheriff and WelcomeWagon runs (last: \(c.console.suffix(3).map(\.text)))") { c.state == .running }
         await c.refreshPlugins()
         for group in ["young", "grown"] { await expectLine(c, "lp creategroup \(group)", group, "made-up group \(group)") }
         _ = await c.commands.run("sheriff", ["reload"])
 
-        guard case .ready(let version, let works, let url, let problems, let lobby) = await c.latchkeyStatus() else { check(false, "real Latchkey is ready"); return }
-        print("  Latchkey \(version), invites \(works), page \(url ?? "none"), lobby \(lobby.map(String.init) ?? "not said"), problems \(problems)")
-        if !version.hasPrefix("0.2.") { check(lobby != nil, "Latchkey \(version) says whether its lobby is on") }
-        check(works, "Latchkey takes invites on this throwaway setup")
+        guard case .ready(let version, let works, let url, let problems, let lobby) = await c.welcomewagonStatus() else { check(false, "real WelcomeWagon is ready"); return }
+        print("  WelcomeWagon \(version), invites \(works), page \(url ?? "none"), lobby \(lobby.map(String.init) ?? "not said"), problems \(problems)")
+        if !version.hasPrefix("0.2.") { check(lobby != nil, "WelcomeWagon \(version) says whether its lobby is on") }
+        check(works, "WelcomeWagon takes invites on this throwaway setup")
         guard case .ready(_, let profiles, _, _) = await c.sheriffStatus() else { check(false, "Sheriff ready"); return }
         check(profiles.contains { $0.id == "young" }, "Sheriff's young profile is there")
 
@@ -988,17 +988,17 @@ private final class PageClient {
         check(!c.console.dropFirst(consoleBefore).contains { $0.text.contains(invite.code) }, "the code never reaches the console")
         let logText = (try? String(contentsOf: root.appendingPathComponent("logs/latest.log"), encoding: .utf8)) ?? ""
         check(!logText.contains(invite.code), "or latest.log")
-        check(((try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("plugins/Latchkey/once").path)) ?? []).isEmpty, "and the once-file is gone")
+        check(((try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("plugins/WelcomeWagon/once").path)) ?? []).isEmpty, "and the once-file is gone")
 
         let risky = await c.createInvite(name: "MadeUpOther", profiles: ["young", "grown"], days: 7)
-        if case .questions(let qs) = risky { check(qs.contains { $0.id == "bridge" }, "Sheriff's bridge question comes back through Latchkey, before any invite is made") } else { check(false, "a risky invite asks first: \(risky)") }
+        if case .questions(let qs) = risky { check(qs.contains { $0.id == "bridge" }, "Sheriff's bridge question comes back through WelcomeWagon, before any invite is made") } else { check(false, "a risky invite asks first: \(risky)") }
         guard case .made(let spare) = await c.createInvite(name: "MadeUpSpare", profiles: [], days: 1) else { check(false, "a lobby-only invite"); return }
         equal(await c.revokeInvite(spare.invite.invite), nil, "revoking an invite")
         if case .success(let listed) = await c.listInvites() { let list = listed.invites
             equal(Set(list.map { "\($0.name):\($0.stateText())" }), ["MadeUpKid:Waiting", "MadeUpSpare:Revoked"], "the list shows both, and only those")
         } else { check(false, "invites listed") }
 
-        // Redeemed on Latchkey's own page, as the player would.
+        // Redeemed on WelcomeWagon's own page, as the player would.
         let browser = PageClient(port: web)
         let redeemed = try await browser.request("/invite", form: ["csrf": try await browser.csrf("/"), "code": invite.code.lowercased(), "name": name])
         print("  redeem: HTTP \(redeemed.status)")
@@ -1006,9 +1006,9 @@ private final class PageClient {
         if case .success(let p) = await c.sheriffShow(uuid: uuid) { equal(p.profiles, ["young"], "Sheriff applied the invite's profile") } else { check(false, "show after redeeming") }
         if case .success(let list) = await c.listInvites() { equal(list.invites.first { $0.name == name }?.stateText(), "Used", "the invite shows as used") }
 
-        // A bot signs in, and LeafJuice reads Latchkey's session file.
+        // A bot signs in, and LeafJuice reads WelcomeWagon's session file.
         // Sign-in is op-only by default; an admin gives it to the players who should have it.
-        await expectLine(c, "lp user \(name) permission set latchkey.signin true", "latchkey.signin", "sign-in allowed for \(name)")
+        await expectLine(c, "lp user \(name) permission set welcomewagon.signin true", "welcomewagon.signin", "sign-in allowed for \(name)")
         let bot = try await join(name, c, table, port: port)
         bot.command("signin")
         await checkUntil(10, "/signin sends a link (got \(bot.privateMessages.map { String($0.filter { $0.isASCII && !$0.isNewline }.prefix(120)) }))") { bot.privateMessages.contains { $0.contains("/signin#") } }
@@ -1021,28 +1021,28 @@ private final class PageClient {
         let signin = PageClient(port: web)
         let signed = try await signin.request("/signin", form: ["csrf": try await signin.csrf("/signin"), "link": link])
         print("  sign-in: HTTP \(signed.status)")
-        guard let cookie = signin.cookies[LatchkeySessions.cookie] else { check(false, "Latchkey set its session cookie"); return }
-        let session = LatchkeySessions.read(plugins: c.paths.plugins, cookieValue: cookie)
+        guard let cookie = signin.cookies[WelcomeWagonSessions.cookie] else { check(false, "WelcomeWagon set its session cookie"); return }
+        let session = WelcomeWagonSessions.read(plugins: c.paths.plugins, cookieValue: cookie)
         check(session?.uuid == uuid && session?.name == name, "LeafJuice reads the real session file: \(String(describing: session))")
         let web2 = LinksWeb(paths: c.paths, settings: { var s = LinksPageSettings(); s.address = "https://links.example.test/"; return s }, content: { LinksPageContent(serverVersion: "Paper", plugins: []) })
         web2.requireOnlineMode = false
-        func page() -> String { String(decoding: web2.handle(.init(method: "GET", path: "/", headers: ["host": "links.example.test", "cookie": "\(LatchkeySessions.cookie)=\(cookie)"], body: Data())).body, as: UTF8.self) }
-        check(page().contains("Signed in as \(name)"), "LeafJuice's links page signs them in by Latchkey's cookie")
+        func page() -> String { String(decoding: web2.handle(.init(method: "GET", path: "/", headers: ["host": "links.example.test", "cookie": "\(WelcomeWagonSessions.cookie)=\(cookie)"], body: Data())).body, as: UTF8.self) }
+        check(page().contains("Signed in as \(name)"), "LeafJuice's links page signs them in by WelcomeWagon's cookie")
 
         if version.hasPrefix("0.2.") {
-            equal(await c.latchkeySignIns(name: name), .unsupported, "Latchkey \(version) has no session commands in describe, so no web sign-in section")
+            equal(await c.welcomewagonSignIns(name: name), .unsupported, "WelcomeWagon \(version) has no session commands in describe, so no web sign-in section")
         } else {
-            // Latchkey 0.3.0 offers session commands: the player sheet's count and Sign Out Everywhere. With this, the
+            // The 0.3.0 release offers session commands: the player sheet's count and Sign Out Everywhere. With this, the
             // whitelist-remove step below no longer has a session left to end; 0.2.0 runs still prove that path.
-            equal(await c.latchkeySignIns(name: name), .signedIn(browsers: 1), "the player sheet sees one browser signed in")
+            equal(await c.welcomewagonSignIns(name: name), .signedIn(browsers: 1), "the player sheet sees one browser signed in")
             if case .success(let ended) = await c.signOutEverywhere(name: name) { equal(ended, 1, "Sign Out Everywhere ends it") } else { check(false, "signed out everywhere") }
-            await checkUntil(5, "which deletes the session file") { LatchkeySessions.read(plugins: c.paths.plugins, cookieValue: cookie) == nil }
+            await checkUntil(5, "which deletes the session file") { WelcomeWagonSessions.read(plugins: c.paths.plugins, cookieValue: cookie) == nil }
             check(!page().contains("Signed in as"), "and LeafJuice's page no longer signs them in")
-            equal(await c.latchkeySignIns(name: name), .signedIn(browsers: 0), "and the count is back to none")
+            equal(await c.welcomewagonSignIns(name: name), .signedIn(browsers: 0), "and the count is back to none")
         }
 
         await expectLine(c, "whitelist remove \(name)", "Removed", "taken off the whitelist")
-        await checkUntil(5, "which ends the session file") { LatchkeySessions.read(plugins: c.paths.plugins, cookieValue: cookie) == nil }
+        await checkUntil(5, "which ends the session file") { WelcomeWagonSessions.read(plugins: c.paths.plugins, cookieValue: cookie) == nil }
         check(!page().contains("Signed in as"), "and LeafJuice's page with it")
         bot.leave()
 
@@ -1051,28 +1051,28 @@ private final class PageClient {
     } catch { failures.append("real invites: \(error)") }
 }
 
-/// A throwaway offline Paper server with LuckPerms, Sheriff and Latchkey, set up the way their own tests do it.
-/// Latchkey's offline-testing flag goes in this server's launch settings only.
-@MainActor func buildInvitesServer(root: URL, port: Int, web: Int, sheriff: URL, latchkey: URL) async throws -> ServerController {
+/// A throwaway offline Paper server with LuckPerms, Sheriff and WelcomeWagon, set up the way their own tests do it.
+/// WelcomeWagon's offline-testing flag goes in this server's launch settings only.
+@MainActor func buildInvitesServer(root: URL, port: Int, web: Int, sheriff: URL, welcomewagon: URL) async throws -> ServerController {
         write("server-ip=127.0.0.1\nserver-port=\(port)\nonline-mode=false\nwhite-list=true\nenforce-whitelist=true\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\ngenerate-structures=false\nspawn-protection=0\nnetwork-compression-threshold=-1\n", root.appendingPathComponent("server.properties"))
         let c = try await ServerController.adopt(root: root, name: "real-invites")
         try EULA.accept(c.paths)
         try await c.installSoftware(try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!)
         try await c.addPlugin(source: .modrinth(project: "luckperms", allowBeta: false))
-        for jar in [sheriff, latchkey] { try FileManager.default.copyItem(at: jar, to: root.appendingPathComponent("plugins/\(jar.lastPathComponent)")) }
+        for jar in [sheriff, welcomewagon] { try FileManager.default.copyItem(at: jar, to: root.appendingPathComponent("plugins/\(jar.lastPathComponent)")) }
         // Each plugin's shipped config, set for a throwaway offline server the way their own tests do it.
         var sheriffConfig = try await Tool.run("/usr/bin/unzip", ["-p", sheriff.path, "config.yml"]).out
         sheriffConfig = sheriffConfig.replacingOccurrences(of: "name-lookup: auto", with: "name-lookup: offline").replacingOccurrences(of: "lobby-world: \"\"", with: "lobby-world: world")
         try FileOps.ensureDir(root.appendingPathComponent("plugins/Sheriff"))
         write(sheriffConfig, root.appendingPathComponent("plugins/Sheriff/config.yml"))
-        var lk = try await Tool.run("/usr/bin/unzip", ["-p", latchkey.path, "config.yml"]).out
+        var lk = try await Tool.run("/usr/bin/unzip", ["-p", welcomewagon.path, "config.yml"]).out
         for (a, b) in [("enabled: false", "enabled: true"), ("port: 25680", "port: \(web)"), ("public-url: \"\"", "public-url: \"https://play.example.test\"")] {
-            guard lk.contains(a) else { throw LeafError("Latchkey's shipped config no longer has \(a)") }
+            guard lk.contains(a) else { throw LeafError("WelcomeWagon's shipped config no longer has \(a)") }
             lk = lk.replacingOccurrences(of: a, with: b)
         }
-        try FileOps.ensureDir(root.appendingPathComponent("plugins/Latchkey"))
-        write(lk, root.appendingPathComponent("plugins/Latchkey/config.yml"))
-        c.profile.launch.extraJVMArgs = "-Dlatchkey.allowOfflineForTesting=true"
+        try FileOps.ensureDir(root.appendingPathComponent("plugins/WelcomeWagon"))
+        write(lk, root.appendingPathComponent("plugins/WelcomeWagon/config.yml"))
+        c.profile.launch.extraJVMArgs = "-Dwelcomewagon.allowOfflineForTesting=true"
         c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
         c.profile.backup.enabled = false
         c.profile.launch.restartOnCrash = false
@@ -1087,7 +1087,7 @@ private final class PageClient {
     var got: [URL] = []
     for (name, url, sha) in [
         ("Sheriff-0.4.1.jar", "https://github.com/ExtantApe/Sheriff/releases/download/v0.4.1/Sheriff-0.4.1.jar", "4d1ff17d7603e58550503975e2aef794645a5b3722468f51363bcc2e44c31b0d"),
-        ("Latchkey-0.3.0.jar", "https://github.com/ExtantApe/Latchkey/releases/download/v0.3.0/Latchkey-0.3.0.jar", "1dd0c76d88612c613afe84fab1658ddf2bf851d373b96df68d0771b4e9b67032"),
+        ("WelcomeWagon-0.3.0.jar", "https://github.com/ExtantApe/WelcomeWagon/releases/download/v0.3.0/WelcomeWagon-0.3.0.jar", "1dd0c76d88612c613afe84fab1658ddf2bf851d373b96df68d0771b4e9b67032"),
     ] {
         let to = jars.appendingPathComponent(name)
         _ = try await HTTP.download(URL(string: url)!, to: to, expect: ExpectedHashes(sha256: sha))
@@ -1095,7 +1095,7 @@ private final class PageClient {
     }
     let root = demo.appendingPathComponent("servers/invites-demo", isDirectory: true)
     try FileOps.ensureDir(root)
-    let c = try await buildInvitesServer(root: root, port: 25595, web: 25695, sheriff: got[0], latchkey: got[1])
+    let c = try await buildInvitesServer(root: root, port: 25595, web: 25695, sheriff: got[0], welcomewagon: got[1])
     c.profile.name = "Invites demo"
     Modules.shared.set(.pluginCommands, on: true)
     await c.start()

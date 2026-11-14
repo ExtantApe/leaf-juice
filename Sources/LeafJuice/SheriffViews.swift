@@ -138,7 +138,7 @@ struct SheriffProfileSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Profiles for \(entry.name)").font(.title2.weight(.semibold)).foregroundStyle(Juice.ink)
             SheriffApproval(server: server, uuid: entry.uuid, name: entry.name, profiles: profiles) { _ in changed() }
-            if server.hasLatchkey { Divider(); WebSignInSection(server: server, name: entry.name) }
+            if server.hasWelcomeWagon { Divider(); WebSignInSection(server: server, name: entry.name) }
             HStack {
                 Spacer()
                 Button("Close") { dismiss() }.buttonStyle(.juice).keyboardShortcut(.cancelAction)

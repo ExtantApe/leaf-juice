@@ -141,12 +141,12 @@ Each build keeps a lock file of every copy of every file, so an update can show 
 
 - **Serve it from LeafJuice.** Off until you start it. Each recipe gets its own address with a long random path, so different worlds can have different packs. LeafJuice only listens on this Mac, so something like Caddy has to carry it through your tunnel, on a different hostname from any sign-in page. **Only players joining** is on by default: a pack goes only to a request carrying the game's own `X-Minecraft-Username`, `X-Minecraft-UUID` and `X-Minecraft-Version` headers, for a player listed in the server's whitelist whom the server's log shows connecting in the last 5 minutes, or online now. Everyone else, a browser included, gets the same 404 as a wrong address. Headers can be faked, so this stops casual downloads and shared links, not someone who knows a whitelisted player's name and UUID and asks while that player is joining. The address's long random path still hides it too. It runs only while LeafJuice is open, uses your upload speed, and keeps no record of who downloads. Serving a combined pack gives players a copy of other people's work, so LeafJuice shows each pack's license first.
 - **Host it elsewhere,** such as mc-packs.net, and enter the address.
-- **Serve an exact file,** such as BlueMinimap's `/blueminimap pack export` (BlueMapHUD's `/bmhud pack export` before 0.2.0). Add an Exact Pack stores the zip unchanged under its own SHA-1, with nothing unzipped, rebuilt or added. Each version gets its own address, and there's also an address with `{sha1}` left in for a plugin that fills in the hash itself. Adding a new export gives it a new address, and old ones keep serving their own file. Two risks, both shown in the app: players can't get the pack while LeafJuice is closed, so a required pack stops them joining, and New Address breaks a plugin's `public-url` until you paste in the new one.
+- **Serve an exact file,** such as BlueMapMini's pack, `plugins/BlueMapMini/pack/bluemapmini-pack.zip`. Add an Exact Pack stores the zip unchanged under its own SHA-1, with nothing unzipped, rebuilt or added. Each version gets its own address, and there's also an address with `{sha1}` left in for a plugin that fills in the hash itself. Adding a new export gives it a new address, and old ones keep serving their own file. Two risks, both shown in the app: players can't get the pack while LeafJuice is closed, so a required pack stops them joining, and New Address breaks a plugin's `public-url` until you paste in the new one.
 - **Leave out a song.** A pack can list its songs in `songs.json` at its top: `{"format": 1, "songs": [{"id": "calm", "title": "Calm", "credit": "…", "files": [{"path": "assets/minecraft/sounds/music/game/calm1.ogg", "replaces": "music/game/calm1", "bytes": 123}]}]}`. Under Songs, untick one and that recipe's builds leave its files out, so Minecraft's own track plays. Each choice makes a new build, with its own SHA-1 and address. If the list has a problem, such as a file claimed twice or one the pack doesn't have, every song stays in and the build says why. Songs are credited in `CREDITS.txt`.
 
 **Check** downloads from the address as a game would and compares the SHA-1. It carries a one-time pass that only LeafJuice's own pack server issues, valid for one download within two minutes, so it works with only players joining on. Setting another host's address on a server runs this first, and you can still go ahead if it fails, say if you haven't uploaded yet.
 
-LeafJuice sets the address on your server through the usual Change Queue. A change staged for the next restart keeps the running server's file and hash together until that restart, then switches both. If Packmule (called ResourcePackButler before 0.2.0) or WorldResourcepacks is on the server, LeafJuice won't write its pack settings. You copy each build's own address and SHA-1 into that plugin's config instead. That address only ever gives that build, so the hash can't go stale. This has only been tested with stand-in jars of those names.
+LeafJuice sets the address on your server through the usual Change Queue. A change staged for the next restart keeps the running server's file and hash together until that restart, then switches both. If Packmule or WorldResourcepacks is on the server, LeafJuice won't write its pack settings. You copy each build's own address and SHA-1 into that plugin's config instead. That address only ever gives that build, so the hash can't go stale. This has only been tested with stand-in jars of those names.
 
 A real game client hasn't loaded a served pack yet. Bots have shown a real Paper 26.3 server offering the address and hash, and that a download from it matches. With only players joining on, a download sent with the game's headers for a whitelisted bot that just joined succeeded, without them or for an unlisted UUID it got 404, and the bot stayed on. That the 26.x game sends those headers is taken from how the game has worked since 1.20.3, and hasn't been seen yet. If it doesn't, every player would be refused the pack, and kept out if it's required. The 250 MB warning hasn't been checked against a real client either.
 
@@ -210,7 +210,7 @@ values:
 |---|---|
 | `playerAddress` | What players type in Minecraft. Shown on the card, with a Copy button. |
 | `mapURL` | The web map players open. Checked from outside like any web address; a sign-in prompt counts as answering. |
-| `signInURL` | The sign-in page that goes with an invite code. Shown beside the code, with Copy Both, so whoever hands it over can read out both. If it's empty, Latchkey's own address is shown and labelled as such, and with neither the screen says so and still shows the code. |
+| `signInURL` | The sign-in page that goes with an invite code. Shown beside the code, with Copy Both, so whoever hands it over can read out both. If it's empty, WelcomeWagon's own address is shown and labelled as such, and with neither the screen says so and still shows the code. |
 | `id` | Short name: lowercase letters, numbers and hyphens. Also names its Keychain item. |
 | `provider` | `playit` or `other`. An unknown one, such as an older `tailscale` entry, reads as `other`. |
 | `traffic` | `game` (status ping), `web` (HTTP), `dns` (lookup) or `access` (nothing checked end to end). |
@@ -232,7 +232,7 @@ access**. A session can:
 - read each server's status: running or not, software, how many players are online (never who), TPS, tick time,
   plugins and open issues;
 - read the recent log, with chat left out, and player names, UUIDs and network addresses replaced;
-- run the commands on your list, exactly as written. It starts with `latchkey reload`, `save-all` and `list`. You can
+- run the commands on your list, exactly as written. It starts with `welcomewagon reload`, `save-all` and `list`. You can
   add and remove commands in Settings. `stop` can't be added, so stopping stays in the app.
 
 Anything else is refused: commands off the list, extra words after a listed command, a second command after a line
@@ -278,20 +278,20 @@ Taking someone off the allowlist leaves their groups alone. Changing someone's g
 
 **Tested:** real Paper 1.21.11 and LuckPerms on throwaway servers, including a bot's first join on offline mode. **Not tested:** a real first join on online mode, or the screen being clicked through.
 
-### With Sheriff and Latchkey
+### With Sheriff and WelcomeWagon
 
 These need **Plugin commands**, which is off by default, and the server running in LeafJuice, because LeafJuice types the plugins' commands into its console and reads their answers.
 
 - **Sheriff:** when it's installed, approving someone goes through Sheriff's profiles, its questions show on the page and each needs a tick, and changes land in Sheriff's own log. LeafJuice then never changes groups or the whitelist around Sheriff. If it can't reach Sheriff, the page refuses rather than doing it another way. People the whitelist turned away are listed, with an Approve button.
-- **Invites (Latchkey):** an invite is a six-character code for one Minecraft name, lasting 1 to 30 days, with the Sheriff profiles you pick. The code is shown once and LeafJuice keeps no copy. It never goes through the console or the server log. Invites can be listed and revoked. With Latchkey 0.3, the card also shows whether Latchkey's lobby is on.
-- **Printed tickets:** with Latchkey 0.5, **Print Ticket…** makes a card with the server's name, where to go, the code
+- **Invites (WelcomeWagon):** an invite is a six-character code for one Minecraft name, lasting 1 to 30 days, with the Sheriff profiles you pick. The code is shown once and LeafJuice keeps no copy. It never goes through the console or the server log. Invites can be listed and revoked, and the card shows whether WelcomeWagon's lobby is on.
+- **Printed tickets:** **Print Ticket…** makes a card with the server's name, where to go, the code
   in groups of three, when it runs out, and a QR code that opens the page with the code filled in. The code sits after
   `#` in that link, so it never reaches a web server's logs. It prints black on white, saves as a PDF, or copies as
-  plain text, and VoiceOver reads it as a list of steps. LeafJuice keeps no copy. If Latchkey's ticket looks wrong,
+  plain text, and VoiceOver reads it as a list of steps. LeafJuice keeps no copy. If WelcomeWagon's ticket looks wrong,
   such as a link to another site or one that isn't https, there's no ticket and the code is shown as usual.
-- **Web sign-ins:** where Latchkey offers it (0.3 and later), each player's sheet shows how many browsers they're signed in on, with **Sign Out Everywhere**. Their allowlist place and profiles stay.
+- **Web sign-ins:** where WelcomeWagon offers it (0.3 and later), each player's sheet shows how many browsers they're signed in on, with **Sign Out Everywhere**. Their allowlist place and profiles stay.
 
-**Tested:** throwaway Paper 26.3 with the allowlist plugin's 0.4.0 and 0.4.1 releases, before it was renamed Sheriff (not yet with Sheriff 0.5.0), Latchkey 0.2.0 and an unreleased 0.3.0 build, LuckPerms and made-up offline accounts: an invite made here, redeemed on Latchkey's page, profiles applied by Sheriff, a bot signed in, signed out again. **Not tested:** a real server, a real game client, or the screens with a keyboard and VoiceOver.
+**Tested:** throwaway Paper 26.3 with the allowlist plugin's 0.4.0 and 0.4.1 releases, before it was renamed Sheriff (not yet with Sheriff 0.5.0), the sign-in plugin's 0.2.0 release and an unreleased 0.3.0 build, before it was renamed WelcomeWagon (not yet with WelcomeWagon itself), LuckPerms and made-up offline accounts: an invite made here, redeemed on WelcomeWagon's page, profiles applied by Sheriff, a bot signed in, signed out again. **Not tested:** a real server, a real game client, or the screens with a keyboard and VoiceOver.
 
 ## Plugin links
 
@@ -303,9 +303,9 @@ A link is filled in only when the plugin's source is already known: its jar matc
 
 Off by default. Turn it on and the same list is served as a web page that only people provisioned on your server can read. Each plugin is left off it until you tick it, and server and plugin versions each have a switch, because versions help anyone looking for a server with a known weakness.
 
-**Who gets in:** a player types `/signin` in game and clicks the one-time link they're sent, so there's no password. That takes the Latchkey plugin, the `latchkey.signin` permission (ops have it by default), a place on the allowlist, and `online-mode=true`. A server behind a proxy has `online-mode` off, so it isn't supported yet.
+**Who gets in:** a player types `/signin` in game and clicks the one-time link they're sent, so there's no password. That takes the WelcomeWagon plugin, the `welcomewagon.signin` permission (ops have it by default), a place on the allowlist, and `online-mode=true`. A server behind a proxy has `online-mode` off, so it isn't supported yet.
 
-- With Latchkey 0.2 or later, LeafJuice also accepts Latchkey's own browser sessions, reading Latchkey's session file on every request, so they last as long as Latchkey says and survive LeafJuice quitting. LeafJuice's older sign-in still works alongside it for now: a session lasts 12 hours and lives in memory, so quitting LeafJuice ends it. Losing the permission takes effect at the next sign-in. Leaving the allowlist or being banned ends access at once.
+- LeafJuice also accepts WelcomeWagon's own browser sessions, reading WelcomeWagon's session file on every request, so they last as long as WelcomeWagon says and survive LeafJuice quitting. LeafJuice's older sign-in still works alongside it for now: a session lasts 12 hours and lives in memory, so quitting LeafJuice ends it. Losing the permission takes effect at the next sign-in. Leaving the allowlist or being banned ends access at once.
 - Nothing has an age or account type of its own: children's accounts follow the same permission.
 - The app shows who's signed in, and can sign anyone out. It keeps the account, the time and what happened for 30 days, in `.leafjuice/sign-in-log.json`, with no addresses, browsers or pages visited.
 - The page only exists while LeafJuice is open.

@@ -118,9 +118,9 @@ struct LinksPage: View {
 
     private var playerPageCard: some View {
         Card(title: "Page for players", systemImage: "person.badge.key") {
-            Hint("Only people on the allowlist with the latchkey.signin permission can sign in and see it. Tick each plugin below to share it.")
+            Hint("Only people on the allowlist with the welcomewagon.signin permission can sign in and see it. Tick each plugin below to share it.")
             if let problem = server.linksPageError { Callout(tone: .danger, title: problem) }
-            if !server.hasLatchkey { Callout(tone: .warning, title: "The Latchkey plugin isn't installed", detail: "Without it nobody can sign in, because it's what proves who a player is.") }
+            if !server.hasWelcomeWagon { Callout(tone: .warning, title: "The WelcomeWagon plugin isn't installed", detail: "Without it nobody can sign in, because it's what proves who a player is.") }
             if !server.onlineModeIsOn { Callout(tone: .warning, title: "online-mode is off", detail: "A name proves nothing on this server, so sign-in refuses everyone.") }
             LabeledContent("Address players use") {
                 TextField("Address players use", text: $pageSettings.address, prompt: Text("https://links.example.com"))

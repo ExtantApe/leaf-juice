@@ -7,7 +7,7 @@ import ImageIO
 //   ... --real-packmule <Packmule.jar> --i-accept-the-minecraft-eula  Telling a real Packmule a new link.
 //   ... --real-session --i-accept-the-minecraft-eula  Session access against a real server, with a bot.
 //   ... --real-prejoin --i-accept-the-minecraft-eula
-//   ... --real-signin <Latchkey.jar> --i-accept-the-minecraft-eula
+//   ... --real-signin <WelcomeWagon.jar> --i-accept-the-minecraft-eula
 //   ... --sandbox --i-accept-the-minecraft-eula
 //                                      A lasting test server in .lab-sandbox/, seeded with bot players and several worlds.
 //                                      Each run tests a throwaway clone. Add --sandbox-wipe to start it afresh.
@@ -80,7 +80,7 @@ let realMC: String = {
     return CommandLine.arguments[flag + 1]
 }()
 
-// ... --demo-invites <folder> --i-accept-the-minecraft-eula  A throwaway server with Sheriff, Latchkey and made-up players.
+// ... --demo-invites <folder> --i-accept-the-minecraft-eula  A throwaway server with Sheriff, WelcomeWagon and made-up players.
 if let flag = CommandLine.arguments.firstIndex(of: "--demo-invites"), flag + 1 < CommandLine.arguments.count {
     guard CommandLine.arguments.contains("--i-accept-the-minecraft-eula") else {
         print("--demo-invites needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
@@ -2552,7 +2552,7 @@ if let flag = CommandLine.arguments.firstIndex(of: "--links-browser"), flag + 1 
     write("online-mode=true\n", paths.properties)
     write(#"[{"uuid":"\#(player)","name":"MadeUp"}]"#, root.appendingPathComponent("whitelist.json"))
     let token = LinksWeb.randomSecret()
-    write(#"{"uuid":"\#(player)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+    write(#"{"uuid":"\#(player)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, paths.plugins.appendingPathComponent("WelcomeWagon/pending/\(LinksWeb.hash(token)).json"))
     let web = LinksWeb(paths: paths, settings: { LinksPageSettings() }, content: {
         LinksPageContent(serverVersion: "Paper 1.21.11", plugins: [.init(name: "MadeUpWarps", version: "2.4.1", link: "https://docs.example.com/warps"), .init(name: "MadeUpChat", version: nil, link: nil)])
     })
@@ -2603,7 +2603,7 @@ if let flag = CommandLine.arguments.firstIndex(of: "--real-upgrade-plugins"), fl
 }
 if let flag = CommandLine.arguments.firstIndex(of: "--real-invites"), flag + 2 < CommandLine.arguments.count {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
-        await runRealInvites(sheriff: URL(fileURLWithPath: CommandLine.arguments[flag + 1]), latchkey: URL(fileURLWithPath: CommandLine.arguments[flag + 2]))
+        await runRealInvites(sheriff: URL(fileURLWithPath: CommandLine.arguments[flag + 1]), welcomewagon: URL(fileURLWithPath: CommandLine.arguments[flag + 2]))
     } else {
         print("Skipping --real-invites: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
     }
@@ -2687,7 +2687,7 @@ if CommandLine.arguments.contains("--real-paper") {
         try? await Task.sleep(for: .milliseconds(300))
         func signIn(_ uuid: String) -> String {
             let token = LinksWeb.randomSecret()
-            write(#"{"uuid":"\#(uuid)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, c.paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+            write(#"{"uuid":"\#(uuid)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, c.paths.plugins.appendingPathComponent("WelcomeWagon/pending/\(LinksWeb.hash(token)).json"))
             let response = c.linksWeb!.handle(.init(method: "POST", path: "/signin", headers: ["host": "localhost:\(pagePort)", "origin": "http://localhost:\(pagePort)"], body: Data("token=\(token)".utf8)))
             return response.headers["Set-Cookie"]?.split(separator: ";").first.map(String.init) ?? ""
         }
@@ -2776,7 +2776,7 @@ if CommandLine.arguments.contains("--real-paper") {
         await checkUntil(240, "\(name) up: \(c.state)") { c.state == .running }
         await c.refreshPlugins()
         for group in ["madeup-one", "madeup-two", "madeup-staff"] { c.send("lp creategroup \(group)"); try? await Task.sleep(for: .seconds(1)) }
-        c.send("lp group madeup-one permission set latchkey.signin true")
+        c.send("lp group madeup-one permission set welcomewagon.signin true")
         try? await Task.sleep(for: .seconds(2))
         await c.refreshGroups()
         return c
@@ -2994,7 +2994,7 @@ final class FakeBlueMap: @unchecked Sendable {
         try? await Task.sleep(for: .milliseconds(200))
         func signIn(_ uuid: String) -> String {
             let token = LinksWeb.randomSecret()
-            write(#"{"uuid":"\#(uuid)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+            write(#"{"uuid":"\#(uuid)","name":"MadeUp","expires":\#(Int(Date().timeIntervalSince1970) + 120)}"#, paths.plugins.appendingPathComponent("WelcomeWagon/pending/\(LinksWeb.hash(token)).json"))
             let response = web.handle(.init(method: "POST", path: "/signin", headers: ["host": "localhost:\(port)", "origin": "http://localhost:\(port)"], body: Data("token=\(token)".utf8)))
             return response.headers["Set-Cookie"]?.split(separator: ";").first.map(String.init) ?? ""
         }
@@ -3099,7 +3099,7 @@ final class FakeBlueMap: @unchecked Sendable {
             return web.handle(.init(method: "POST", path: path, headers: headers, body: Data(body.utf8)), now: now)
         }
         func issue(_ uuid: String, name: String = "MadeUp", expires: Date = Date().addingTimeInterval(120), token: String = LinksWeb.randomSecret()) -> String {
-            write(#"{"uuid":"\#(uuid)","name":"\#(name)","expires":\#(Int(expires.timeIntervalSince1970))}"#, paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json"))
+            write(#"{"uuid":"\#(uuid)","name":"\#(name)","expires":\#(Int(expires.timeIntervalSince1970))}"#, paths.plugins.appendingPathComponent("WelcomeWagon/pending/\(LinksWeb.hash(token)).json"))
             return token
         }
         func text(_ response: LinksWeb.Response) -> String { String(decoding: response.body, as: UTF8.self) }
@@ -3127,7 +3127,7 @@ final class FakeBlueMap: @unchecked Sendable {
 
         // Signing in.
         let token = issue(allowed)
-        let pending = paths.plugins.appendingPathComponent("Latchkey/pending/\(LinksWeb.hash(token)).json")
+        let pending = paths.plugins.appendingPathComponent("WelcomeWagon/pending/\(LinksWeb.hash(token)).json")
         equal(post("/signin", "token=\(token)", origin: "https://evil.example.test").status, 403, "another site can't use a link")
         equal(post("/signin", "token=\(token)", origin: nil).status, 403, "or a request with no origin")
         check(FileOps.exists(pending), "and that doesn't burn it")
@@ -3409,18 +3409,18 @@ func localAddresses() -> [String] {
         let build = try await SoftwareCatalog.latestBuild(.paper, mc: realMC)!
         try await c.installSoftware(build)
         try FileOps.ensureDir(c.paths.plugins)
-        try FileManager.default.copyItem(at: URL(fileURLWithPath: jar), to: c.paths.plugins.appendingPathComponent("Latchkey.jar"))
-        write("sign-in-page: \"https://links.example.test\"\n", c.paths.plugins.appendingPathComponent("Latchkey/config.yml"))
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: jar), to: c.paths.plugins.appendingPathComponent("WelcomeWagon.jar"))
+        write("sign-in-page: \"https://links.example.test\"\n", c.paths.plugins.appendingPathComponent("WelcomeWagon/config.yml"))
         c.profile.lastPluginCheck = Date(); c.profile.software.lastCheck = Date()
-        c.profile.launch.extraJVMArgs = "-Dlatchkey.allowOfflineForTesting=true"
+        c.profile.launch.extraJVMArgs = "-Dwelcomewagon.allowOfflineForTesting=true"
         await c.start()
         await checkUntil(240, "real server up: \(c.state)") { c.state == .running }
-        check(c.console.contains { $0.text.contains("Enabling Latchkey") }, "the plugin loaded")
+        check(c.console.contains { $0.text.contains("Enabling WelcomeWagon") }, "the plugin loaded")
         await c.refreshPlugins()
-        check(c.hasLatchkey, "the app sees it")
+        check(c.hasWelcomeWagon, "the app sees it")
 
         var saved = LinksPageSettings(); saved.address = "https://links.example.test"; saved.port = 25592
-        saved.shared = ["latchkey"]
+        saved.shared = ["welcomewagon"]
         c.linksPageSettings = saved
         try c.startLinksPage()
         c.linksWeb?.requireOnlineMode = false
@@ -3428,7 +3428,7 @@ func localAddresses() -> [String] {
 
         let java = c.resolvedJava()?.path ?? ""
         let table = try await ProtocolTable.load(mc: realMC, cache: folder("signin-protocol"), java: java)
-        // Latchkey 0.2+ turns sign-in off unless the whitelist is on, so the bot is allowlisted to join, and taken off
+        // The 0.2+ release turns sign-in off unless the whitelist is on, so the bot is allowlisted to join, and taken off
         // again below to check the refusal (enforce-whitelist=false keeps it connected).
         c.send("whitelist add MadeUpBot")
         try? await Task.sleep(for: .seconds(2))
@@ -3446,7 +3446,7 @@ func localAddresses() -> [String] {
         func answer(_ cookie: String?) async -> String {
             await rawRequest(port: 25592, "GET / HTTP/1.1\r\nHost: links.example.test\r\n\(cookie.map { "Cookie: \($0)\r\n" } ?? "")\r\n")
         }
-        let pending = c.paths.plugins.appendingPathComponent("Latchkey/pending")
+        let pending = c.paths.plugins.appendingPathComponent("WelcomeWagon/pending")
 
         bot.command("signin")
         try? await Task.sleep(for: .seconds(2))
@@ -3463,7 +3463,7 @@ func localAddresses() -> [String] {
         bot.command("signin")
         await checkUntil(10, "a link arrives in game") { link() != nil }
         guard let token = link() else {
-            for line in c.console where line.text.contains("Latchkey") || line.text.contains("MadeUpBot") || line.text.lowercased().contains("signin") { print("    console: \(line.text.prefix(200))") }
+            for line in c.console where line.text.contains("WelcomeWagon") || line.text.contains("MadeUpBot") || line.text.lowercased().contains("signin") { print("    console: \(line.text.prefix(200))") }
             for m in bot.privateMessages.suffix(8) { print("    bot got: \(m.prefix(200))") }
             throw LeafError("no link arrived")
         }
@@ -3481,7 +3481,7 @@ func localAddresses() -> [String] {
         let cookie = signIn.components(separatedBy: "\r\n").first { $0.hasPrefix("Set-Cookie: ") }?.dropFirst("Set-Cookie: ".count).split(separator: ";").first.map(String.init)
         let inside = await answer(cookie)
         check(inside.contains("Signed in as MadeUpBot"), "the page knows who it is")
-        check(inside.contains("Latchkey"), "and lists what's shared")
+        check(inside.contains("WelcomeWagon"), "and lists what's shared")
         equal(c.linksWeb?.signedIn.first?.name, "MadeUpBot", "the app shows them signed in")
         equal(c.linksWeb?.signedIn.first?.uuid, (try JSONSerialization.jsonObject(with: Data(contentsOf: c.paths.root.appendingPathComponent("whitelist.json"))) as? [[String: Any]])?.first?["uuid"] as? String, "by the same account the server knows")
 
@@ -5261,9 +5261,9 @@ func residentBytes() -> UInt64 {
     equal(PackHosting.servedSHA1(route, properties: pointing), twoHash, "the server's own hash decides when it points here")
     equal(PackHosting.servedSHA1(route, properties: "resource-pack=https\\://other/x.zip\nresource-pack-sha1=\(twoHash)\n"), oneHash, "not when it points elsewhere")
     equal(PackHosting.servedSHA1(route, properties: "resource-pack=https\\://p/tok/pack.zip\nresource-pack-sha1=../../secret\n"), oneHash, "a hash that isn't one is ignored")
-    var butlerRoute = route; butlerRoute.followsProperties = false
-    equal(PackHosting.servedSHA1(butlerRoute, properties: pointing), oneHash, "with Butler, server.properties decides nothing")
-    var unset = butlerRoute; unset.published = nil
+    var packmuleRoute = route; packmuleRoute.followsProperties = false
+    equal(PackHosting.servedSHA1(packmuleRoute, properties: pointing), oneHash, "with Packmule, server.properties decides nothing")
+    var unset = packmuleRoute; unset.published = nil
     equal(PackHosting.servedSHA1(unset, properties: pointing), nil, "nothing chosen means nothing served")
 
     do {
@@ -5326,7 +5326,7 @@ func residentBytes() -> UInt64 {
         let crossed = await PackHosting.check(url: oneURL, expected: otherBuild.sha1)
         check({ if case .differs = crossed.outcome { return true } else { return false } }(), "a wrong file is noticed: \(crossed.summary)")
         let hashText = await rawRequest(port: port, "GET /\(token)/pack.zip.sha1 HTTP/1.1\r\nHost: x\r\n\r\n")
-        check(hashText.hasSuffix("\(firstBuild.sha1)\n"), "the hash can be read for Butler's use")
+        check(hashText.hasSuffix("\(firstBuild.sha1)\n"), "the hash can be read for Packmule's use")
 
         // Everything else gets the same nothing.
         let wrongPath = await rawRequest(port: port, "GET /\(String(repeating: "0", count: 64))/pack.zip HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -5445,23 +5445,23 @@ func residentBytes() -> UInt64 {
         try c.setPackElsewhere("", recipe: "world-two")
         check(c.packAddress(recipe: "world-two")?.contains("127.0.0.1") == true, "and it can come back")
 
-        // Butler on the server: LeafJuice keeps its hands off.
+        // Packmule on the server: LeafJuice keeps its hands off.
         let before = try String(contentsOf: c.paths.properties, encoding: .utf8)
         try FileOps.ensureDir(c.paths.plugins)
-        makeJar(c.paths.plugins.appendingPathComponent("ResourcePackButler.jar"), yaml: "name: ResourcePackButler\nversion: 0.0.1\nmain: x.Y\napi-version: '1.21'\n")
+        makeJar(c.paths.plugins.appendingPathComponent("Packmule.jar"), yaml: "name: Packmule\nversion: 0.0.1\nmain: x.Y\napi-version: '26.1'\n")
         await c.refreshPlugins()
-        equal(c.perWorldPackPlugin, "Packmule", "Packmule under its old name, ResourcePackButler, is noticed")
-        var butlerRefused = ""
-        do { _ = try await c.usePack(url: oneURL, sha1: otherBuild.sha1, required: true, recipe: "world-one") } catch { butlerRefused = error.localizedDescription }
-        check(butlerRefused.contains("Packmule"), "with it, the pack settings can't be written: \(butlerRefused)")
+        equal(c.perWorldPackPlugin, "Packmule", "Packmule is noticed")
+        var standInRefused = ""
+        do { _ = try await c.usePack(url: oneURL, sha1: otherBuild.sha1, required: true, recipe: "world-one") } catch { standInRefused = error.localizedDescription }
+        check(standInRefused.contains("Packmule"), "with it, the pack settings can't be written: \(standInRefused)")
         equal(try String(contentsOf: c.paths.properties, encoding: .utf8), before, "and aren't")
         _ = try await ResourcePacks.combine(recipe("world-one", twoZip))
         try c.serveBuild(sha1: otherBuild.sha1, recipe: "world-one")
         try? await Task.sleep(for: .milliseconds(100))
-        equal(c.servedPackSHA1(recipe: "world-one"), otherBuild.sha1, "with Butler, the chosen build is served even though server.properties says otherwise")
-        let butlerServed = await PackHosting.check(url: oneURL, expected: otherBuild.sha1)
-        check(butlerServed.ok, "and that's what the address gives")
-        try FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("ResourcePackButler.jar"))
+        equal(c.servedPackSHA1(recipe: "world-one"), otherBuild.sha1, "with Packmule, the chosen build is served even though server.properties says otherwise")
+        let packmuleServed = await PackHosting.check(url: oneURL, expected: otherBuild.sha1)
+        check(packmuleServed.ok, "and that's what the address gives")
+        try FileManager.default.removeItem(at: c.paths.plugins.appendingPathComponent("Packmule.jar"))
         await c.refreshPlugins()
         try? await Task.sleep(for: .milliseconds(100))
         equal(c.servedPackSHA1(recipe: "world-one"), firstBuild.sha1, "without it, server.properties decides again")
