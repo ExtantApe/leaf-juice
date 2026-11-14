@@ -249,7 +249,8 @@ public final class PluginCommandRunner {
         self.send = send
     }
 
-    public func run(_ plugin: String, _ subcommand: [String], _ args: [CommandArg] = [], yes: [String] = []) async -> CommandReply {
+    /// `timeout` overrides the usual wait, for a command that does slow work before answering, such as a download.
+    public func run(_ plugin: String, _ subcommand: [String], _ args: [CommandArg] = [], yes: [String] = [], timeout override: Duration? = nil) async -> CommandReply {
         var id = PluginCommandWire.newID()
         while used.contains(id) { id = PluginCommandWire.newID() }
         guard isEnabled() else { return CommandReply(id: id, outcome: .refused("Plugin commands are switched off in LeafJuice's settings.")) }
@@ -259,7 +260,7 @@ public final class PluginCommandRunner {
         case .failure(let r): return CommandReply(id: id, outcome: .refused(r.message))
         }
         used.insert(id)
-        let timeout = self.timeout
+        let timeout = override ?? self.timeout
         let outcome = await withCheckedContinuation { (done: CheckedContinuation<CommandOutcome, Never>) in
             waiting[id] = done
             guard send(line) else {

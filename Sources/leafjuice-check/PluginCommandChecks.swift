@@ -371,6 +371,7 @@ private let head = "[12:00:00 INFO]: "
 
         await usherThroughFake(c, root: root)
         await latchkeyThroughFake(c, root: root)
+        await packmuleThroughFake(c, root: root)
 
         store.set(.pluginCommands, on: false)
         let typed = c.console.count
@@ -423,6 +424,24 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
           answer(id, "\"ok\":true,\"status\":\"ok\",\"code\":\"applied\",\"message\":\"" + p[2] + " is approved and can join now.\"");
         } else if (body.startsWith("attempts")) {
           answer(id, "\"ok\":true,\"attempts\":[{\"uuid\":\"" + uuid + "\",\"name\":\"MadeUpKid\",\"attempts\":3,\"first\":1,\"last\":2}],\"next\":20");
+        } else {
+          answer(id, "\"ok\":false,\"error\":{\"code\":\"unknown-command\",\"message\":\"\"}");
+        }
+      }
+      // Packmule 0.2.1's pack set, as the Plugins lead described it (2026-11-14). packmule-old is 0.2.0, with no pack set;
+      // packmule-check-fails answers check-failed, as when the download or its SHA-1 doesn't match.
+      static void packmule(String body, String id, String line) throws Exception {
+        Files.writeString(Path.of("packmule-commands.txt"), line + "\n", StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        boolean old = new File("packmule-old").exists();
+        if (body.equals("describe")) {
+          answer(id, "\"ok\":true,\"format\":1,\"plugin\":\"Packmule\",\"version\":\"" + (old ? "0.2.0" : "0.2.1") + "\",\"commands\":[{\"name\":\"recheck\"}" + (old ? "" : ",{\"name\":\"pack set\",\"args\":[{\"name\":\"pack\",\"type\":\"string\"},{\"name\":\"url\",\"type\":\"string\"}]}") + "]");
+        } else if (body.startsWith("pack set ") && !old) {
+          String[] p = body.split(" ");
+          if (p.length != 4 || !p[3].startsWith("https://") || !p[3].matches(".*/[0-9a-f]{40}\\.zip")) { answer(id, "\"ok\":false,\"error\":{\"code\":\"bad-argument\",\"message\":\"\"}"); return; }
+          if (!p[2].equals("main")) { answer(id, "\"ok\":false,\"error\":{\"code\":\"not-found\",\"message\":\"There's no pack called " + p[2] + ".\"}"); return; }
+          if (new File("packmule-check-fails").exists()) { answer(id, "\"ok\":false,\"error\":{\"code\":\"check-failed\",\"message\":\"The download's SHA-1 didn't match.\"}"); return; }
+          String sha1 = p[3].substring(p[3].lastIndexOf('/') + 1, p[3].length() - 4);
+          answer(id, "\"ok\":true,\"pack\":\"main\",\"sha1\":\"" + sha1 + "\",\"check\":\"passed\"");
         } else {
           answer(id, "\"ok\":false,\"error\":{\"code\":\"unknown-command\",\"message\":\"\"}");
         }
@@ -490,6 +509,7 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
           int at = line.lastIndexOf(" --json ");
           if (line.startsWith("usher ") && at >= 0) { usher(line.substring(6, at), line.substring(at + 8), line); continue; }
           if (line.startsWith("latchkey ") && at >= 0) { latchkey(line.substring(9, at), line.substring(at + 8), line); continue; }
+          if (line.startsWith("packmule ") && at >= 0) { packmule(line.substring(9, at), line.substring(at + 8), line); continue; }
           if (!line.startsWith("fakeplug ") || at < 0) { log("Unknown command"); continue; }
           String id = line.substring(at + 8);
           String body = line.substring(9, at);
@@ -1094,4 +1114,37 @@ private final class PageClient {
     // Listed in the demo home, so the app opens straight onto it.
     try JSONStore.save([root.path], to: AppPaths.registry)
     print("Demo ready in \(demo.path): one approved player, one waiting invite, made-up names only.")
+}
+
+/// Telling Packmule a new pack link (D189), through the stand-in Packmule 0.2.1.
+@MainActor private func packmuleThroughFake(_ c: ServerController, root: URL) async {
+    let sha1 = String(repeating: "ab", count: 20)
+    let token = String(repeating: "c", count: 64)
+    let url = "https://join.example.test/p/\(token)/\(sha1).zip"
+    func publishedState(name: String?) {
+        var s = PackPublishSettings()
+        s.builds["made-up-recipe"] = [PublishedBuild(token: token, sha1: sha1, url: url, publishedAt: Date(), onlineAtSwitch: [])]
+        if let name { s.packmuleNames = ["made-up-recipe": name] }
+        c.packPublishSettings = s
+    }
+    publishedState(name: nil)
+    if case .notTold(let why) = await c.tellPackmule(recipe: "Made-up Recipe") { check(why.contains("by hand"), "no Packmule pack name: it says to copy the link by hand") } else { check(false, "no name, not told") }
+    publishedState(name: "main")
+    let told = await c.tellPackmule(recipe: "Made-up Recipe")
+    equal(told, .done("Packmule checked the link and uses it now."), "Packmule 0.2.1 is told the link, and confirms this build's SHA-1")
+    check(c.packPublishSettings.builds["made-up-recipe"]?.first?.handedOff == true, "and the build is marked as in use, so the old one may go later")
+    let typed = (try? String(contentsOf: root.appendingPathComponent("packmule-commands.txt"), encoding: .utf8)) ?? ""
+    check(typed.contains("packmule pack set main \(url) --json "), "the command typed is exactly pack set, the pack and the link")
+    publishedState(name: "main")
+    write("", root.appendingPathComponent("packmule-check-fails"))
+    if case .notTold(let why) = await c.tellPackmule(recipe: "Made-up Recipe") { check(why.contains("kept the old one"), "a failed download check is said plainly: \(why)") } else { check(false, "a failed check isn't done") }
+    check(c.packPublishSettings.builds["made-up-recipe"]?.first?.handedOff != true, "and the build isn't marked in use, so the old one stays")
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("packmule-check-fails"))
+    publishedState(name: "other")
+    if case .notTold = await c.tellPackmule(recipe: "Made-up Recipe") { check(true, "") } else { check(false, "a pack Packmule doesn't have isn't done") }
+    write("", root.appendingPathComponent("packmule-old"))
+    publishedState(name: "main")
+    if case .notTold(let why) = await c.tellPackmule(recipe: "Made-up Recipe") { check(why.contains("0.2.1"), "Packmule 0.2.0 can't be told, and the message says which version can") } else { check(false, "old Packmule not told") }
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("packmule-old"))
+    c.packPublishSettings = PackPublishSettings()
 }

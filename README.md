@@ -160,8 +160,11 @@ at least 10 minutes have passed, then LeafJuice removes it. It only ever removes
 that build, so anything else in the served folder is left alone. Its record of what it published stays in the
 server's `.leafjuice` folder, never in the served folder.
 
-Packmule can't be told the new link yet: put it in Packmule's `config.yml` and run `/packmule reload`. When Packmule
-offers a command for it, LeafJuice will send it.
+With **Packmule 0.2.1** or later and **Plugin commands** on, LeafJuice tells Packmule each new link itself, by typing
+`packmule pack set <pack> <link>` into the console of a server it runs. Set the pack's name from Packmule's
+`config.yml` beside each recipe. Packmule downloads the file and checks its SHA-1 before it switches; if that fails, it
+keeps the old link and LeafJuice says why. Without that, copy the link into Packmule's config, run `/packmule reload`
+and press **Updated by Hand**. Either way, the old build is kept until Packmule uses the new link.
 
 ## Connections: tunnels and services
 

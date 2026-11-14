@@ -10,6 +10,7 @@ struct PackPublishCard: View {
     @State private var settings = PackPublishSettings()
     @State private var problem: String?
     @State private var copied: String?
+    @State private var telling: String?
 
     var body: some View {
         Card(title: "Publish to your web server", systemImage: "arrow.up.doc") {
@@ -27,7 +28,7 @@ struct PackPublishCard: View {
             if let why = PackPublish.problem(settings) { Hint(why) }
             ForEach(recipeNames.filter { !ResourcePacks.history($0).isEmpty }, id: \.self) { name in recipeRow(name) }
             if let problem { Callout(tone: .danger, title: "Not published", detail: problem) }
-            Hint("Packmule can't be told the new link yet: put it in Packmule's config.yml and run /packmule reload. When Packmule offers a command for it, LeafJuice will send it for you.")
+            Hint("With Packmule 0.2.1 or later and Plugin commands on, LeafJuice tells Packmule each new link itself, and Packmule downloads and checks it before switching. Otherwise copy the link into Packmule's config.yml, run /packmule reload, and press Updated by Hand. The old build is kept until Packmule uses the new one.")
         }
         .onAppear { settings = server.packPublishSettings }
     }
@@ -38,6 +39,14 @@ struct PackPublishCard: View {
         let newest = ResourcePacks.history(name).first
         VStack(alignment: .leading, spacing: 4) {
             Text(name).font(.body.weight(.semibold)).foregroundStyle(Juice.ink)
+            LabeledContent("Pack name in Packmule") {
+                TextField("main", text: Binding(get: { settings.packmuleNames?[key] ?? "" }, set: { value in
+                    var names = settings.packmuleNames ?? [:]
+                    names[key] = value.trimmingCharacters(in: .whitespaces)
+                    settings.packmuleNames = names
+                }))
+                .textFieldStyle(.roundedBorder).onSubmit(save).accessibilityLabel("Packmule pack name for \(name)")
+            }
             if let current = builds.first {
                 HStack {
                     Text(current.url).font(.callout.monospaced()).foregroundStyle(Juice.ink).lineLimit(1).truncationMode(.middle).textSelection(.enabled)
@@ -47,6 +56,17 @@ struct PackPublishCard: View {
                     .buttonStyle(.juice).accessibilityLabel("Copy the link for \(name)")
                 }
                 Hint("Published \(current.publishedAt.formatted(.relative(presentation: .named))). SHA-1 \(current.sha1).")
+                if current.handedOff == true {
+                    Label(current.handOffNote ?? "Packmule uses this link.", systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(Juice.ink)
+                } else {
+                    if let note = current.handOffNote { Callout(tone: .warning, title: "Packmule doesn't use this link yet", detail: note) }
+                    HStack {
+                        Button(telling == key ? "Telling Packmule…" : "Send to Packmule") { send(name) }.buttonStyle(.juice).disabled(telling != nil)
+                            .accessibilityLabel("Send the new link for \(name) to Packmule")
+                        Button("Updated by Hand") { server.markHandedOff(recipe: name); settings = server.packPublishSettings }.buttonStyle(.juice)
+                            .accessibilityLabel("Mark Packmule as updated by hand for \(name)")
+                    }
+                }
                 if builds.count > 1 { Hint("\(builds.count - 1) older build\(builds.count == 2 ? " is" : "s are") still there, and go once everyone online at the switch has left (at least \(PackPublish.graceMinutes) minutes).") }
             } else {
                 Hint("Not published yet.")
@@ -60,7 +80,21 @@ struct PackPublishCard: View {
         .padding(.vertical, 4)
     }
 
-    private func save() { var s = server.packPublishSettings; s.folder = settings.folder; s.baseURL = settings.baseURL; server.packPublishSettings = s; settings = s }
+    private func save() {
+        var s = server.packPublishSettings
+        s.folder = settings.folder; s.baseURL = settings.baseURL; s.packmuleNames = settings.packmuleNames
+        server.packPublishSettings = s; settings = s
+    }
+
+    private func send(_ name: String) {
+        save()
+        telling = ResourcePacks.slug(name)
+        Task {
+            await server.tellPackmule(recipe: name)
+            telling = nil
+            settings = server.packPublishSettings
+        }
+    }
 
     private func chooseFolder() {
         let panel = NSOpenPanel()
@@ -74,7 +108,8 @@ struct PackPublishCard: View {
 
     private func publish(_ name: String, _ sha1: String) {
         save()
-        do { try server.publishPack(recipe: name, sha1: sha1); problem = nil } catch { problem = error.localizedDescription }
+        do { try server.publishPack(recipe: name, sha1: sha1); problem = nil } catch { problem = error.localizedDescription; return }
         settings = server.packPublishSettings
+        if settings.packmuleNames?[ResourcePacks.slug(name)]?.isEmpty == false { send(name) }
     }
 }

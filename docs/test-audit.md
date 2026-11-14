@@ -11,7 +11,17 @@ Each audit lists what LeafJuice promises, which checks prove each promise, and t
 - **Cleanup:** not within ten minutes, not while someone online at the switch is on, then the old one goes; the current
   build never does. A record that isn't a random path removes nothing, and a folder holding anything else is left alone.
 - **Through a made-up server:** publishing the same build twice is refused; old waits, then goes after the grace time.
-- **Not covered:** a real Caddy serving the folder, and a real client loading the published link.
+- **Telling Packmule:** through a stand-in Packmule 0.2.1. With no pack name it says to copy by hand. A confirmed
+  answer marks the build in use, and the exact command is typed. A failed download check, an unknown pack, and
+  Packmule 0.2.0 are each refused in plain words, and the build isn't marked. Six unsafe links are never sent (http, no
+  SHA-1 name, a space, a `;`, a line break, a user name).
+- **Cleanup waits for Packmule:** an old build stays while the current one isn't confirmed in use, however long.
+- **The real Packmule 0.2.1** (`--real-packmule`, the release jar) on throwaway Paper 26.3: LeafJuice's `pack set`
+  reached the console, Packmule tried the link, refused it with `check-failed` because nothing serves it here, and kept
+  the old link in its config. LeafJuice reported that in plain words and left the build unconfirmed. That proves the two
+  speak the same format; a successful switch needs the real https join host.
+- **Not covered:** a real Caddy serving the folder, a real client loading the published link, and Packmule's
+  successful switch, which needs the real https join host.
 
 ## 2026-11-14: printed invite tickets
 

@@ -313,11 +313,13 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     let real = SystemConnectionProbe()
     if let game = try? fakeListener(reply: Data(answer)), let web = try? fakeListener(reply: Data("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".utf8)) {
         let gp = Int(game.port!.rawValue), wp = Int(web.port!.rawValue)
-        let v19 = await real.minecraftStatus(host: "127.0.0.1", port: gp, timeout: 3)
+        // Generous waits for the answers that should arrive: a busy run once took longer than 3 seconds (2026-11-14).
+        // They return as soon as the answer comes, so a passing run isn't slower.
+        let v19 = await real.minecraftStatus(host: "127.0.0.1", port: gp, timeout: 15)
         check(v19, "a server that answers the ping is seen")
         let v20 = await real.minecraftStatus(host: "127.0.0.1", port: wp, timeout: 3)
         check(!v20, "something that accepts but isn't Minecraft isn't mistaken for it")
-        let v21 = await real.tcp(host: "127.0.0.1", port: wp, timeout: 3)
+        let v21 = await real.tcp(host: "127.0.0.1", port: wp, timeout: 15)
         check(v21, "a plain connection is seen")
         game.cancel(); web.cancel()
         try? await Task.sleep(nanoseconds: 200_000_000)

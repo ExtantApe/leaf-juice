@@ -13,6 +13,11 @@ public struct PublishedBuild: Codable, Equatable, Sendable {
     public var publishedAt: Date
     /// Who was online when this build replaced the last one. The old build goes once they've all left.
     public var onlineAtSwitch: [String]
+    /// Whether Packmule is known to use this link: it said so, or the owner marked it done by hand. Until it is, the
+    /// build before stays, because players may still be sent there.
+    public var handedOff: Bool?
+    /// What happened when LeafJuice last told Packmule, in words.
+    public var handOffNote: String?
 }
 
 public struct PackPublishSettings: Codable, Equatable, Sendable {
@@ -22,6 +27,8 @@ public struct PackPublishSettings: Codable, Equatable, Sendable {
     public var baseURL = ""
     /// Per recipe: the build players get now, then any still waiting to be removed, newest first.
     public var builds: [String: [PublishedBuild]] = [:]
+    /// Per recipe: the name of the pack in Packmule's config.yml that this recipe feeds, such as "main".
+    public var packmuleNames: [String: String]?
     public init() {}
 }
 
@@ -79,10 +86,18 @@ public enum PackPublish {
     /// switch gone. The current build never goes.
     public static func removable(_ builds: [PublishedBuild], online: Set<String>, now: Date = Date()) -> [PublishedBuild] {
         guard let current = builds.first else { return [] }
+        // Never while Packmule might still be sending players to an older link (2026-11-14).
+        guard current.handedOff == true else { return [] }
         let waited = now.timeIntervalSince(current.publishedAt) >= Double(graceMinutes) * 60
         let stillOn = !Set(current.onlineAtSwitch).isDisjoint(with: online)
         guard waited, !stillOn else { return [] }
         return Array(builds.dropFirst())
+    }
+
+    /// Only an https link to a published build, in characters that can't do anything else in a console line.
+    public static func isSendable(_ url: String) -> Bool {
+        url.count <= 400 && url.hasPrefix("https://")
+            && url.range(of: #"^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~%/-]*[0-9a-f]{40}\.zip$"#, options: .regularExpression) != nil
     }
 
     /// Removes one old build's folder, only if it's exactly what LeafJuice put there: a 64-character random folder
@@ -120,6 +135,69 @@ extension ServerController {
         appendWrapper("Published \(name) build \(sha1.prefix(8)) at a new address.", level: .info)
         recordEvent(.config, "Pack published", detail: "\(name), \(sha1.prefix(8))")
         return made
+    }
+
+    public enum HandOff: Equatable, Sendable {
+        case done(String)
+        case notTold(String)
+    }
+
+    /// Tells Packmule the current build's link with `packmule pack set`, when Packmule offers it. Only a confirmed
+    /// answer for the same SHA-1 counts; anything else leaves the build waiting, and says why.
+    @discardableResult
+    public func tellPackmule(recipe name: String) async -> HandOff {
+        var s = packPublishSettings
+        let key = ResourcePacks.slug(name)
+        guard let current = s.builds[key]?.first else { return .notTold("Nothing is published for \(name) yet.") }
+        func finish(_ result: HandOff) -> HandOff {
+            var latest = packPublishSettings
+            if var list = latest.builds[key], let i = list.firstIndex(where: { $0.token == current.token }) {
+                switch result {
+                case let .done(note): list[i].handedOff = true; list[i].handOffNote = note
+                case let .notTold(note): list[i].handOffNote = note
+                }
+                latest.builds[key] = list
+                packPublishSettings = latest
+            }
+            return result
+        }
+        guard let pack = s.packmuleNames?[key], !pack.isEmpty else { return finish(.notTold("No Packmule pack name is set for \(name), so the link has to be copied into Packmule by hand.")) }
+        guard PackPublish.isSendable(current.url) else { return finish(.notTold("That link can't be sent to Packmule.")) }
+        guard Modules.shared.isOn(.pluginCommands) else { return finish(.notTold("Plugin commands are off, so LeafJuice can't tell Packmule. Turn them on, or copy the link by hand.")) }
+        guard state == .running, process != nil else { return finish(.notTold("The server isn't running in LeafJuice, so Packmule couldn't be told. It's told when you press Send to Packmule with the server running.")) }
+        switch await commands.describe("packmule") {
+        case .described(let d) where d.commands.contains(where: { $0.name == "pack set" }): break
+        case .described(let d): return finish(.notTold("This Packmule (\(d.version)) can't be told a new link. Packmule 0.2.1 or later can."))
+        case .newerFormat(let n): return finish(.notTold("Packmule speaks command format \(n), newer than this LeafJuice knows."))
+        case .unreadable: return finish(.notTold("Packmule's list of commands couldn't be read."))
+        case .outcome(let o): return finish(.notTold("Packmule didn't answer: \(Self.plain(o, doing: "Asking Packmule what it offers"))"))
+        }
+        // Packmule downloads and checks the file before it answers, so this waits longer than usual.
+        let reply = await commands.run("packmule", ["pack", "set"], [.word(pack), .word(current.url)], timeout: .seconds(180))
+        switch reply.outcome {
+        case .done(let answer):
+            struct Wire: Decodable { let pack: String?; let sha1: String?; let check: String? }
+            guard let w = try? answer.decode(Wire.self), w.sha1?.lowercased() == current.sha1.lowercased(), w.check == "passed" else {
+                return finish(.notTold("Packmule answered, but not with this build's SHA-1 and a passed check, so the old build is kept."))
+            }
+            appendWrapper("Packmule now sends \(name) build \(current.sha1.prefix(8)).", level: .info)
+            return finish(.done("Packmule checked the link and uses it now."))
+        case .failed(let e) where e.code == "check-failed":
+            return finish(.notTold("Packmule couldn't download the new link, or its SHA-1 didn't match, so it kept the old one. Check the web server serves the folder. \(e.message)"))
+        case let other:
+            return finish(.notTold(Self.plain(other, doing: "Telling Packmule the new link")))
+        }
+    }
+
+    /// For a Packmule updated by hand: marks the current build as the one players are sent.
+    public func markHandedOff(recipe name: String) {
+        var s = packPublishSettings
+        let key = ResourcePacks.slug(name)
+        guard var list = s.builds[key], !list.isEmpty else { return }
+        list[0].handedOff = true
+        list[0].handOffNote = "Marked as updated in Packmule by hand."
+        s.builds[key] = list
+        packPublishSettings = s
     }
 
     /// Run from the tick: removes old builds once nobody who could still need them is online.

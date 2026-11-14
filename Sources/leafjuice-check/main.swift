@@ -4,6 +4,7 @@ import ImageIO
 //   swift run leafjuice-check          Offline suite, plus the full server lifecycle against a small
 //                                      stand-in jar (compiled here if a JDK is available). No Minecraft.
 //   ... --live                         Also calls the real Paper, Modrinth, Hangar, Spiget, GitHub APIs.
+//   ... --real-packmule <Packmule.jar> --i-accept-the-minecraft-eula  Telling a real Packmule a new link.
 //   ... --real-session --i-accept-the-minecraft-eula  Session access against a real server, with a bot.
 //   ... --real-prejoin --i-accept-the-minecraft-eula
 //   ... --real-signin <Latchkey.jar> --i-accept-the-minecraft-eula
@@ -2516,6 +2517,13 @@ if CommandLine.arguments.contains("--sandbox") {
 try runAdvisorChecks()
 await runLifecycleWithStandIn()
 if CommandLine.arguments.contains("--live") { await runLiveAPIs() }
+if let flag = CommandLine.arguments.firstIndex(of: "--real-packmule"), flag + 1 < CommandLine.arguments.count {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealPackmule(jar: CommandLine.arguments[flag + 1])
+    } else {
+        print("Skipping --real-packmule: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
 if CommandLine.arguments.contains("--trial-backups") {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         await runBackupTrial()
