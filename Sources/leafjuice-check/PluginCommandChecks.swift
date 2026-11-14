@@ -454,7 +454,9 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
           Files.writeString(tmp, "{\"id\":\"" + id + "\",\"kind\":\"invite-code\",\"value\":\"QW3RTY\",\"expires\":4000000000}");
           Files.move(tmp, dir.resolve(id + ".json"), StandardCopyOption.ATOMIC_MOVE);
           String fields = invites.get(invites.size() - 1);
-          answer(id, "\"ok\":true,\"secretFile\":\"once/" + id + ".json\"," + fields.substring(1, fields.length() - 1));
+          // 0.5.0 adds a ticket while invites can be used on the page (D187). latchkey-v5-odd sends a link that adds a query.
+          String ticket = !new File("latchkey-v5").exists() ? "" : ",\"ticket\":{\"server\":\"Made-up Realm\",\"join\":\"https://join.example.test/\",\"link\":\"https://join.example.test/" + (new File("latchkey-v5-odd").exists() ? "?x=1" : "") + "#{code}\",\"expires\":4000000000}";
+          answer(id, "\"ok\":true,\"secretFile\":\"once/" + id + ".json\"," + fields.substring(1, fields.length() - 1) + ticket);
         } else if (body.startsWith("invite list")) {
           if (!new File("latchkey-v3").exists()) { answer(id, "\"ok\":true,\"invites\":[" + String.join(",", invites) + "],\"next\":null"); return; }
           // 0.3.0: the spec's paging, items and a string cursor. latchkey-bad-cursor hands out one LeafJuice must not type.
@@ -747,6 +749,7 @@ extension Result {
     check(lobby.invite.profiles.isEmpty && lobby.invite.isOpen(), "lobby only, and waiting")
     check(!c.console.dropFirst(consoleBefore).contains { $0.text.contains("QW3RTY") }, "the code never reaches the console")
     check(((try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("plugins/Latchkey/once").path)) ?? []).isEmpty, "and its file is gone")
+    check(lobby.ticket == nil, "before Latchkey 0.5 there's no ticket to print")
 
     if case .questions(let qs) = await c.createInvite(name: "MadeUpKid", profiles: ["young", "grown"], days: 7) {
         equal(qs.map(\.id), ["bridge"], "an invite with a risky mix asks first")
@@ -805,6 +808,18 @@ extension Result {
         check(odd.invites.count == 2 && odd.more, "a cursor that looks like a flag ends the list instead of being typed")
     } else { check(false, "odd cursor list read") }
     check(!((try? String(contentsOf: logFile, encoding: .utf8)) ?? "").contains("--yes"), "and it never reaches the console")
+    // Latchkey 0.5 tickets (D187), last, since each adds an invite to the stand-in's list.
+    write("", root.appendingPathComponent("latchkey-v5"))
+    if case .made(let printable) = await c.createInvite(name: "MadeUpKid", profiles: [], days: 14) {
+        equal(printable.ticket?.link, "https://join.example.test/#QW3RTY", "Latchkey 0.5's ticket gets the code from the once-file, after #")
+        equal(printable.ticket?.server, "Made-up Realm", "with the server's name")
+    } else { check(false, "an invite with a ticket is made") }
+    write("", root.appendingPathComponent("latchkey-v5-odd"))
+    if case .made(let odd) = await c.createInvite(name: "MadeUpKid", profiles: [], days: 14) {
+        check(odd.ticket == nil && odd.code == "QW3RTY", "a ticket whose link adds anything is dropped, and the code still shown")
+    } else { check(false, "an invite with an odd ticket is still made") }
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-v5"))
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("latchkey-v5-odd"))
 }
 
 /// Latchkey's session files, read the agreed way, and the links page signing someone in by them.

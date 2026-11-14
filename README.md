@@ -265,6 +265,11 @@ These need **Plugin commands**, which is off by default, and the server running 
 
 - **Usher:** when it's installed, approving someone goes through Usher's profiles, its questions show on the page and each needs a tick, and changes land in Usher's own log. LeafJuice then never changes groups or the whitelist around Usher. If it can't reach Usher, the page refuses rather than doing it another way. People the whitelist turned away are listed, with an Approve button.
 - **Invites (Latchkey):** an invite is a six-character code for one Minecraft name, lasting 1 to 30 days, with the Usher profiles you pick. The code is shown once and LeafJuice keeps no copy. It never goes through the console or the server log. Invites can be listed and revoked. With Latchkey 0.3, the card also shows whether Latchkey's lobby is on.
+- **Printed tickets:** with Latchkey 0.5, **Print Ticket…** makes a card with the server's name, where to go, the code
+  in groups of three, when it runs out, and a QR code that opens the page with the code filled in. The code sits after
+  `#` in that link, so it never reaches a web server's logs. It prints black on white, saves as a PDF, or copies as
+  plain text, and VoiceOver reads it as a list of steps. LeafJuice keeps no copy. If Latchkey's ticket looks wrong,
+  such as a link to another site or one that isn't https, there's no ticket and the code is shown as usual.
 - **Web sign-ins:** where Latchkey offers it (0.3 and later), each player's sheet shows how many browsers they're signed in on, with **Sign Out Everywhere**. Their allowlist place and profiles stay.
 
 **Tested:** throwaway Paper 26.3 with Usher 0.4.0 and 0.4.1, Latchkey 0.2.0 and an unreleased 0.3.0 build, LuckPerms and made-up offline accounts: an invite made here, redeemed on Latchkey's page, profiles applied by Usher, a bot signed in, signed out again. **Not tested:** a real server, a real game client, or the screens with a keyboard and VoiceOver.

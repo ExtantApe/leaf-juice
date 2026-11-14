@@ -141,6 +141,7 @@ if CommandLine.arguments.contains("--connections") {
     sidebarChecks()
     await sessionAccessChecks()
     await smartBackupChecks()
+    inviteTicketChecks()
     // --live: also asks this Mac's own playit agent, read-only, and prints only health and summaries.
     if CommandLine.arguments.contains("--live") {
         section("Connections: this Mac's real agents (read-only)")
@@ -4727,6 +4728,7 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     sidebarChecks()
     await sessionAccessChecks()
     await smartBackupChecks()
+    inviteTicketChecks()
     await packSongChecks()
     await pluginUpgradeChecks()
     await serverIconChecks()

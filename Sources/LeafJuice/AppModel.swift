@@ -336,6 +336,11 @@ struct LeafJuiceApp: App {
     @AppStorage("appearance") private var appearance = "auto"
 
     init() {
+        // LEAFJUICE_SAMPLE_TICKET=<file.png>: draws a ticket with made-up data and quits, to look at the layout.
+        if let out = ProcessInfo.processInfo.environment["LEAFJUICE_SAMPLE_TICKET"] {
+            MainActor.assumeIsolated { InviteTicketSheet.writeSample(to: URL(fileURLWithPath: out)) }
+            exit(0)
+        }
         let model = AppModel()
         AppDelegate.model = model
         _model = State(initialValue: model)

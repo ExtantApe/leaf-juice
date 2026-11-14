@@ -15,6 +15,7 @@ struct InvitesCard: View {
     @State private var answered = Set<String>()
     @State private var made: NewInvite?
     @State private var copied = false
+    @State private var printing: InviteTicket?
     @State private var problem: String?
     @State private var working = false
     @State private var invites: [LatchkeyInvite] = []
@@ -52,6 +53,7 @@ struct InvitesCard: View {
             }
         }
         .task(id: "\(server.state)-\(modules.isOn(.pluginCommands))") { await refresh() }
+        .sheet(item: $printing) { InviteTicketSheet(ticket: $0) }
         .confirmationDialog("Revoke the invite for \(revoking?.name ?? "")?", isPresented: Binding(get: { revoking != nil }, set: { if !$0 { revoking = nil } })) {
             Button("Revoke", role: .destructive) { revoke() }
         } message: {
@@ -138,6 +140,12 @@ struct InvitesCard: View {
             }
         }
         if let note = address.note { Hint(note) }
+        if let ticket = new.ticket {
+            Button("Print Ticket…") { printing = ticket }.buttonStyle(.juice)
+                .help("A printable card with the code, where to go and a QR code that fills the code in.")
+        } else {
+            Hint("Printed tickets need Latchkey 0.5 or later, with invites on and its page taking codes.")
+        }
         Button("Done") { made = nil; copied = false; name = ""; chosen = [] }
             .buttonStyle(.juicePrimary).keyboardShortcut(.defaultAction)
         Hint("After Done, the code can't be shown again. LeafJuice keeps no copy.")

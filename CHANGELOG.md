@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Printed invite tickets** (Latchkey 0.5): the server's name, where to go, the code, the expiry and a QR code that
+  fills the code in, as a print, a PDF or plain text. Tested with a stand-in for Latchkey and macOS's own QR reader;
+  not yet printed on paper or scanned with a phone.
 - **Smart backups:** back up after people play, with a minimum gap; keep everything recent, then one a day, then one
   a week; use your storage in order, falling back when a drive isn't there, and show where each backup is. New
   servers start this way; existing ones keep their schedule until you switch.

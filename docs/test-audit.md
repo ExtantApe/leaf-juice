@@ -2,6 +2,19 @@
 
 Each audit lists what LeafJuice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-14: printed invite tickets
+
+- **Latchkey's ticket:** the code goes after `#`; a join address under a path is used exactly. Ten bad shapes are
+  refused: plain http, a user name, a query, another site, a link that adds a query, the code twice, no code, no join,
+  no expiry, not an address. Five codes that aren't plain letters and digits are refused. Control characters are taken
+  out of the name.
+- **Through the stand-in Latchkey:** no ticket before 0.5; 0.5's ticket gets the code from the once-file; an odd link
+  drops the ticket and still shows the code.
+- **The QR code** reads back as the link with macOS's own QR reader. The text version has every step and spells the code
+  out.
+- **Not covered:** printing on paper, scanning with a phone, and the sheet with VoiceOver. The layout was checked from a
+  rendered sample (`LEAFJUICE_SAMPLE_TICKET`).
+
 ## 2026-11-14: disk safety and smart backups
 
 Covered:

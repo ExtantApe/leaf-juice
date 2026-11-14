@@ -55,6 +55,11 @@ public struct NewInvite: Sendable, Equatable {
     public let code: String
     /// Latchkey's own warning, such as profiles nobody checked.
     public let warning: String?
+    /// A printable ticket, from Latchkey 0.5 on, when invites can be used on the page (D187).
+    public let ticket: InviteTicket?
+    public init(invite: LatchkeyInvite, code: String, warning: String?, ticket: InviteTicket? = nil) {
+        self.invite = invite; self.code = code; self.warning = warning; self.ticket = ticket
+    }
 }
 
 public struct InviteList: Sendable, Equatable {
@@ -111,11 +116,12 @@ extension ServerController {
         switch reply.outcome {
         case .done(let answer):
             guard let file = answer.secretFile else { return .failed("Latchkey made the invite but didn't say where its code is. Revoke it and make another.") }
-            struct Wire: Decodable { let warning: String? }
+            struct Wire: Decodable { let warning: String?; let ticket: InviteTicket.Wire? }
             guard let invite = try? answer.decode(LatchkeyInvite.self) else { return .failed("Latchkey's answer couldn't be read. Check the invite list, and revoke anything you don't recognise.") }
             switch OnceSecrets.take(serverRoot: paths.root, plugin: "Latchkey", requestID: reply.id, secretFile: file) {
             case .success(let secret):
-                return .made(NewInvite(invite: invite, code: secret.value, warning: (try? answer.decode(Wire.self))?.warning))
+                let wire = try? answer.decode(Wire.self)
+                return .made(NewInvite(invite: invite, code: secret.value, warning: wire?.warning, ticket: InviteTicket.make(wire?.ticket, code: secret.value)))
             case .failure(let problem):
                 return .failed(problem.message + " The invite was made without a code you can see, so revoke it and make another.")
             }
