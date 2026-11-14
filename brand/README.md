@@ -7,16 +7,31 @@ work, with one bright note of pink grapefruit, like the slice on the rim of the 
 
 ## Icon
 
-`icon-source.png` is the original artwork: a glass of green juice with a leaf. `scripts/make-icon.swift` builds everything
-else from it, so change the source or the script and rerun it rather than editing the outputs.
+A 16 × 16 pixel-art glass of green juice with a leaf, and a grapefruit wedge on the rim as the one pop of colour.
+Adopted by the owner on 2026-11-14. The only drawn file is [`kit/mark.txt`](kit/mark.txt), a grid with its palette.
+Everything else is built from it, so change that and rebuild rather than editing the outputs:
 
 ```bash
-swift scripts/make-icon.swift brand
+swift scripts/brand-kit.swift brand/kit
 ```
 
+That checks every text and outline pair against WCAG first, and writes nothing if one fails. It puts the app icon
+here in `brand/`, where the app build and the README look for it:
+
+- `icon.svg`: the master. `icon-small.svg`: the master for 16 to 32 px, where the tile runs to the edge and each art
+  pixel is a whole screen pixel.
+- `icon-1024.png`: drawn from the master.
+- `AppIcon.icns`: macOS, every size at 1× and 2×. `LeafJuice.ico`: Windows, 16 to 256.
 - Pale pistachio tile, `#EDF5D6` to `#CDE3A5`, top to bottom.
-- A pink grapefruit wheel on the rim, drawn in the artwork's line style. It's the only pop of color in the icon.
-- Below 64 px, a larger tile and tighter crop keep it legible.
+
+Profile marks, banners, release images and the README header are built into `kit/out/`. [`kit/README.md`](kit/README.md)
+lists them, with the platform sizes and where they came from.
+
+## Fonts
+
+Open-licence fonts only (owner, 2026-11-14). They live in [`fonts/`](fonts/), each with its SIL Open Font License,
+and the builder refuses a font without one. **Lilita One** sets the name and **Fredoka** everything else. The app's
+own interface uses the system font through Apple's APIs, which is a different thing from setting a logo in it.
 
 ## Color
 

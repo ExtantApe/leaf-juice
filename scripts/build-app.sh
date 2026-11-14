@@ -48,7 +48,7 @@ strip -x "$app/Contents/MacOS/LeafJuice" 2>/dev/null || true
 strip -x "$app/Contents/MacOS/leafjuice-mcp" 2>/dev/null || true
 strip -x "$app/Contents/MacOS/leafjuice-session" 2>/dev/null || true
 
-[ -f brand/AppIcon.icns ] || swift scripts/make-icon.swift brand
+[ -f brand/AppIcon.icns ] || swift scripts/brand-kit.swift brand/kit
 cp brand/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"
 
 cat > "$app/Contents/Info.plist" <<PLIST

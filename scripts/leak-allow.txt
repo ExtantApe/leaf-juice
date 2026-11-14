@@ -1,0 +1,2 @@
+# Third-party copyright notices that a licence requires to stay intact.
+Copyright (c) 2011 Juan Montoreano (juan@remolacha.biz)

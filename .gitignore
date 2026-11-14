@@ -11,4 +11,4 @@ dist/
 /*.swiftdeps~
 
 # Built brand kit images: rebuilt from mark.txt, not kept in history.
-brand/drafts/*/out/
+brand/kit/out/

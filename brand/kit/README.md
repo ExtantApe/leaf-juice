@@ -1,6 +1,6 @@
-# LeafJuice brand kit: draft, 2026-11-14
+# LeafJuice brand kit
 
-**A draft for the owner's yes.** Nothing here replaces the current icon or brand until he approves it (K628, D150).
+**The icon is adopted** (owner, 2026-11-14, K628) and built into the app. The banners, README header and release images are still being settled: the tagline and the tile colour behind the mark on banners. Until then they're built into `out/` but not published.
 
 ## The idea
 
@@ -19,7 +19,7 @@ marks. It isn't a family theme for anything else.
 `mark.txt` is the only drawn file: a grid of 16 rows, one character per pixel, with a palette. To build the kit:
 
 ```bash
-swift scripts/brand-kit.swift brand/drafts/2026-11-14
+swift scripts/brand-kit.swift brand/kit
 ```
 
 The builder checks every pair first and refuses to write anything if one fails (D149):
@@ -43,7 +43,7 @@ The last build passed all 11 pairs. The lowest was the juice on the dark tile, a
 | `icon-1024.png`, `icon-32.png` | 1024, 32 | Drawn from the masters |
 | `AppIcon.icns` | 16 to 1024 | macOS, every size at 1× and 2×, made with `iconutil` |
 | `LeafJuice.ico` | 16 to 256 | Windows: 16, 24, 32, 48, 64, 128 and 256, read back to check every size is there |
-| `release-square-1080.png`, `release-landscape-1200x675.png` | 1080, 1200 × 675 | Release posts. The second argument sets the version line: `swift scripts/brand-kit.swift <folder> "Version 0.3.0"` |
+| `release-square-1080.png`, `release-landscape-1200x675.png` | 1080, 1200 × 675 | Release posts. The second argument sets the version line: `swift scripts/brand-kit.swift brand/kit "Version 0.3.0"` |
 | `github-social-preview-*-1280x640.png` | 1280 × 640 | GitHub's social preview |
 | `readme-header-*-1280x320.png` | 1280 × 320 | The top of the README |
 | `x-header-*-1500x500.png` | 1500 × 500 | X header |
@@ -67,9 +67,8 @@ Sources: [Buffer](https://buffer.com/resources/social-media-image-sizes/),
 [OpenTweet's Bluesky guide](https://opentweet.io/tools/bluesky-banner-size),
 [Sendcove's Bluesky guide](https://www.sendcove.app/integrations/bluesky/image-sizes).
 
-## Still to do, once the direction is approved
+## Still to do
 
-- Swap `brand/AppIcon.icns` and the README header for these, and retire `brand/icon-source.png`.
-- The dark-mode leaf: its dark outline sits close to the dark tile. The light green carries the shape, but the owner
-  should judge it at real sizes.
-- Nothing has been seen at size on a phone, in the Dock, or on Windows.
+- The tagline and the banner tile colour (B, pistachio with a sage ring, or C, grapefruit wash), then the banners,
+  README header and release images.
+- Seeing the icon in the Dock, on a phone, and on Windows.

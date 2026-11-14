@@ -1,4 +1,4 @@
-<p align="center"><img src="brand/icon-1024.png" width="128" alt="LeafJuice icon: a glass of green juice with a leaf on it"></p>
+<p align="center"><img src="brand/icon-1024.png" width="128" alt="LeafJuice icon: a pixel-art glass of green juice with a leaf and a grapefruit wedge"></p>
 
 # LeafJuice
 
