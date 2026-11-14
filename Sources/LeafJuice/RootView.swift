@@ -205,12 +205,31 @@ struct Sidebar: View {
     let server: ServerController
     @Binding var renaming: Bool
 
+    /// Groups the owner folded away, remembered between launches.
+    @AppStorage("sidebarCollapsed") private var collapsedText = ""
+
     var body: some View {
         List(selection: pageBinding) {
-            ForEach(PageID.visible) { page in
-                Label(page.title, systemImage: page.icon)
-                    .badge(badge(for: page))
-                    .tag(page)
+            if let overview = PageID(rawValue: SidebarGroups.top.key) { row(overview) }
+            ForEach(SidebarGroups.groups, id: \.id) { group in
+                let pages = group.pages.compactMap { PageID(rawValue: $0.key) }.filter { PageID.visible.contains($0) }
+                if !pages.isEmpty {
+                    Section(isExpanded: expanded(group.id)) {
+                        ForEach(pages) { row($0) }
+                    } header: {
+                        let rolled = SidebarGroups.rollUp(group, badges: badges(pages))
+                        HStack {
+                            Text(group.title)
+                            if !expanded(group.id).wrappedValue, rolled > 0 {
+                                Spacer()
+                                Text("\(rolled)").font(.caption.weight(.semibold)).foregroundStyle(Juice.ink)
+                                    .padding(.horizontal, 6).background(Juice.pulpWash, in: Capsule())
+                            }
+                        }
+                        .accessibilityAddTraits(.isHeader)
+                        .accessibilityValue(expanded(group.id).wrappedValue ? "Expanded" : (rolled > 0 ? "Collapsed, \(rolled) waiting" : "Collapsed"))
+                    }
+                }
             }
         }
         .listStyle(.sidebar)
@@ -222,6 +241,24 @@ struct Sidebar: View {
 
     private var pageBinding: Binding<PageID?> {
         Binding(get: { model.visiblePage }, set: { if let p = $0 { model.page = p } })
+    }
+
+    private func row(_ page: PageID) -> some View {
+        Label(page.title, systemImage: page.icon)
+            .badge(badge(for: page))
+            .tag(page)
+    }
+
+    private func expanded(_ id: String) -> Binding<Bool> {
+        Binding(get: { !SidebarGroups.decodeCollapsed(collapsedText).contains(id) }, set: { open in
+            var set = SidebarGroups.decodeCollapsed(collapsedText)
+            if open { set.remove(id) } else { set.insert(id) }
+            collapsedText = SidebarGroups.encodeCollapsed(set)
+        })
+    }
+
+    private func badges(_ pages: [PageID]) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: pages.map { ($0.rawValue, badge(for: $0)) })
     }
 
     private func badge(for page: PageID) -> Int {

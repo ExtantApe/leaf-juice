@@ -702,6 +702,10 @@ public final class ServerController: Identifiable {
             saveProfile()
             appendWrapper(was.isEmpty ? "This server runs Minecraft \(running)." : "This server now runs Minecraft \(running), not \(was). LeafJuice has updated its record.", level: .info)
         }
+        if let running = ServerDetector.buildFromRunningLine(line.message), running.mc == profile.software.mcVersion, running.build != profile.software.build {
+            profile.software.build = running.build
+            saveProfile()
+        }
         if !waiters.isEmpty {
             let lower = line.message.lowercased()
             for (i, waiter) in waiters.enumerated().reversed() where waiter.needles.contains(where: lower.contains) {

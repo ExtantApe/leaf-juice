@@ -114,7 +114,7 @@ struct IssueRow: View {
 
     private var meta: String {
         var parts = [issue.category]
-        if let plugin = issue.plugin { parts.append(plugin) }
+        if let plugin = issue.plugin { parts.append(plugin) } else if let source = issue.source { parts.append("from \(source)") }
         parts.append(issue.count == 1 ? "Once" : "\(issue.count) times")
         parts.append(issue.lastSeen.formatted(.relative(presentation: .named)))
         if issue.status != .open { parts.append(issue.status.rawValue.capitalized) }

@@ -224,6 +224,14 @@ public enum ServerFolders {
 }
 
 public enum ServerDetector {
+    /// The build in "This server is running Paper version 26.3-249-main@1a995d6 (…)". Paper and its forks log this.
+    public static func buildFromRunningLine(_ message: String) -> (mc: String, build: Int)? {
+        guard let r = message.range(of: #"^This server is running \w+ version (\d+(?:\.\d+){1,2})-(\d+)-"#, options: .regularExpression) else { return nil }
+        let parts = message[r].split(separator: " ").last?.split(separator: "-") ?? []
+        guard parts.count >= 2, GameVersion(String(parts[0])) != nil, let build = Int(parts[1]) else { return nil }
+        return (String(parts[0]), build)
+    }
+
     /// The version in "Starting minecraft server version 26.3", which Paper, Purpur and Vanilla all log as they start.
     public static func versionFromStartLine(_ message: String) -> String? {
         let prefix = "Starting minecraft server version "

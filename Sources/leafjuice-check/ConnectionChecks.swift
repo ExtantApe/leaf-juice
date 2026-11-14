@@ -81,6 +81,35 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     check(pastedIntoSecret.problems.contains { $0.contains("secret") } && !pastedIntoSecret.problems.joined().contains("made-up-pasted-value"), "but a secret pasted straight into that field is named, without repeating it")
     check(pastedIntoSecret.settings.services.first?.id == "play" && pastedIntoSecret.settings.services.first?.secret == nil, "and isn't kept, while the rest of the entry is")
 
+    // Moving a pasted secret into the Keychain (2026-11-14), with a throwaway keychain.
+    do {
+        let moveMeta = folder("connections-move")
+        let value = "made-up-pasted-\(UUID().uuidString)"
+        write(#"{"apiKey":"top-\#(value)","services":[{"id":"play","provider":"playit","enabled":true,"localAddress":"127.0.0.1:25565","token":"\#(value)"},{"id":"other","provider":"other","secret":"\#(value)-2"}]}"#, ConnectionStore.file(moveMeta))
+        var loaded = ConnectionStore.load(moveMeta)
+        equal(loaded.pasted.map(\.id), ["-/apiKey", "play/token", "other/secret"], "each pasted secret is found, by where it is")
+        let (kcPath, _) = throwawayKeychain("connections-move")
+        var moveKC: SecKeychain?
+        _ = SecKeychainOpen(kcPath, &moveKC)
+        for p in loaded.pasted {
+            try ConnectionStore.moveToKeychain(p, meta: moveMeta) { v, account in try ConnectionSecrets.save(v, account: account, in: moveKC) }
+        }
+        let after = (try? String(contentsOf: ConnectionStore.file(moveMeta), encoding: .utf8)) ?? ""
+        check(!after.contains("made-up-pasted"), "after moving, no secret is left in the file")
+        loaded = ConnectionStore.load(moveMeta)
+        check(loaded.pasted.isEmpty && loaded.problems.isEmpty, "and nothing is flagged any more")
+        equal(loaded.settings.services.first { $0.id == "play" }?.secret, .keychain(account: "play"), "the connection's secret now points at the Keychain")
+        equal(loaded.settings.services.first { $0.id == "play" }?.localAddress, "127.0.0.1:25565", "and the rest of it is untouched")
+        equal(ConnectionSecrets.presence(account: "play", in: moveKC), .present, "the value is in the Keychain")
+        equal(ConnectionSecrets.presence(account: "connections-apikey", in: moveKC), .present, "the top-level one too")
+        let failing = ConnectionStore.PastedSecret(service: "gone", key: "token")
+        check((try? ConnectionStore.moveToKeychain(failing, meta: moveMeta) { _, _ in }) == nil, "moving something that isn't there is refused")
+        write(#"{"services":[{"id":"x","provider":"other","token":"made-up-keep-me"}]}"#, ConnectionStore.file(moveMeta))
+        struct Refused: Error {}
+        let refused = (try? ConnectionStore.moveToKeychain(ConnectionStore.PastedSecret(service: "x", key: "token"), meta: moveMeta) { _, _ in throw Refused() }) == nil
+        check(refused && ((try? String(contentsOf: ConnectionStore.file(moveMeta), encoding: .utf8)) ?? "").contains("made-up-keep-me"), "if the Keychain refuses, the file keeps the value, so nothing is lost")
+    } catch { check(false, "moving pasted secrets threw: \(error)") }
+
     section("Connections: addresses")
     equal(HostPort.parse("127.0.0.1:25565"), HostPort(host: "127.0.0.1", port: 25565), "host and port")
     equal(HostPort.parse("[::1]:8766"), HostPort(host: "::1", port: 8766), "IPv6 in brackets")
@@ -88,7 +117,6 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     for bad in ["", "play.example.test", "host:0", "host:70000", "a b:1", "https://x:1", "::1:25565", "[::1", "host:port"] {
         check(HostPort.parse(bad) == nil, "refused: '\(bad)'")
     }
-    check(HostPort.parse("100.93.1.2:25565")!.isTailscale && !HostPort.parse("100.200.1.2:1")!.isTailscale, "Tailscale's range is told apart")
 
     section("Connections: checks with made-up answers")
     let tool = "/made-up-home/Minecraft/_tools/playit/playit"
@@ -141,10 +169,10 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     let v5 = await run(play, p).health
     equal(v5, .unknown, "an agent that doesn't say: unknown, never ready")
 
-    // The real case from 2026-11-10: the tunnel forwards to the Tailscale address, the server listens on 127.0.0.1 only.
-    var viaTailscale = play; viaTailscale.localAddress = "100.64.10.20:25565"
+    // The real case from 2026-11-10: the tunnel forwards to another address on this Mac, the server listens on 127.0.0.1 only.
+    var viaOtherAddress = play; viaOtherAddress.localAddress = "100.64.10.20:25565"
     p = playitProbe()
-    status = await run(viaTailscale, p)
+    status = await run(viaOtherAddress, p)
     check(status.health == .notReady && status.summary.contains("127.0.0.1:25565"), "a tunnel pointing away from a server that only listens on 127.0.0.1 is flagged, with the fix: \(status.summary)")
     var wrongPort = play; wrongPort.localAddress = "127.0.0.1:25566"
     status = await run(wrongPort, playitProbe())
@@ -231,26 +259,6 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     let resolved = await SystemConnectionProbe().resolve("localhost")
     check(resolved?.contains("127.0.0.1") == true || resolved?.contains("::1") == true, "the real lookup finds localhost")
 
-    // Tailscale.
-    let ts = ConnectionService(id: "tailscale", name: "Tailscale", provider: .tailscale, traffic: .access)
-    let tsTool = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
-    func tsProbe(_ json: String?) -> FakeConnectionProbe {
-        let p = FakeConnectionProbe(); p.executables = [tsTool]
-        if let json { p.tools[tsTool] = (0, json) }
-        return p
-    }
-    let v14 = await run(ts, tsProbe(#"{"BackendState":"Running","Self":{"Online":true,"HostName":"made-up"},"TailscaleIPs":["100.64.0.9","fd7a::9"]}"#)).health
-    equal(v14, .ready, "Tailscale running and online: ready")
-    let v15 = await run(ts, tsProbe(#"{"BackendState":"Running","Self":{"Online":false},"TailscaleIPs":[]}"#)).health
-    equal(v15, .warning, "running but offline: flagged")
-    let v16 = await run(ts, tsProbe(#"{"BackendState":"NeedsLogin"}"#)).health
-    equal(v16, .notReady, "logged out: not ready")
-    let v17 = await run(ts, tsProbe(nil)).health
-    equal(v17, .notReady, "no answer: not ready")
-    let v18 = await run(ts, FakeConnectionProbe()).health
-    equal(v18, .notReady, "not installed: not ready")
-    status = await run(ts, tsProbe(#"{"BackendState":"Running","Self":{"Online":true,"DNSName":"made-up-mac.tail0000.ts.net."},"TailscaleIPs":["100.64.0.9"]}"#))
-    check(!(status.summary + status.details.joined()).contains("made-up-mac"), "the tailnet's own name isn't repeated in the status")
 
     section("Connections: the map and sign-in page")
     let withURLs = ConnectionStore.parse(Data(#"{"playerAddress":"play.example.test","mapURL":"https://map.example.test","signInURL":"https://example.test/signin","services":[]}"#.utf8))

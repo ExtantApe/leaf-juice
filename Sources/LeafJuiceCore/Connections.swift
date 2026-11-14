@@ -27,14 +27,14 @@ public struct ConnectionSettings: Codable, Equatable, Sendable {
     }
 }
 
-/// Who provides a connection. playit and Tailscale have their own checks; anything else gets the checks every service gets.
+/// Who provides a connection. playit has its own checks; anything else gets the checks every service gets.
+/// Another tunnel can be added as a case with its own check, without changing the file format (2026-11-14: playit only).
 public enum ConnectionProvider: String, Codable, CaseIterable, Sendable {
-    case playit, tailscale, other
+    case playit, other
 
     public var title: String {
         switch self {
         case .playit: "playit.gg"
-        case .tailscale: "Tailscale"
         case .other: "Other"
         }
     }
@@ -51,7 +51,7 @@ public enum ConnectionTraffic: String, Codable, CaseIterable, Sendable {
     case game
     /// A web address, such as pack downloads or a sign-in page. Checked with an HTTP request.
     case web
-    /// Nothing checked end to end, such as Tailscale used for admin access.
+    /// Nothing checked end to end.
     case access
     /// A name at a DNS provider, such as play.example.test. Checked by looking it up.
     case dns
@@ -126,7 +126,6 @@ public struct ConnectionService: Codable, Equatable, Identifiable, Sendable {
         switch (provider, traffic) {
         case (.playit, .game): ConnectionService(id: id, name: "playit game tunnel", provider: .playit, traffic: .game, localAddress: "127.0.0.1:25565", secret: .agent)
         case (.playit, _): ConnectionService(id: id, name: "playit web tunnel", provider: .playit, traffic: .web, localAddress: "127.0.0.1:8766", secret: .agent)
-        case (.tailscale, _): ConnectionService(id: id, name: "Tailscale", provider: .tailscale, traffic: .access)
         case (.other, .dns): ConnectionService(id: id, name: "Domain name", provider: .other, traffic: .dns)
         case (.other, let t): ConnectionService(id: id, name: t == .web ? "Web service" : "Port forward", provider: .other, traffic: t)
         }
@@ -144,6 +143,44 @@ public enum ConnectionStore {
         public var problems: [String]
         /// The file couldn't be read at all. Saving moves it aside first, so nothing is lost.
         public var unreadable: Bool
+        /// Secrets pasted into the file, by where they are. Never their values.
+        public var pasted: [PastedSecret] = []
+    }
+
+    public struct PastedSecret: Equatable, Sendable, Identifiable {
+        /// The connection it's in, or nil for the top of the file.
+        public var service: String?
+        public var key: String
+        public var id: String { "\(service ?? "-")/\(key)" }
+        public var account: String { service ?? "connections-\(key.lowercased())" }
+        public init(service: String?, key: String) { self.service = service; self.key = key }
+    }
+
+    /// Takes a pasted secret out of the file and puts it in the Keychain. For a connection, it becomes that connection's
+    /// secret. The value goes straight from the file to `save` and isn't kept, shown or logged anywhere else.
+    /// If `save` fails, the file is left as it was.
+    public static func moveToKeychain(_ pasted: PastedSecret, meta: URL, save: (String, String) throws -> Void) throws {
+        let url = file(meta)
+        guard let data = try? Data(contentsOf: url), var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw LeafError("connections.json couldn't be read.")
+        }
+        if let service = pasted.service {
+            guard var services = object["services"] as? [Any],
+                  let index = services.firstIndex(where: { ($0 as? [String: Any])?["id"] as? String == service }),
+                  var entry = services[index] as? [String: Any] else { throw LeafError("\(service) isn't in the file any more.") }
+            guard let value = entry[pasted.key] as? String, !value.isEmpty else { throw LeafError("There's no text to move in \(pasted.key).") }
+            try save(value, pasted.account)
+            entry.removeValue(forKey: pasted.key)
+            entry["secret"] = ["keychain": ["account": pasted.account]]
+            services[index] = entry
+            object["services"] = services
+        } else {
+            guard let value = object[pasted.key] as? String, !value.isEmpty else { throw LeafError("There's no text to move in \(pasted.key).") }
+            try save(value, pasted.account)
+            object.removeValue(forKey: pasted.key)
+        }
+        let out = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+        try out.write(to: url, options: .atomic)
     }
 
     /// Keys that look like a secret was pasted into the file. They're ignored, and named so it can be moved.
@@ -165,6 +202,14 @@ public enum ConnectionStore {
         settings.mapURL = (object["mapURL"] as? String) ?? ""
         settings.signInURL = (object["signInURL"] as? String) ?? ""
         flagSecrets(object, at: "the file", into: &problems)
+        var pasted: [PastedSecret] = []
+        func collect(_ entry: [String: Any], service: String?) {
+            for key in entry.keys.sorted() where secretLooking.contains(key.lowercased()) {
+                if key == "secret", entry[key] is [String: Any] { continue }
+                if let text = entry[key] as? String, !text.isEmpty { pasted.append(PastedSecret(service: service, key: key)) }
+            }
+        }
+        collect(object, service: nil)
         var seen = Set<String>()
         for (index, raw) in ((object["services"] as? [Any]) ?? []).enumerated() {
             guard let entry = raw as? [String: Any], let body = try? JSONSerialization.data(withJSONObject: entry),
@@ -174,6 +219,7 @@ public enum ConnectionStore {
             }
             let label = service.name.isEmpty ? service.id : service.name
             flagSecrets(entry, at: label, into: &problems)
+            if ConnectionService.isUsableID(service.id) { collect(entry, service: service.id) }
             guard ConnectionService.isUsableID(service.id) else {
                 problems.append("\(label) was skipped: its id must be lowercase letters, numbers and hyphens.")
                 continue
@@ -184,7 +230,7 @@ public enum ConnectionStore {
             }
             settings.services.append(service)
         }
-        return Loaded(settings: settings, problems: problems, unreadable: false)
+        return Loaded(settings: settings, problems: problems, unreadable: false, pasted: pasted)
     }
 
     private static func flagSecrets(_ entry: [String: Any], at label: String, into problems: inout [String]) {
@@ -347,11 +393,6 @@ public struct HostPort: Equatable, Sendable {
 
     public var text: String { host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)" }
     public var isLoopback: Bool { host == "127.0.0.1" || host == "::1" || host == "localhost" }
-    /// Tailscale hands out 100.64.0.0/10.
-    public var isTailscale: Bool {
-        let parts = host.split(separator: ".").compactMap { Int($0) }
-        return parts.count == 4 && parts[0] == 100 && (64...127).contains(parts[1])
-    }
 }
 
 public enum ConnectionCheck {
@@ -359,7 +400,6 @@ public enum ConnectionCheck {
     public static func playitTools(home: String) -> [String] {
         ["\(home)/Minecraft/_tools/playit/playit", "/opt/homebrew/bin/playit", "/usr/local/bin/playit", "/usr/bin/playit"]
     }
-    public static let tailscaleTools = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"]
     public static func playitLog(home: String) -> String { "\(home)/Library/Logs/playit/playitd.log" }
     public static func playitSocket(home: String) -> String { "\(home)/Library/Application Support/playit_gg/playitd.sock" }
 
@@ -415,7 +455,6 @@ public enum ConnectionCheck {
         let found: [Finding]
         switch service.provider {
         case .playit: found = await checkPlayit(local: local, probe: probe)
-        case .tailscale: found = await checkTailscale(probe: probe)
         case .other: found = []
         }
         for f in found {
@@ -443,7 +482,7 @@ public enum ConnectionCheck {
             if answers {
                 details.append("Something answers at \(local.text).")
             } else if service.traffic == .game && !context.serverRunning {
-                note(.warning, "The server is stopped, so nothing answers at \(local.text) yet.")
+                note(.warning, "The server isn't running, so nothing answers at \(local.text) yet.")
             } else {
                 note(service.traffic == .game ? .notReady : .warning, "Nothing answers at \(local.text), so the tunnel has nowhere to send people.")
             }
@@ -526,7 +565,6 @@ public enum ConnectionCheck {
     static func readySummary(_ service: ConnectionService) -> String {
         switch service.provider {
         case .playit: "playit's agent is running and the tunnel reaches this Mac."
-        case .tailscale: "Connected to your tailnet."
         case .other: service.localAddress.isEmpty ? "Set up." : "Reaches this Mac."
         }
     }
@@ -596,39 +634,6 @@ public enum ConnectionCheck {
         return out
     }
 
-    // MARK: Tailscale
-
-    public struct TailscaleState: Equatable, Sendable {
-        public var running: Bool
-        public var online: Bool
-        public var addresses: [String]
-    }
-
-    public static func parseTailscaleStatus(_ text: String) -> TailscaleState? {
-        guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
-              let backend = object["BackendState"] as? String else { return nil }
-        let me = object["Self"] as? [String: Any]
-        return TailscaleState(running: backend == "Running", online: me?["Online"] as? Bool ?? false,
-                              addresses: object["TailscaleIPs"] as? [String] ?? [])
-    }
-
-    private static func checkTailscale(probe: ConnectionProbe) async -> [Finding] {
-        var out: [Finding] = []
-        func note(_ h: ConnectionHealth, _ t: String) { out.append(Finding(health: h, text: t)) }
-        func info(_ t: String) { out.append(Finding(health: nil, text: t)) }
-        guard let tool = tailscaleTools.first(where: probe.isExecutable) else {
-            note(.notReady, "Tailscale isn't installed.")
-            return out
-        }
-        guard let result = await probe.run(tool, ["status", "--json"], timeout: 8), let state = parseTailscaleStatus(result.out) else {
-            note(.notReady, "Tailscale didn't answer. Open the Tailscale app.")
-            return out
-        }
-        guard state.running else { note(.notReady, "Tailscale isn't connected. Open the Tailscale app and log in."); return out }
-        if state.online { info("Tailscale is connected, with \(state.addresses.count) address\(state.addresses.count == 1 ? "" : "es").") }
-        else { note(.warning, "Tailscale is running but says this Mac is offline.") }
-        return out
-    }
 }
 
 // MARK: - The real probe
@@ -812,7 +817,12 @@ extension ServerController {
         let text = (try? String(contentsOf: paths.properties, encoding: .utf8)) ?? ""
         let ip = PropertiesDocument(text).value("server-ip") ?? ""
         let hosting = packHostSettings
-        return ConnectionContext(serverRunning: state == .running, serverIP: ip, serverPort: serverPort,
+        let running: Bool
+        switch state {
+        case .running, .external: running = true  // A server started outside LeafJuice is still running.
+        default: running = false
+        }
+        return ConnectionContext(serverRunning: running, serverIP: ip, serverPort: serverPort,
                                  packHostPort: hosting.enabled ? hosting.port : nil)
     }
 }

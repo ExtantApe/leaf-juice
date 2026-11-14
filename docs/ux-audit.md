@@ -75,6 +75,4 @@ Not covered: disabled controls are drawn at half opacity. WCAG exempts them, but
    own colors, held to 3:1 by the same check, would fix it. It touches every button, so it wants its own change.
 3. **Layout at small window sizes.** Cards use an adaptive grid from 250 points, which should reflow, but narrow
    windows and large text haven't been looked at.
-4. **The repo name.** The repo is already at `ExtantApe/leaf-juice`, so it can become `ExtantApe/LeafJuice` now (D185).
-   GitHub redirects the old name. Nothing in the code depends on it. Left for Helm to confirm the timing, since other
-   sessions build from this checkout.
+4. **The repo name.** Done 2026-11-14: the repo is `ExtantApe/LeafJuice` (D185), and the old address redirects.

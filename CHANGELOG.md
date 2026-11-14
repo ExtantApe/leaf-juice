@@ -2,12 +2,15 @@
 
 ## Unreleased
 
+- **Session access:** sessions and scripts on this Mac can read a server's status and recent log, and run commands
+  from a list you keep, through `leafjuice-session`. Off by default. Chat, player names and addresses are kept out,
+  everything else is refused, and every call is listed in Settings. Tested against a real Paper 26.3 server with a
+  made-up bot.
 - **Connections:** a card on the Overview page for the address players type and each tunnel or service: playit,
-  Tailscale, and anything else that carries players or web traffic, or a domain name. Each has an on or off switch,
+  and anything else that carries players or web traffic, or a domain name. Each has an on or off switch,
   a check and a plain-language status. Settings live in `.leafjuice/connections.json`; secrets stay in the Keychain
   or the service's own file, and a missing one shows as not ready. Checking from outside only runs when you click it.
-  Tested with made-up answers, a throwaway keychain and local sockets, and read-only against a real playit agent and
-  Tailscale. Not yet run against the real servers.
+  Tested with made-up answers, a throwaway keychain and local sockets, and read-only against a real playit agent. Not yet run against the real servers.
 - **Map and sign-in addresses** in the same file, each with a check. The invite code screen shows the sign-in page
   beside the code, with Copy Both. If none is set, it says so and still shows the code.
 - **Colors held to WCAG AA in code.** Every text and control pair, in light, dark and increased contrast, and with
@@ -17,7 +20,15 @@
 - **Spelled LeafJuice** everywhere you see the name. Your data folder and macOS permissions stay as they were.
 - **Fixed:** a database plugin's normal connection-pool line no longer shows as "A database connection failed".
 - **Fixed:** the documented `secret` field in connections.json is no longer flagged as a pasted secret.
-- **Fixed:** the recorded Minecraft version updates when the server starts on a different one.
+- **Fixed:** the recorded Minecraft version and build follow the server's own start lines, so the header says what's
+  really running.
+- **Sidebar groups:** Overview on top, then Server, Content, People and Upkeep, alphabetical inside each. Groups fold
+  away and stay folded, and a folded group shows the total of its badges.
+- **Issues:** repeats that differ only by a quoted name, such as one warning per world, are one row with a count. An
+  issue with no known plugin says where it came from, and a database failure names its pool.
+- **Connections:** a tunnel check redoes itself when the server starts or stops, and a server started outside
+  LeafJuice counts as running. A secret pasted into the file gets a button that moves it into the Keychain.
+- **Removed:** the Tailscale check. An older `tailscale` entry reads as Other.
 
 ## 0.2.0
 

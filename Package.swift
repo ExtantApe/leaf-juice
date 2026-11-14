@@ -15,5 +15,7 @@ let package = Package(
         // Privacy layer for the optional advisor. It must never depend on LeafJuiceCore: see docs/ADVISOR-SECURITY.md.
         .target(name: "LeafJuiceAdvisor"),
         .executableTarget(name: "leafjuice-mcp", dependencies: ["LeafJuiceAdvisor"]),
+        // How assistant sessions talk to a running LeafJuice: status, logs and the owner's list of commands.
+        .executableTarget(name: "leafjuice-session"),
     ]
 )

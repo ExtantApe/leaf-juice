@@ -151,7 +151,6 @@ in plain words: Ready, Needs a look, Not ready, Not checked, or Off.
 - **playit.gg:** asks the playit agent on this Mac whether it's running and has its secret, reads its log for recent
   failures to reach the local address, and checks something answers there. A tunnel that forwards somewhere the server
   doesn't listen, such as another address when the server only listens on 127.0.0.1, is not ready, with the fix.
-- **Tailscale:** asks the Tailscale app whether it's connected.
 - **Anything else:** a port forward or tunnel for players, a web service (the map, a sign-in page, a reverse proxy, a
   pack address, an outside API), or a domain name. These get the same address and secret checks.
 
@@ -189,7 +188,7 @@ values:
 | `mapURL` | The web map players open. Checked from outside like any web address; a sign-in prompt counts as answering. |
 | `signInURL` | The sign-in page that goes with an invite code. Shown beside the code, with Copy Both, so whoever hands it over can read out both. If it's empty, Latchkey's own address is shown and labelled as such, and with neither the screen says so and still shows the code. |
 | `id` | Short name: lowercase letters, numbers and hyphens. Also names its Keychain item. |
-| `provider` | `playit`, `tailscale` or `other`. An unknown one reads as `other`. |
+| `provider` | `playit` or `other`. An unknown one, such as an older `tailscale` entry, reads as `other`. |
 | `traffic` | `game` (status ping), `web` (HTTP), `dns` (lookup) or `access` (nothing checked end to end). |
 | `enabled` | Off unless the file says `true`. |
 | `localAddress` | What a tunnel forwards to on this Mac, as host:port. |
@@ -199,7 +198,45 @@ values:
 
 Limits: names are looked up as plain address records, so a game address that only works through an SRV record shows as
 not answering. A web tunnel that expects a PROXY header still answers a plain connection, which is all the local check
-does. Checked against the real playit agent and Tailscale on one Mac, read-only. Not yet run against the real servers.
+does. Checked against the real playit agent on one Mac, read-only. Not yet run against the real servers.
+
+## Session access
+
+For assistant sessions, or your own scripts, on the same Mac. Off until you turn it on in **Settings > Session
+access**. A session can:
+
+- read each server's status: running or not, software, how many players are online (never who), TPS, tick time,
+  plugins and open issues;
+- read the recent log, with chat left out, and player names, UUIDs and network addresses replaced;
+- run the commands on your list, exactly as written. It starts with `latchkey reload`, `save-all` and `list`. You can
+  add and remove commands in Settings. `stop` can't be added, so stopping stays in the app.
+
+Anything else is refused: commands off the list, extra words after a listed command, a second command after a line
+break, unknown calls, a wrong token. Every call, allowed or refused, is listed in Settings with who said they were
+calling and when, and a command a session runs shows in the console too.
+
+How it's reached: a Unix socket at `~/Library/Application Support/Leaf Juice/session.sock`, private to your macOS
+account, plus a random token in your login Keychain. The first time something other than LeafJuice reads the token,
+macOS asks you. **Make a New Token** cuts off anything holding the old one. Anything running as your account could
+use it once allowed, so keep the list to commands you'd be happy for any of them to run.
+
+The client is inside the app:
+
+```bash
+"/Applications/LeafJuice.app/Contents/MacOS/leafjuice-session" --as "Server lead" status
+```
+
+```bash
+"/Applications/LeafJuice.app/Contents/MacOS/leafjuice-session" --as "Server lead" log --lines 50 --server "Made-up Server"
+```
+
+```bash
+"/Applications/LeafJuice.app/Contents/MacOS/leafjuice-session" --as "Server lead" run "save-all"
+```
+
+It prints LeafJuice's answer as JSON and exits 0 when it was allowed, 1 when refused, and 2 when LeafJuice can't be
+reached. A command only runs on a server LeafJuice started; output is what the server printed in the next second and a
+half. `--as` is what the caller says about itself; it's recorded, not checked.
 
 ## Staying safe when you're not looking
 
@@ -271,7 +308,7 @@ BlueMap's own web server must stop answering anyone else, or the sign-in can be 
 
 ## Install
 
-1. Download the `.dmg` from [Releases](https://github.com/ExtantApe/leaf-juice/releases) and drag LeafJuice to Applications.
+1. Download the `.dmg` from [Releases](https://github.com/ExtantApe/LeafJuice/releases) and drag LeafJuice to Applications.
 2. LeafJuice is free and unsigned (Apple charges for signing), so macOS blocks the first launch. Allow it one of two ways:
 
    **Terminal (quickest):**
@@ -289,11 +326,11 @@ You only need to do this once per download. Requires macOS 14 or later, on Apple
 Unsure about running an unsigned app? It's reasonable to be. You can read the code and build it yourself:
 
 ```bash
-git clone https://github.com/ExtantApe/leaf-juice.git
+git clone https://github.com/ExtantApe/LeafJuice.git
 ```
 
 ```bash
-cd leaf-juice && scripts/build-app.sh
+cd LeafJuice && scripts/build-app.sh
 ```
 
 That needs only Apple's Command Line Tools (`xcode-select --install`), and the app appears in `dist/`.

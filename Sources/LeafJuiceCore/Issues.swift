@@ -117,6 +117,8 @@ public struct IssueRecord: Codable, Identifiable, Equatable, Sendable {
     public var sample: String
     public var stack: [String] = []
     public var plugin: String?
+    /// Where the line came from when no plugin is known: its logger tag, such as a library's class name.
+    public var source: String?
     public var count = 1
     public var firstSeen: Date
     public var lastSeen: Date
@@ -128,7 +130,7 @@ public struct IssueRecord: Codable, Identifiable, Equatable, Sendable {
     public var report: String {
         var text = "## \(title)\n\n"
         text += "- Severity: \(severity.title)\n- Seen: \(count) time\(count == 1 ? "" : "s"), last \(ISO8601DateFormatter().string(from: lastSeen))\n"
-        if let plugin { text += "- Plugin: \(plugin)\n" }
+        if let plugin { text += "- Plugin: \(plugin)\n" } else if let source { text += "- From: \(source)\n" }
         if let attachment { text += "- File: \(attachment)\n" }
         text += "\n```\n\(sample)\n"
         if !stack.isEmpty { text += stack.joined(separator: "\n") + "\n" }
@@ -260,7 +262,7 @@ public final class IssueAnalyzer {
             return IssueRecord(
                 id: id, ruleID: rule.id, title: fill(rule.title), severity: rule.severity, category: rule.category,
                 explanation: fill(rule.explanation), steps: rule.steps.map(fill), action: rule.action, docs: rule.docs, sample: line.message,
-                plugin: self.plugin(for: line, subject: subject), firstSeen: date, lastSeen: date)
+                plugin: self.plugin(for: line, subject: subject), source: Self.source(of: line), firstSeen: date, lastSeen: date)
         }
     }
 
@@ -271,7 +273,7 @@ public final class IssueAnalyzer {
         upsert(id: id, date: date) {
             IssueRecord(
                 id: id, ruleID: nil, title: String(line.message.prefix(110)), severity: line.level == .error ? .error : .warning,
-                category: "Uncategorized", sample: line.message, plugin: self.plugin(for: line, subject: nil),
+                category: "Uncategorized", sample: line.message, plugin: self.plugin(for: line, subject: nil), source: Self.source(of: line),
                 firstSeen: date, lastSeen: date)
         }
     }
@@ -314,8 +316,21 @@ public final class IssueAnalyzer {
     public func remove(id: String) { records[id] = nil; dirty = true }
     public func clear() { records = [:]; dirty = true; lastRecordID = nil }
 
+    /// A database pool names itself first ("prism - Connection is not available"), usually after its plugin.
+    private static let poolName = regex(#"(?:^|\]\s)([A-Za-z][\w.-]{1,40}) - (?:Connection|Exception|Failed|Pool|Start|Shutdown)"#)
+
+    static func source(of line: ParsedLogLine) -> String? {
+        if let m = poolName.firstMatch(in: line.message), let r = Range(m.range(at: 1), in: line.message) {
+            return "the \(line.message[r]) database pool"
+        }
+        return line.tag
+    }
+
     private static let normalizers: [(NSRegularExpression, String)] = [
         (regex(#"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"#), "UUID"),
+        // Names in quotes, such as a world or dimension, vary while the problem stays the same (2026-11-14).
+        (regex(#"'[^'\n]{1,120}'"#), "'Q'"),
+        (regex(#""[^"\n]{1,120}""#), "\"Q\""),
         (regex(#"(?:/[\w.\-]+){2,}"#), "PATH"),
         (regex(#"\b\d+\.\d+\.\d+\.\d+(:\d+)?\b"#), "ADDR"),
         (regex(#"@[0-9a-fA-F]{4,}\b"#), "@HEX"),

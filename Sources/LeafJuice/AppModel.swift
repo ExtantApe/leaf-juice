@@ -117,6 +117,11 @@ final class AppModel {
             servers.forEach { $0.startPackHostIfWanted() }
         }
         servers.forEach(Alerts.connect)
+        // Session access: off until the owner turns it on in Settings, and never in a snapshot or the Advisor trial.
+        SessionAccessService.shared.servers = { [weak self] in self?.servers ?? [] }
+        if ProcessInfo.processInfo.environment["LEAFJUICE_SNAPSHOT"] == nil, !AdvisorTrial.isOn {
+            SessionAccessService.shared.apply(SessionAccess.loadSettings())
+        }
         if !AdvisorTrial.isOn { Alerts.ask() }
         if checkAppUpdates, !AdvisorTrial.isOn { Task { await lookForAppUpdate() } }
         // A wipe or restore makes a new controller for the Lab's folder.
@@ -475,9 +480,10 @@ struct SettingsView: View {
                 Text("Turning one off hides it and stops its background work. Nothing it has saved is deleted, and turning it back on picks up where it left off.")
                     .font(.caption).foregroundStyle(Juice.muted)
             }
+            SessionAccessSection()
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 640)
+        .frame(width: 560, height: 720)
     }
 
     private func chooseServersFolder() {

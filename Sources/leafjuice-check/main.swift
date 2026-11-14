@@ -4,6 +4,7 @@ import ImageIO
 //   swift run leafjuice-check          Offline suite, plus the full server lifecycle against a small
 //                                      stand-in jar (compiled here if a JDK is available). No Minecraft.
 //   ... --live                         Also calls the real Paper, Modrinth, Hangar, Spiget, GitHub APIs.
+//   ... --real-session --i-accept-the-minecraft-eula  Session access against a real server, with a bot.
 //   ... --real-prejoin --i-accept-the-minecraft-eula
 //   ... --real-signin <Latchkey.jar> --i-accept-the-minecraft-eula
 //   ... --sandbox --i-accept-the-minecraft-eula
@@ -137,11 +138,13 @@ nonisolated(unsafe) var failures: [String] = []
 if CommandLine.arguments.contains("--connections") {
     await connectionChecks()
     paletteChecks()
-    // --live: also asks this Mac's own playit agent and Tailscale, read-only, and prints only health and summaries.
+    sidebarChecks()
+    await sessionAccessChecks()
+    // --live: also asks this Mac's own playit agent, read-only, and prints only health and summaries.
     if CommandLine.arguments.contains("--live") {
         section("Connections: this Mac's real agents (read-only)")
         let context = ConnectionContext(serverRunning: false, serverIP: "127.0.0.1", serverPort: 25565, packHostPort: nil)
-        for service in [ConnectionService.preset(.playit, .web, id: "playit-web"), .preset(.tailscale, .access, id: "tailscale")] {
+        for service in [ConnectionService.preset(.playit, .web, id: "playit-web")] {
             let status = await ConnectionCheck.run(service, context: context, probe: SystemConnectionProbe())
             print("  \(service.id): \(status.health.title). \(status.summary)")
         }
@@ -459,6 +462,21 @@ do {
     equal(ServerDetector.versionFromStartLine("Starting minecraft server version 1.21.11"), "1.21.11", "older versions too")
     check(ServerDetector.versionFromStartLine("<MadeUp> Starting minecraft server version 99") == nil, "chat-shaped text isn't read")
     check(ServerDetector.versionFromStartLine("Starting minecraft server version not-a-version") == nil, "nonsense isn't read")
+    let running = ServerDetector.buildFromRunningLine("This server is running Paper version 26.3-249-main@1a995d6 (2026-11-11T18:01:48Z) (Implementing API version 26.3.build.249-stable)")
+    check(running?.mc == "26.3" && running?.build == 249, "the build comes from Paper's own line")
+    check(ServerDetector.buildFromRunningLine("<MadeUp> This server is running Paper version 99-1-x") == nil, "chat-shaped text isn't read")
+    // Repeats that differ only by a quoted name are one issue, with a count (2026-11-14).
+    do {
+        let a = IssueAnalyzer(rules: rules)
+        for world in ["made_up_one", "made_up_two_nether", "made_up_three_the_end"] {
+            a.ingest("[05:25:16] [BlueMap-Load/WARN]: [BlueMap] The world-data does not contain any info about a dimension with the id 'minecraft:\(world)', using fallback.")
+        }
+        equal(a.sorted.count, 1, "three dimensions, one row")
+        equal(a.sorted.first?.count, 3, "counted three times")
+        let d = IssueAnalyzer(rules: rules)
+        d.ingest("[12:00:01] [Server thread/ERROR]: [com.zaxxer.hikari.pool.HikariPool] madeupdb - Exception during pool initialization.")
+        check(d.sorted.first?.ruleID == "database" && d.sorted.first?.source == "the madeupdb database pool", "a database failure names its pool: \(d.sorted.first?.source ?? "none")")
+    }
 }
 
 section("Issue catalog")
@@ -2495,6 +2513,13 @@ if CommandLine.arguments.contains("--sandbox") {
 try runAdvisorChecks()
 await runLifecycleWithStandIn()
 if CommandLine.arguments.contains("--live") { await runLiveAPIs() }
+if CommandLine.arguments.contains("--real-session") {
+    if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
+        await runRealSession()
+    } else {
+        print("Skipping --real-session: it needs --i-accept-the-minecraft-eula, your own acceptance of \(EULA.url).")
+    }
+}
 if CommandLine.arguments.contains("--real-prejoin") {
     if CommandLine.arguments.contains("--i-accept-the-minecraft-eula") {
         await runRealPrejoin()
@@ -4683,6 +4708,8 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     await packGateChecks()
     await connectionChecks()
     paletteChecks()
+    sidebarChecks()
+    await sessionAccessChecks()
     await packSongChecks()
     await pluginUpgradeChecks()
     await serverIconChecks()

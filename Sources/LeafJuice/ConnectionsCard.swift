@@ -21,6 +21,9 @@ struct ConnectionsCard: View {
     @State private var statuses: [String: ConnectionStatus] = [:]
     @State private var urlStatuses: [String: ConnectionStatus] = [:]
     @State private var checking = false
+    @State private var moveError: String?
+    /// Set when the state changed while a check was running, so another runs straight after.
+    @State private var recheckWhenFree = false
     @State private var editing = false
     @State private var expanded: Set<String> = []
 
@@ -28,12 +31,20 @@ struct ConnectionsCard: View {
         Card(title: "Connections", systemImage: "point.3.connected.trianglepath.dotted") {
             if let loaded {
                 ForEach(loaded.problems, id: \.self) { Callout(tone: .warning, title: "Connections file", detail: $0) }
+                ForEach(loaded.pasted) { pasted in
+                    HStack {
+                        Button("Move \(pasted.key) to the Keychain") { move(pasted) }.buttonStyle(.juice)
+                            .accessibilityLabel("Move the \(pasted.key) in \(pasted.service ?? "the file") to the Keychain")
+                        Hint(pasted.service.map { "It becomes \($0)'s secret, and leaves the file." } ?? "It leaves the file.")
+                    }
+                }
+                if let moveError { Callout(tone: .danger, title: "Not moved", detail: moveError) }
                 let address = loaded.settings.playerAddress
                 Fact(label: "Players join with", value: address.isEmpty ? "Not set" : address)
                 urlRow("Web map", loaded.settings.mapURL, key: "map")
                 urlRow("Sign-in page", loaded.settings.signInURL, key: "signin")
                 if loaded.settings.services.isEmpty {
-                    Hint("No tunnels or services yet. Add playit, Tailscale or anything else that carries players or web traffic, so LeafJuice can say whether each is working.")
+                    Hint("No tunnels or services yet. Add playit or anything else that carries players or web traffic, so LeafJuice can say whether each is working.")
                 }
                 ForEach(loaded.settings.services) { service in row(service) }
                 HStack {
@@ -58,6 +69,13 @@ struct ConnectionsCard: View {
             }
         }
         .task { reload(); check(outside: false) }
+        // A check from before a start or stop would say the wrong thing next to the new state, so it's redone.
+        .onChange(of: server.state.title) {
+            statuses = [:]
+            urlStatuses = [:]
+            recheckWhenFree = true
+            check(outside: false)
+        }
         .sheet(isPresented: $editing, onDismiss: { reload(); check(outside: false) }) {
             if let loaded { ConnectionsEditor(server: server, loaded: loaded) }
         }
@@ -104,8 +122,19 @@ struct ConnectionsCard: View {
 
     private func reload() { loaded = server.savedConnections }
 
+    private func move(_ pasted: ConnectionStore.PastedSecret) {
+        do {
+            try ConnectionStore.moveToKeychain(pasted, meta: server.paths.meta) { value, account in try ConnectionSecrets.save(value, account: account) }
+            moveError = nil
+        } catch { moveError = error.localizedDescription }
+        reload()
+        check(outside: false)
+    }
+
     private func check(outside: Bool) {
-        guard let settings = loaded?.settings, hasAnything(settings), !checking else { return }
+        guard let settings = loaded?.settings, hasAnything(settings) else { return }
+        guard !checking else { recheckWhenFree = true; return }
+        recheckWhenFree = false
         let services = settings.services
         checking = true
         let context = server.connectionContext
@@ -122,6 +151,7 @@ struct ConnectionsCard: View {
             urlStatuses = ["map": await ConnectionCheck.runURL(settings.mapURL, probe: probe, outside: outside),
                            "signin": await ConnectionCheck.runURL(settings.signInURL, probe: probe, outside: outside)]
             checking = false
+            if recheckWhenFree { check(outside: false) }
         }
     }
 }
@@ -172,7 +202,6 @@ struct ConnectionsEditor: View {
                 Menu("Add Connection") {
                     Button("playit tunnel for players") { add(.playit, .game) }
                     Button("playit tunnel for web (packs, sign-in)") { add(.playit, .web) }
-                    Button("Tailscale") { add(.tailscale, .access) }
                     Button("Other: players (port forward or tunnel)") { add(.other, .game) }
                     Button("Other: web service (map, sign-in page, proxy, API)") { add(.other, .web) }
                     Button("Domain name (DNS)") { add(.other, .dns) }

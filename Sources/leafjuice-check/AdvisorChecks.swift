@@ -181,7 +181,7 @@ private func logReport(_ log: String, jars: [String] = [], key home: String) thr
     ]
     for (index, attack) in leaks.enumerated() {
         let out = try sent(attack.0, "advisor-review-\(index)")
-        check(!out.contains(attack.1), "blocked: \(attack.2): \(out)")
+        check(!withoutPseudonyms(out).contains(attack.1), "blocked: \(attack.2): \(out)")
     }
     let secondRound: [(String, String, String)] = [
         ("at com.x.Y.run(my.name.is.Tom.and.my.password.is.hunter2.I.am.ten.java:1)", "hunter2", "a sentence in the file part"),
@@ -200,7 +200,7 @@ private func logReport(_ log: String, jars: [String] = [], key home: String) thr
     ]
     for (index, attack) in secondRound.enumerated() {
         let out = try sent(attack.0, "advisor-review2-\(index)")
-        check(!out.contains(attack.1), "blocked: \(attack.2): \(out)")
+        check(!withoutPseudonyms(out).contains(attack.1), "blocked: \(attack.2): \(out)")
     }
     let shortName = try logReport(i + "Emma joined the game\n" + e + "boom\n\tat com.x.EmmaHandler.run(F.java:1)", jars: jars, key: "advisor-review2-short").events.joined()
     check(!shortName.contains("Emma"), "a short name as a whole word inside a class is hidden: \(shortName)")
@@ -937,4 +937,10 @@ private func logReport(_ log: String, jars: [String] = [], key home: String) thr
         let code = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
         check(!code.contains("--mcp-config"), "\(file.lastPathComponent) doesn't start an AI client of its own")
     }
+}
+
+/// Player-1a2b3c4d code names are random hex, so a digit needle like "168" can turn up inside one by chance.
+/// Seen once, on 2026-11-14. The code names are made from a key, so they carry nothing from the log.
+func withoutPseudonyms(_ text: String) -> String {
+    text.replacingOccurrences(of: #"Player-[0-9a-f]{8}"#, with: "Player-x", options: .regularExpression)
 }

@@ -2,6 +2,45 @@
 
 Each audit lists what LeafJuice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
 
+## 2026-11-14: the owner's Overview bugs and the sidebar
+
+- **Version:** Paper's "running Paper version 26.3-249-…" line gives the build; chat-shaped text doesn't.
+- **Issues:** three dimensions in quotes make one row counted three times; a HikariPool failure names its pool.
+- **Pasted secrets:** each is found by where it is; moving them leaves no value in the file, points the connection at
+  the Keychain, keeps the rest of the entry, and refuses something that isn't there. If the Keychain refuses, the file
+  keeps the value.
+- **Sidebar:** every page from the app's own list appears once, Overview first, groups in order, alphabetical inside,
+  folded state remembered (unknown names dropped), and badges roll up from a group's own pages only.
+- **Not covered by a check:** the card rechecking on a state change, and how the grouped sidebar reads with VoiceOver
+  and the arrow keys. Both are SwiftUI wiring, listed for the hands-on pass in `docs/ux-audit.md`.
+
+## 2026-11-14: session access
+
+Covered:
+
+- **Every refusal:** off, unreadable, too long, no token, a wrong token (and one a character off), no token in the
+  Keychain, no caller or one with a line break, an unknown call, a command off the list, a listed command with words
+  added or in other letters, part of a listed command, a second command after a line break, a control character.
+  `stop` and line breaks can't be put on the list.
+- **Allowed:** status, log (capped from 1 to 200 lines), listed commands with a slash or extra spaces.
+- **What a session sees:** chat left out; names (any case, longest first, not inside longer words), UUIDs, IPv4 and
+  IPv6 addresses replaced, with log times left alone. Status gives a count of players, never names.
+- **The record:** both allowed and refused calls; the token never written; a caller can't break or bloat a line.
+- **The token,** in a throwaway keychain: made once, read back, replaced.
+- **The real socket and client:** private to this account, status, log, refusals with exit codes, every call recorded,
+  turned off removes the socket, and a file in its place is neither used nor deleted.
+- **A real Paper 26.3 server with a made-up bot** (`--real-session`): status shows one player without naming them;
+  `list` and `save-all` run and their output comes back with the name replaced; `op` is refused and never reaches the
+  console; the console notes the session's command; the real log comes back without the name or address.
+- **Mutations:** accepting any token, allowing any command, showing chat and ignoring the switch each failed checks.
+  Opening the socket with a looser umask didn't, because chmod makes it private as well; each guards the other.
+
+Gaps skipped:
+
+- **Another macOS account connecting.** The kernel's peer check refuses other accounts, but this Mac has one account
+  to test with. The socket's 0600 mode is checked instead.
+- **The Keychain prompt** a session sees the first time it reads the token. That needs the owner's click.
+
 ## 2026-11-14: colors, and three reported fixes
 
 - **Colors.** Every pair the app draws (47), in four appearances and five kinds of color vision: 940 combinations, all
@@ -25,10 +64,10 @@ Covered:
 - **The file.** No file means no connections and no complaint. An unreadable file is reported, kept, and moved aside as `connections.json.unreadable` on the next save. Broken entries, a bad id and a repeated id are skipped, each with a reason. An unknown provider reads as Other and unknown traffic as admin access. An entry that doesn't say it's on is off.
 - **Secrets pasted into the file.** Fields named like `token` or `authKey` are ignored and named, the value is never repeated, and saving drops them.
 - **Addresses.** host:port, IPv6 in brackets and a bare name with the game's port are read. Nine bad shapes are refused.
-- **Shown as not ready,** with a plain reason, for each of these: no playit agent, an agent that won't answer or answers garbage, a stopped agent, an agent with no secret, a secret missing from the Keychain, a secret file that isn't there or is empty, addresses that can't be read, a playit tunnel with no local address, a running server that doesn't answer where the tunnel points, Tailscale logged out, not answering or not installed.
+- **Shown as not ready,** with a plain reason, for each of these: no playit agent, an agent that won't answer or answers garbage, a stopped agent, an agent with no secret, a secret missing from the Keychain, a secret file that isn't there or is empty, addresses that can't be read, a playit tunnel with no local address, a running server that doesn't answer where the tunnel points.
 - **Unknown, never ready:** an agent that doesn't say whether it has its secret, and a locked Keychain.
-- **Needs a look:** a secret file other accounts can read, recent refusals in playit's log for this address (older ones and other addresses don't count), a stopped server, Tailscale running but offline.
-- **The 2026-11-10 case:** a tunnel forwarding to a Tailscale address while the server only listens on 127.0.0.1 is not ready, and the summary gives the fix. So is a tunnel to the wrong port.
+- **Needs a look:** a secret file other accounts can read, recent refusals in playit's log for this address (older ones and other addresses don't count), a stopped server.
+- **The 2026-11-10 case:** a tunnel forwarding to another address on this Mac while the server only listens on 127.0.0.1 is not ready, and the summary gives the fix. So is a tunnel to the wrong port.
 - **Nothing over the internet unless asked.** The quiet check makes no public ping, HTTP request or lookup. From outside: game addresses get a status ping, web addresses an HTTP request (any answer counts, since pack serving answers strangers 404), names a lookup.
 - **Off means off:** nothing about it is checked.
 - **Real sockets on 127.0.0.1:** the status ping sees a fake server that answers it, doesn't mistake an HTTP answer for Minecraft, and a closed port isn't seen. The real lookup finds localhost.
@@ -36,7 +75,7 @@ Covered:
 - **Mutations:** ignoring a missing Keychain secret, ignoring an agent with no secret, always checking from outside, checking a service that's off, and not flagging pasted secrets each failed at least one check.
 - **The map and sign-in page.** Both read, saved and missing from older files. Five bad addresses refused. Unset says so and asks nothing; the quiet check never fetches; plain http is flagged. From outside: a page, a sign-in prompt (401) and a refusal (403) count as answering, 404 needs a look, a proxy error or no answer is not ready.
 - **Beside the invite code:** the configured address, with Latchkey's named when it differs, Latchkey's when none is configured (labelled), and with neither the screen says so and still shows the code.
-- **Read-only against this Mac's real agents** (`--connections --live`): the playit agent was found running with its secret, and its log showed the pack tunnel refused while pack serving was off. Tailscale read as connected.
+- **Read-only against this Mac's real agents** (`--connections --live`): the playit agent was found running with its secret, and its log showed the pack tunnel refused while pack serving was off.
 
 Gaps skipped:
 

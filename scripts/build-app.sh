@@ -25,6 +25,11 @@ if $universal; then
     swift build -c release --product LeafJuice --arch x86_64
     swift build -c release --product leafjuice-mcp --arch arm64
     swift build -c release --product leafjuice-mcp --arch x86_64
+    swift build -c release --product leafjuice-session --arch arm64
+    swift build -c release --product leafjuice-session --arch x86_64
+    lipo -create -output "$app/Contents/MacOS/leafjuice-session" \
+        .build/arm64-apple-macosx/release/leafjuice-session \
+        .build/x86_64-apple-macosx/release/leafjuice-session
     lipo -create -output "$app/Contents/MacOS/leafjuice-mcp" \
         .build/arm64-apple-macosx/release/leafjuice-mcp \
         .build/x86_64-apple-macosx/release/leafjuice-mcp
@@ -34,11 +39,14 @@ if $universal; then
 else
     swift build -c release --product LeafJuice
     swift build -c release --product leafjuice-mcp
+    swift build -c release --product leafjuice-session
+    cp .build/release/leafjuice-session "$app/Contents/MacOS/leafjuice-session"
     cp .build/release/LeafJuice "$app/Contents/MacOS/LeafJuice"
     cp .build/release/leafjuice-mcp "$app/Contents/MacOS/leafjuice-mcp"
 fi
 strip -x "$app/Contents/MacOS/LeafJuice" 2>/dev/null || true
 strip -x "$app/Contents/MacOS/leafjuice-mcp" 2>/dev/null || true
+strip -x "$app/Contents/MacOS/leafjuice-session" 2>/dev/null || true
 
 [ -f brand/AppIcon.icns ] || swift scripts/make-icon.swift brand
 cp brand/AppIcon.icns "$app/Contents/Resources/AppIcon.icns"

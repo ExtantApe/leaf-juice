@@ -268,6 +268,7 @@ public struct ProcessMetrics: Equatable, Sendable {
 
 public struct ConsoleLine: Identifiable, Equatable, Sendable {
     public enum Origin: Sendable { case server, command, wrapper }
+    public init(id: Int, text: String, level: LogLevel, origin: Origin) { self.id = id; self.text = text; self.level = level; self.origin = origin }
     public let id: Int
     public let text: String
     public let level: LogLevel
