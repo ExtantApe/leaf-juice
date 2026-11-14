@@ -1,2 +1,3 @@
 # Third-party copyright notices that a licence requires to stay intact.
-Copyright (c) 2011 Juan Montoreano (juan@remolacha.biz)
+# The email scan reports file:line:address, so that's what's matched.
+brand/fonts/lilitaone/OFL.txt:1:juan@remolacha.biz
