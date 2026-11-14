@@ -261,7 +261,7 @@ extension ServerController {
         // With Usher here, adding people and changing groups goes through Usher and its safety rules,
         // never around it with raw LuckPerms or `whitelist add`. Taking someone off the allowlist is still allowed.
         if hasUsher, change.addToAllowlist || !change.addGroups.isEmpty || !change.removeGroups.isEmpty {
-            return "Usher looks after who can join this server and their groups, so Leaf Juice goes through Usher instead. Nothing was changed."
+            return "Usher looks after who can join this server and their groups, so LeafJuice goes through Usher instead. Nothing was changed."
         }
         guard AccountLookup.dashed(change.uuid) != nil else { return "That account's ID isn't valid." }
         guard AccountLookup.isValidName(change.name) else { return "That account's name isn't valid." }

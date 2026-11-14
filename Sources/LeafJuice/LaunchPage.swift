@@ -102,7 +102,7 @@ struct LaunchPage: View {
                 Button("Choose a Java…") { chooseJava() }.buttonStyle(.juice)
                 Button("Rescan") { Task { server.runtimes = await JavaManager.discover() } }.buttonStyle(.juice)
             }
-            Hint("Downloads Eclipse Temurin into Leaf Juice's own folder. Your system's Java isn't changed.")
+            Hint("Downloads Eclipse Temurin into LeafJuice's own folder. Your system's Java isn't changed.")
         }
     }
 
@@ -146,7 +146,7 @@ struct LaunchPage: View {
                     .labelsHidden().textFieldStyle(.roundedBorder).font(.system(.body, design: .monospaced))
             }
             Toggle("Hide Minecraft's own server window (nogui)", isOn: $server.profile.launch.noGUI)
-            Hint("Leave this on: Leaf Juice is your console, and the extra window uses memory.")
+            Hint("Leave this on: LeafJuice is your console, and the extra window uses memory.")
         }
     }
 
@@ -163,7 +163,7 @@ struct LaunchPage: View {
             Toggle("Restart automatically after a crash", isOn: $server.profile.launch.restartOnCrash)
             Hint("Pauses after 3 crashes in 10 minutes rather than looping.")
             Toggle("Keep this Mac awake while the server runs", isOn: $server.profile.launch.keepAwake)
-            Toggle("Start this server when Leaf Juice opens", isOn: $server.profile.launch.startWithApp)
+            Toggle("Start this server when LeafJuice opens", isOn: $server.profile.launch.startWithApp)
             Toggle("Keep a log of Java's pauses", isOn: $server.profile.launch.logGC)
             Hint("Costs almost nothing, and shows on the History page whether stutters come from memory.")
             Toggle("Read players from the management server", isOn: Binding(
@@ -172,7 +172,7 @@ struct LaunchPage: View {
                     if on { do { try server.enableManagementProtocol() } catch { managementError = error.localizedDescription } }
                     else { server.profile.useManagementProtocol = false }
                 }))
-            Hint("Minecraft 1.21.9 and later can report who joins and leaves directly, instead of Leaf Juice reading the console. It's set up for this Mac only, and starts at the next start. Now: players come from \(server.playerSource).")
+            Hint("Minecraft 1.21.9 and later can report who joins and leaves directly, instead of LeafJuice reading the console. It's set up for this Mac only, and starts at the next start. Now: players come from \(server.playerSource).")
             if let managementError { Hint(managementError) }
         }
     }
@@ -187,7 +187,7 @@ struct LaunchPage: View {
                 NSPasteboard.general.setString(command, forType: .string)
             }
             .buttonStyle(.juice)
-            Hint("Leaf Juice holds nothing back: this is exactly what runs, and you could run it yourself.")
+            Hint("LeafJuice holds nothing back: this is exactly what runs, and you could run it yourself.")
         }
     }
 }

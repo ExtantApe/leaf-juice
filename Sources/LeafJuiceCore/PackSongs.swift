@@ -68,7 +68,7 @@ extension ResourcePacks {
             return out
         }
         guard parsed.format == 1 else {
-            out.problems.append("Its songs.json is format \(parsed.format), which this version of Leaf Juice doesn't know. Look for a Leaf Juice update.")
+            out.problems.append("Its songs.json is format \(parsed.format), which this version of LeafJuice doesn't know. Look for a LeafJuice update.")
             return out
         }
         let idShape = try! NSRegularExpression(pattern: "^[a-z0-9]+(-[a-z0-9]+)*$")

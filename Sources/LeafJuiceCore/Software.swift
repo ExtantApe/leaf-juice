@@ -224,6 +224,15 @@ public enum ServerFolders {
 }
 
 public enum ServerDetector {
+    /// The version in "Starting minecraft server version 26.3", which Paper, Purpur and Vanilla all log as they start.
+    public static func versionFromStartLine(_ message: String) -> String? {
+        let prefix = "Starting minecraft server version "
+        guard message.hasPrefix(prefix) else { return nil }
+        let version = String(message.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        guard GameVersion(version) != nil, version.count <= 20 else { return nil }
+        return version
+    }
+
     private static let jarName = regex(#"^(paper|purpur|folia)-(.+?)-(\d+)\.jar$"#, .caseInsensitive)
     private static let legacyHistory = regex(#"^git-Paper-(\d+) \(MC: ([^)]+)\)"#)
     private static let historyVersion = regex(#"^(.+?)-(\d+)-[^ ]* \(MC: ([^)]+)\)"#)

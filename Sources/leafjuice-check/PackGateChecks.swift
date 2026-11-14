@@ -161,7 +161,7 @@ private func socketConnect(port: Int) throws -> Int32 {
 @MainActor func runDemoPack(_ demo: URL) async throws {
     let root = demo.appendingPathComponent("servers/pack-demo", isDirectory: true)
     try FileOps.ensureDir(root)
-    write("server-port=25596\nserver-ip=127.0.0.1\nonline-mode=true\nwhite-list=true\nenforce-whitelist=true\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\nmotd=Leaf Juice pack demo\nresource-pack-prompt={\"text\":\"Leaf Juice test pack: only players joining\"}\n",
+    write("server-port=25596\nserver-ip=127.0.0.1\nonline-mode=true\nwhite-list=true\nenforce-whitelist=true\nview-distance=4\nsimulation-distance=4\nlevel-type=minecraft\\:flat\nmotd=LeafJuice pack demo\nresource-pack-prompt={\"text\":\"LeafJuice test pack: only players joining\"}\n",
           root.appendingPathComponent("server.properties"))
     let c = try await ServerController.adopt(root: root, name: "pack-demo")
     c.profile.name = "Pack demo"
@@ -172,7 +172,7 @@ private func socketConnect(port: Int) throws -> Int32 {
     guard await until(240, { c.state == .running }) else { throw LeafError("The demo server didn't start: \(c.console.suffix(3).map(\.text))") }
     c.stop()
     _ = await until(90, { c.state == .stopped })
-    let made = await makePack("Leaf Juice Test Pack", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"Leaf Juice test pack (made up)"}}"#, "assets/madeup/x.json": "{}"])
+    let made = await makePack("LeafJuice Test Pack", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"LeafJuice test pack (made up)"}}"#, "assets/madeup/x.json": "{}"])
     let build = try await ResourcePacks.addExact(made, name: "demo-pack")
     try c.setPackHost(address: "http://127.0.0.1:28781", port: 28781)
     try c.startPackHost()

@@ -1,6 +1,6 @@
 import Foundation
 
-// Where to read about each plugin. Leaf Juice keeps a link, not a copy of anyone's documentation. Only a source
+// Where to read about each plugin. LeafJuice keeps a link, not a copy of anyone's documentation. Only a source
 // that's already known fills one in. A website field or a match by name can point at the wrong project, so those
 // wait until someone chooses them.
 

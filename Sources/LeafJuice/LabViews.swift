@@ -66,7 +66,9 @@ struct LabPanel: View {
             }
             Spacer()
             Button("Restore…") { confirmRestore = save }.buttonStyle(.juice).disabled(!idle)
+                .accessibilityLabel("Restore \(save.note.isEmpty ? save.software : save.note)")
             Button("Delete…") { confirmDelete = save }.buttonStyle(.juice).disabled(lab.isBusy)
+                .accessibilityLabel("Delete \(save.note.isEmpty ? save.software : save.note)")
         }
     }
 }
@@ -401,7 +403,7 @@ struct LabSetupSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label("Set up the Lab", systemImage: "flask").font(.title2.weight(.semibold)).foregroundStyle(Juice.ink)
-            Text("The Lab is a practice server in \((LabFiles.root.path as NSString).abbreviatingWithTildeInPath). Leaf Juice fills it with its own worlds and bot players, and uses it to rehearse upgrades. It never copies your real worlds or players.")
+            Text("The Lab is a practice server in \((LabFiles.root.path as NSString).abbreviatingWithTildeInPath). LeafJuice fills it with its own worlds and bot players, and uses it to rehearse upgrades. It never copies your real worlds or players.")
                 .foregroundStyle(Juice.ink).fixedSize(horizontal: false, vertical: true)
             Text("Running it means running a Minecraft server, so Mojang's EULA applies. Your acceptance covers the Lab and its rebuilds.")
                 .foregroundStyle(Juice.ink).fixedSize(horizontal: false, vertical: true)

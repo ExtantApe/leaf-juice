@@ -1,6 +1,6 @@
-<p align="center"><img src="brand/icon-1024.png" width="128" alt="Leaf Juice icon: a glass of green juice with a leaf on it"></p>
+<p align="center"><img src="brand/icon-1024.png" width="128" alt="LeafJuice icon: a glass of green juice with a leaf on it"></p>
 
-# Leaf Juice
+# LeafJuice
 
 A free, native Mac app for running a Minecraft Java server. It's the easy step up from
 `java -jar paper.jar`: about 40 MB and no measurable CPU at idle, with no web panel, daemon or container.
@@ -41,8 +41,8 @@ Not affiliated with Mojang or Microsoft.
   pinned SHA-256; it needs Java 25, and works for Paper only). Check with Preflight copies the server with saving paused, and the tool
   boots the copy on the new version. It lists the plugins that didn't load, didn't start or failed a critical check, plus everything
   that needs them. Warnings, and plugins that couldn't be checked in the copy, are only listed. Never-off rules and things to check by hand live in
-  `plugins/Preflight/upgrade/rules.json`, the tool's own file, so they work without Leaf Juice too. If a never-off plugin would have to go,
-  the plan says to wait. Switching off happens only after you confirm, only while the server is stopped, and only after Leaf Juice's
+  `plugins/Preflight/upgrade/rules.json`, the tool's own file, so they work without LeafJuice too. If a never-off plugin would have to go,
+  the plan says to wait. Switching off happens only after you confirm, only while the server is stopped, and only after LeafJuice's
   verified whole-server restore point; the tool keeps its own copy of the jars too. Each plugin can be switched back on from the
   Software page. A pass means a plugin starts, not that it works.
 - **Rotates server icons**: keep icons in the server's `server-icons` folder and pick one on the Overview page. It's copied over `server-icon.png`, which Minecraft reads at the next start. Added images must be square, and are scaled to 64×64 with nearest-neighbour so pixel art stays sharp. Nothing in the folder is moved or deleted, and an icon in use that isn't in the folder yet is saved there first.
@@ -57,8 +57,8 @@ Not affiliated with Mojang or Microsoft.
 
 ## Your server stays yours
 
-**No telemetry, no analytics, no accounts.** Everything Leaf Juice measures stays on your Mac. It only goes online to
-do something you can see: checking for server, plugin and Java updates, and looking for a new Leaf Juice release (which you can turn off in Settings).
+**No telemetry, no analytics, no accounts.** Everything LeafJuice measures stays on your Mac. It only goes online to
+do something you can see: checking for server, plugin and Java updates, and looking for a new LeafJuice release (which you can turn off in Settings).
 A few things happen only when you click them, such as the connection check and web searches for an error, and they say what they share.
 
 ## Upgrades can't quietly break your server
@@ -68,7 +68,7 @@ newer version won't open on an older one. So any version change or software swit
 
 1. **Restore point.** The whole server is archived, then read back to prove every world is inside. This isn't
    optional. If it fails, the upgrade doesn't happen and nothing changes.
-2. **You try it.** Leaf Juice asks whether to keep the upgrade, and holds on to the restore point until you say.
+2. **You try it.** LeafJuice asks whether to keep the upgrade, and holds on to the restore point until you say.
 3. **Roll back in one step**, if you need to: server, plugins, settings and jar all return to how they were.
 4. **The upgraded state isn't thrown away.** It moves to the **Shelf**, which is separate from backups:
    retention leaves it alone, and you can resume that upgrade later, for example once a plugin has caught up.
@@ -107,11 +107,11 @@ running. A pass means these checks passed, and the board lists what they don't c
 
 Worlds and Multiverse, Players, History, Cleanup, Test copies, Backup drills, the Lab, Resource packs and Plugin links are all switches in **Settings**, and all
 on by default. Off hides the feature and stops its background work. Nothing it saved is deleted, and turning it back on picks up where it left off.
-These are built in: Leaf Juice doesn't load third-party code.
+These are built in: LeafJuice doesn't load third-party code.
 
 ## Advisor (optional, uses AI)
 
-Off until you turn it on in **Settings**, unlike everything above, because it sends data outside your Mac. It reads what Leaf Juice has noticed about a server you choose and suggests, in plain words, what's wrong and what to do first. It uses your own Claude account through [Claude Code](https://claude.com/claude-code), and in testing a check took about half a minute and about 8 cents if you pay per use.
+Off until you turn it on in **Settings**, unlike everything above, because it sends data outside your Mac. It reads what LeafJuice has noticed about a server you choose and suggests, in plain words, what's wrong and what to do first. It uses your own Claude account through [Claude Code](https://claude.com/claude-code), and in testing a check took about half a minute and about 8 cents if you pay per use.
 
 It can't change anything. Chat, log messages, passwords, player names and addresses aren't shared, and **See Exactly What Would Be Shared** shows the real text before you decide. [ADVISOR-SECURITY.md](docs/ADVISOR-SECURITY.md) explains what this does and doesn't protect against.
 
@@ -131,14 +131,14 @@ Each build keeps a lock file of every copy of every file, so an update can show 
 
 **Getting a pack to players:** their games download it from the web, so a build needs an address. There are two ways:
 
-- **Serve it from Leaf Juice.** Off until you start it. Each recipe gets its own address with a long random path, so different worlds can have different packs. Leaf Juice only listens on this Mac, so something like Caddy has to carry it through your tunnel, on a different hostname from any sign-in page. **Only players joining** is on by default: a pack goes only to a request carrying the game's own `X-Minecraft-Username`, `X-Minecraft-UUID` and `X-Minecraft-Version` headers, for a player listed in the server's whitelist whom the server's log shows connecting in the last 5 minutes, or online now. Everyone else, a browser included, gets the same 404 as a wrong address. Headers can be faked, so this stops casual downloads and shared links, not someone who knows a whitelisted player's name and UUID and asks while that player is joining. The address's long random path still hides it too. It runs only while Leaf Juice is open, uses your upload speed, and keeps no record of who downloads. Serving a combined pack gives players a copy of other people's work, so Leaf Juice shows each pack's license first.
+- **Serve it from LeafJuice.** Off until you start it. Each recipe gets its own address with a long random path, so different worlds can have different packs. LeafJuice only listens on this Mac, so something like Caddy has to carry it through your tunnel, on a different hostname from any sign-in page. **Only players joining** is on by default: a pack goes only to a request carrying the game's own `X-Minecraft-Username`, `X-Minecraft-UUID` and `X-Minecraft-Version` headers, for a player listed in the server's whitelist whom the server's log shows connecting in the last 5 minutes, or online now. Everyone else, a browser included, gets the same 404 as a wrong address. Headers can be faked, so this stops casual downloads and shared links, not someone who knows a whitelisted player's name and UUID and asks while that player is joining. The address's long random path still hides it too. It runs only while LeafJuice is open, uses your upload speed, and keeps no record of who downloads. Serving a combined pack gives players a copy of other people's work, so LeafJuice shows each pack's license first.
 - **Host it elsewhere,** such as mc-packs.net, and enter the address.
-- **Serve an exact file,** such as BlueMinimap's `/blueminimap pack export` (BlueMapHUD's `/bmhud pack export` before 0.2.0). Add an Exact Pack stores the zip unchanged under its own SHA-1, with nothing unzipped, rebuilt or added. Each version gets its own address, and there's also an address with `{sha1}` left in for a plugin that fills in the hash itself. Adding a new export gives it a new address, and old ones keep serving their own file. Two risks, both shown in the app: players can't get the pack while Leaf Juice is closed, so a required pack stops them joining, and New Address breaks a plugin's `public-url` until you paste in the new one.
+- **Serve an exact file,** such as BlueMinimap's `/blueminimap pack export` (BlueMapHUD's `/bmhud pack export` before 0.2.0). Add an Exact Pack stores the zip unchanged under its own SHA-1, with nothing unzipped, rebuilt or added. Each version gets its own address, and there's also an address with `{sha1}` left in for a plugin that fills in the hash itself. Adding a new export gives it a new address, and old ones keep serving their own file. Two risks, both shown in the app: players can't get the pack while LeafJuice is closed, so a required pack stops them joining, and New Address breaks a plugin's `public-url` until you paste in the new one.
 - **Leave out a song.** A pack can list its songs in `songs.json` at its top: `{"format": 1, "songs": [{"id": "calm", "title": "Calm", "credit": "…", "files": [{"path": "assets/minecraft/sounds/music/game/calm1.ogg", "replaces": "music/game/calm1", "bytes": 123}]}]}`. Under Songs, untick one and that recipe's builds leave its files out, so Minecraft's own track plays. Each choice makes a new build, with its own SHA-1 and address. If the list has a problem, such as a file claimed twice or one the pack doesn't have, every song stays in and the build says why. Songs are credited in `CREDITS.txt`.
 
-**Check** downloads from the address as a game would and compares the SHA-1. It carries a one-time pass that only Leaf Juice's own pack server issues, valid for one download within two minutes, so it works with only players joining on. Setting another host's address on a server runs this first, and you can still go ahead if it fails, say if you haven't uploaded yet.
+**Check** downloads from the address as a game would and compares the SHA-1. It carries a one-time pass that only LeafJuice's own pack server issues, valid for one download within two minutes, so it works with only players joining on. Setting another host's address on a server runs this first, and you can still go ahead if it fails, say if you haven't uploaded yet.
 
-Leaf Juice sets the address on your server through the usual Change Queue. A change staged for the next restart keeps the running server's file and hash together until that restart, then switches both. If Packmule (called ResourcePackButler before 0.2.0) or WorldResourcepacks is on the server, Leaf Juice won't write its pack settings. You copy each build's own address and SHA-1 into that plugin's config instead. That address only ever gives that build, so the hash can't go stale. This has only been tested with stand-in jars of those names.
+LeafJuice sets the address on your server through the usual Change Queue. A change staged for the next restart keeps the running server's file and hash together until that restart, then switches both. If Packmule (called ResourcePackButler before 0.2.0) or WorldResourcepacks is on the server, LeafJuice won't write its pack settings. You copy each build's own address and SHA-1 into that plugin's config instead. That address only ever gives that build, so the hash can't go stale. This has only been tested with stand-in jars of those names.
 
 A real game client hasn't loaded a served pack yet. Bots have shown a real Paper 26.3 server offering the address and hash, and that a download from it matches. With only players joining on, a download sent with the game's headers for a whitelisted bot that just joined succeeded, without them or for an unlisted UUID it got 404, and the bot stayed on. That the 26.x game sends those headers is taken from how the game has worked since 1.20.3, and hasn't been seen yet. If it doesn't, every player would be refused the pack, and kept out if it's required. The 250 MB warning hasn't been checked against a real client either.
 
@@ -161,7 +161,7 @@ you click it. When a piece is missing, the check says which one and shows the se
 
 The settings are in the server's `.leafjuice/connections.json`. Secrets are never saved there. A service's secret
 either goes in your login Keychain (Edit Connections, paste it into the secure field), or stays in the service's own
-file, which Leaf Juice only checks is there and readable by you alone, or is kept by the provider's own agent. If a
+file, which LeafJuice only checks is there and readable by you alone, or is kept by the provider's own agent. If a
 field that looks like a secret turns up in the file, it's ignored and named on the card. The fields, with made-up
 values:
 
@@ -203,11 +203,11 @@ does. Checked against the real playit agent and Tailscale on one Mac, read-only.
 
 ## Staying safe when you're not looking
 
-Every backup can also be copied to a **second location**, ideally another drive, with each copy checked against the original. If the main backups are lost, they can be copied back. Leaf Juice also sends a **Mac notification** for crashes, failed backups and low disk space, and you can turn that off in Settings.
+Every backup can also be copied to a **second location**, ideally another drive, with each copy checked against the original. If the main backups are lost, they can be copied back. LeafJuice also sends a **Mac notification** for crashes, failed backups and low disk space, and you can turn that off in Settings.
 
 ## Allowlist
 
-Add someone before they've ever joined. Type their name in any capitals and Leaf Juice asks Mojang for the real account, then shows you its spelling and ID. If there's no such account, or Mojang can't be reached, nothing is added. Java accounts only, and it needs `online-mode=true`.
+Add someone before they've ever joined. Type their name in any capitals and LeafJuice asks Mojang for the real account, then shows you its spelling and ID. If there's no such account, or Mojang can't be reached, nothing is added. Java accounts only, and it needs `online-mode=true`.
 
 With LuckPerms you can choose their groups too. Groups go on first, then the allowlist, and both are read back, so nobody can join with only the default access while it's half done. While the server is stopped the whole thing waits, shows under **Not finished**, and happens when the server is running. Each server is its own list.
 
@@ -219,10 +219,10 @@ Taking someone off the allowlist leaves their groups alone. Changing someone's g
 
 ### With Usher and Latchkey
 
-These need **Plugin commands**, which is off by default, and the server running in Leaf Juice, because Leaf Juice types the plugins' commands into its console and reads their answers.
+These need **Plugin commands**, which is off by default, and the server running in LeafJuice, because LeafJuice types the plugins' commands into its console and reads their answers.
 
-- **Usher:** when it's installed, approving someone goes through Usher's profiles, its questions show on the page and each needs a tick, and changes land in Usher's own log. Leaf Juice then never changes groups or the whitelist around Usher. If it can't reach Usher, the page refuses rather than doing it another way. People the whitelist turned away are listed, with an Approve button.
-- **Invites (Latchkey):** an invite is a six-character code for one Minecraft name, lasting 1 to 30 days, with the Usher profiles you pick. The code is shown once and Leaf Juice keeps no copy. It never goes through the console or the server log. Invites can be listed and revoked. With Latchkey 0.3, the card also shows whether Latchkey's lobby is on.
+- **Usher:** when it's installed, approving someone goes through Usher's profiles, its questions show on the page and each needs a tick, and changes land in Usher's own log. LeafJuice then never changes groups or the whitelist around Usher. If it can't reach Usher, the page refuses rather than doing it another way. People the whitelist turned away are listed, with an Approve button.
+- **Invites (Latchkey):** an invite is a six-character code for one Minecraft name, lasting 1 to 30 days, with the Usher profiles you pick. The code is shown once and LeafJuice keeps no copy. It never goes through the console or the server log. Invites can be listed and revoked. With Latchkey 0.3, the card also shows whether Latchkey's lobby is on.
 - **Web sign-ins:** where Latchkey offers it (0.3 and later), each player's sheet shows how many browsers they're signed in on, with **Sign Out Everywhere**. Their allowlist place and profiles stay.
 
 **Tested:** throwaway Paper 26.3 with Usher 0.4.0 and 0.4.1, Latchkey 0.2.0 and an unreleased 0.3.0 build, LuckPerms and made-up offline accounts: an invite made here, redeemed on Latchkey's page, profiles applied by Usher, a bot signed in, signed out again. **Not tested:** a real server, a real game client, or the screens with a keyboard and VoiceOver.
@@ -239,12 +239,12 @@ Off by default. Turn it on and the same list is served as a web page that only p
 
 **Who gets in:** a player types `/signin` in game and clicks the one-time link they're sent, so there's no password. That takes the Latchkey plugin, the `latchkey.signin` permission (ops have it by default), a place on the allowlist, and `online-mode=true`. A server behind a proxy has `online-mode` off, so it isn't supported yet.
 
-- With Latchkey 0.2 or later, Leaf Juice also accepts Latchkey's own browser sessions, reading Latchkey's session file on every request, so they last as long as Latchkey says and survive Leaf Juice quitting. Leaf Juice's older sign-in still works alongside it for now: a session lasts 12 hours and lives in memory, so quitting Leaf Juice ends it. Losing the permission takes effect at the next sign-in. Leaving the allowlist or being banned ends access at once.
+- With Latchkey 0.2 or later, LeafJuice also accepts Latchkey's own browser sessions, reading Latchkey's session file on every request, so they last as long as Latchkey says and survive LeafJuice quitting. LeafJuice's older sign-in still works alongside it for now: a session lasts 12 hours and lives in memory, so quitting LeafJuice ends it. Losing the permission takes effect at the next sign-in. Leaving the allowlist or being banned ends access at once.
 - Nothing has an age or account type of its own: children's accounts follow the same permission.
 - The app shows who's signed in, and can sign anyone out. It keeps the account, the time and what happened for 30 days, in `.leafjuice/sign-in-log.json`, with no addresses, browsers or pages visited.
-- The page only exists while Leaf Juice is open.
+- The page only exists while LeafJuice is open.
 
-**Reaching it from outside:** Leaf Juice only listens on this Mac, over plain HTTP, and only answers to the address you enter. HTTPS has to end on this Mac too, or whoever carries the traffic could read sign-in links and cookies. The plan is [Caddy](https://caddyserver.com) behind a [playit.gg](https://playit.gg) HTTPS tunnel, which playit says needs Premium and which it doesn't decrypt. Any public certificate puts its hostname in public logs, so pick a name that doesn't say who the server is for.
+**Reaching it from outside:** LeafJuice only listens on this Mac, over plain HTTP, and only answers to the address you enter. HTTPS has to end on this Mac too, or whoever carries the traffic could read sign-in links and cookies. The plan is [Caddy](https://caddyserver.com) behind a [playit.gg](https://playit.gg) HTTPS tunnel, which playit says needs Premium and which it doesn't decrypt. Any public certificate puts its hostname in public logs, so pick a name that doesn't say who the server is for.
 
 ```
 links.example.com {
@@ -263,21 +263,21 @@ links.example.com {
 - An op who isn't given the permission through LuckPerms sees fewer maps than they can enter, because op status isn't part of the check.
 - Teleports from the console or by another plugin can move someone into a world they don't have access to. The map follows the permission, not where they happen to be.
 
-BlueMap's own web server must stop answering anyone else, or the sign-in can be skipped. Set `ip: "127.0.0.1"` in `plugins/BlueMap/webserver.conf`. By default it's every network interface, and the app warns until it's changed. Leaf Juice reads BlueMap's port and web folder from the same file.
+BlueMap's own web server must stop answering anyone else, or the sign-in can be skipped. Set `ip: "127.0.0.1"` in `plugins/BlueMap/webserver.conf`. By default it's every network interface, and the app warns until it's changed. LeafJuice reads BlueMap's port and web folder from the same file.
 
-**Map tested:** real BlueMap 5.16, Multiverse-Core 5.8.2 and LuckPerms 5.5.71 on a throwaway Paper 1.21.11 server with bots and made-up worlds. A real tile came through byte for byte, each player saw only their own worlds, and taking the permission away took the map away. On Minecraft 26, where Paper moves every world inside the level folder, BlueMap's map settings name the level folder and a dimension instead. Leaf Juice reads which world that is from the dimension. That form comes from a 26.2 trial with BlueMap 5.29 and is only covered by tests on made-up files.
+**Map tested:** real BlueMap 5.16, Multiverse-Core 5.8.2 and LuckPerms 5.5.71 on a throwaway Paper 1.21.11 server with bots and made-up worlds. A real tile came through byte for byte, each player saw only their own worlds, and taking the permission away took the map away. On Minecraft 26, where Paper moves every world inside the level folder, BlueMap's map settings name the level folder and a dimension instead. LeafJuice reads which world that is from the dimension. That form comes from a 26.2 trial with BlueMap 5.29 and is only covered by tests on made-up files.
 
 **Not tested:** a real browser drawing the map through the gate, a real tunnel, Caddy, or BlueMap's live updates over time.
 
 ## Install
 
-1. Download the `.dmg` from [Releases](https://github.com/ExtantApe/leaf-juice/releases) and drag Leaf Juice to Applications.
-2. Leaf Juice is free and unsigned (Apple charges for signing), so macOS blocks the first launch. Allow it one of two ways:
+1. Download the `.dmg` from [Releases](https://github.com/ExtantApe/leaf-juice/releases) and drag LeafJuice to Applications.
+2. LeafJuice is free and unsigned (Apple charges for signing), so macOS blocks the first launch. Allow it one of two ways:
 
    **Terminal (quickest):**
 
    ```bash
-   xattr -dr com.apple.quarantine "/Applications/Leaf Juice.app"
+   xattr -dr com.apple.quarantine "/Applications/LeafJuice.app"
    ```
 
    **Or System Settings:** try to open the app once, then go to **System Settings → Privacy &
@@ -302,13 +302,13 @@ That needs only Apple's Command Line Tools (`xcode-select --install`), and the a
 
 - **Accepting the EULA is yours to do.** A new server asks you to read Minecraft's EULA and accept it yourself.
 - **Java** is found automatically (`java_home`, Homebrew, SDKMAN). If you don't have the version a server needs,
-  Leaf Juice offers to download Eclipse Temurin into its own folder, leaving your system's Java alone.
+  LeafJuice offers to download Eclipse Temurin into its own folder, leaving your system's Java alone.
 - **Scheduled backups and restarts only happen while the app is open.** Closing the window is fine: it stays
   in the menu bar. Quitting stops your servers cleanly first, after asking.
-- **Premium SpigotMC plugins** can't be downloaded automatically, so Leaf Juice can only tell you an update exists.
+- **Premium SpigotMC plugins** can't be downloaded automatically, so LeafJuice can only tell you an update exists.
 - **SpigotMC's version tags** are set per plugin rather than per release and are maintained by hand, so
-  Leaf Juice calls them "likely" at best. Modrinth and Hangar list versions per release, so those are exact.
-- **Other people on the internet** need your router to forward the server's port. Leaf Juice doesn't do this for you.
+  LeafJuice calls them "likely" at best. Modrinth and Hangar list versions per release, so those are exact.
+- **Other people on the internet** need your router to forward the server's port. LeafJuice doesn't do this for you.
 
 ## Adding your own issue rules
 

@@ -63,7 +63,7 @@ let builtInRulesJSON = #"""
     "id": "eula", "title": "The Minecraft EULA hasn't been accepted", "severity": "critical", "category": "Setup",
     "contains": ["you need to agree to the eula", "failed to load eula.txt"],
     "explanation": "Minecraft servers won't start until their owner accepts Mojang's End User License Agreement.",
-    "steps": ["Press Start. Leaf Juice will show the agreement and let you accept it."],
+    "steps": ["Press Start. LeafJuice will show the agreement and let you accept it."],
     "samples": ["You need to agree to the EULA in order to run the server. Go to eula.txt for more info."]
   },
   {
@@ -162,7 +162,7 @@ let builtInRulesJSON = #"""
     "id": "world-layout-migration", "title": "Minecraft is moving worlds to its new layout", "severity": "info", "category": "World",
     "regex": "\\[worldfoldermigration\\]",
     "explanation": "The first start on Minecraft 26 reorganizes world folders. It waits 30 seconds first, as a chance to stop if there's no backup, and it can take a while on a big world.",
-    "steps": ["Let it finish. Stopping it partway isn't safe.", "An upgrade through Leaf Juice has already made a restore point."],
+    "steps": ["Let it finish. Stopping it partway isn't safe.", "An upgrade through LeafJuice has already made a restore point."],
     "samples": ["[WorldFolderMigration] World storage migration is required during startup.", "[WorldFolderMigration] Continuing in 30 seconds...", "[WorldFolderMigration] If you do not have a backup: interrupt the server now. Use Ctrl+C, your panel", "[WorldFolderMigration] ====================================================="]
   },
   {
@@ -176,7 +176,7 @@ let builtInRulesJSON = #"""
     "id": "plugin-update-check", "title": "A plugin couldn't check for its own updates", "severity": "info", "category": "Plugins",
     "regex": "updatechecker\\]|update.?checker.*(error|failed)|(could not|couldn't|failed to) check for updates?",
     "explanation": "The plugin looks online for a newer version, and that didn't work this time. Often it's a rate limit, and the plugin runs normally.",
-    "steps": ["Nothing to do, unless it keeps happening. Leaf Juice checks for updates separately on the Plugins page."],
+    "steps": ["Nothing to do, unless it keeps happening. LeafJuice checks for updates separately on the Plugins page."],
     "samples": ["[nl.pim16aap2.animatedarchitecture.core.util.updater.UpdateChecker] Received unexpected update state: 'ERROR' for URL: 'https://api.github.com/repos/x/y/releases/latest'", "[nl.pim16aap2.animatedarchitecture.core.util.updater.UpdateChecker] Failed to read URL 'https://api.github.com/repos/x/y/releases/latest'"]
   },
   {
@@ -285,7 +285,7 @@ let builtInRulesJSON = #"""
     "id": "reload-used", "title": "/reload was used", "severity": "warning", "category": "Plugins",
     "regex": "are you sure you wish to reload|please note that this command is not supported|the server is being reloaded|server reload complete",
     "explanation": "/reload restarts plugins without restarting the server. Many plugins aren't built for this, which can cause memory leaks and strange errors until the next full restart.",
-    "steps": ["Prefer a real restart. Leaf Juice can schedule one when the server is empty."],
+    "steps": ["Prefer a real restart. LeafJuice can schedule one when the server is empty."],
     "action": {"page": "changes", "label": "Open Changes"},
     "samples": ["Please note that this command is not supported and may cause issues."]
   },
@@ -314,7 +314,7 @@ let builtInRulesJSON = #"""
   },
   {
     "id": "database", "title": "A database connection failed", "severity": "error", "category": "Network",
-    "contains": ["communications link failure", "connection refused", "hikaripool", "access denied for user", "unable to obtain connection"],
+    "contains": ["communications link failure", "connection refused", "exception during pool initialization", "connection is not available, request timed out", "access denied for user", "unable to obtain connection"],
     "explanation": "A plugin couldn't reach its database or another network service. The database may be down, or the plugin's settings may be wrong.",
     "steps": ["Check that the database is running.", "Check the address and password in the plugin's config."],
     "action": {"page": "configs", "label": "Open Configs"},

@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-// A protected practice server. Everything in it is made by Leaf Juice, so wiping it costs nothing,
+// A protected practice server. Everything in it is made by LeafJuice, so wiping it costs nothing,
 // and it can rehearse an upgrade without the real server's worlds or players ever being involved.
 
 public enum LabFiles {
@@ -129,7 +129,7 @@ public enum LabRecipe {
         [
             "server-ip=127.0.0.1", "server-port=\(port)", "online-mode=false", "white-list=false", "enforce-whitelist=false",
             "network-compression-threshold=-1", "view-distance=4", "simulation-distance=4", "spawn-protection=0", "max-tick-time=-1",
-            "level-type=minecraft\\:flat", "motd=Leaf Juice Lab",
+            "level-type=minecraft\\:flat", "motd=LeafJuice Lab",
             // Observed: slimes killed a bot on a flat world, which looks like lost items.
             "difficulty=peaceful", "spawn-monsters=false", "enable-rcon=false", "enable-query=false",
         ].joined(separator: "\n") + "\n"
@@ -343,7 +343,7 @@ public final class LabController {
         if let server {
             guard !server.state.isLive else { throw LeafError("Stop the Lab first.") }
             await server.detectExternalServer()
-            if case .external = server.state { throw LeafError("The Lab is running outside Leaf Juice. Stop it first.") }
+            if case .external = server.state { throw LeafError("The Lab is running outside LeafJuice. Stop it first.") }
         }
         guard FileOps.exists(root) else { return }
         guard let onDisk = ServerController.readProfile(root: root), LabFiles.isLab(root: root, profile: onDisk) else {

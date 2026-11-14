@@ -92,7 +92,7 @@ struct AllowlistPage: View {
                     Task { await readAttempts() }
                 }
             } else {
-                Hint("Usher looks after who can join this server, so they can be approved once Leaf Juice can reach it.")
+                Hint("Usher looks after who can join this server, so they can be approved once LeafJuice can reach it.")
             }
         } else {
             rawFound(account)
@@ -165,7 +165,7 @@ struct AllowlistPage: View {
                         .accessibilityLabel("Remove \(entry.name)")
                 }
             }
-            if server.hasUsher, usherProfiles == nil { Hint("Profiles can be changed once Leaf Juice can reach Usher.") }
+            if server.hasUsher, usherProfiles == nil { Hint("Profiles can be changed once LeafJuice can reach Usher.") }
             else if server.hasLuckPerms, !server.hasUsher, !running { Hint("Groups can only be changed while the server runs.") }
         }
     }
@@ -195,6 +195,7 @@ struct AllowlistPage: View {
                             save()
                         }
                         .buttonStyle(.juice)
+                        .accessibilityLabel("Remove the pair \(pair.joined(separator: " and "))")
                         .accessibilityLabel("Remove the pair \(pair.joined(separator: " and "))")
                     }
                 }
@@ -226,13 +227,13 @@ struct AllowlistPage: View {
     @ViewBuilder private var usherNote: some View {
         switch usher {
         case .unavailable(let why)?:
-            Callout(tone: .warning, title: "Usher can't be reached", detail: why + " Leaf Juice won't add anyone or change groups around it.") {
+            Callout(tone: .warning, title: "Usher can't be reached", detail: why + " LeafJuice won't add anyone or change groups around it.") {
                 if !modules.isOn(.pluginCommands) {
                     Button("Turn On Plugin Commands") { modules.set(.pluginCommands, on: true) }.buttonStyle(.juice)
                 }
             }
         case .ready(let version, _, let luckPerms, let problems)?:
-            Callout(tone: .info, title: "Approvals go through Usher \(version)", detail: "Profiles, questions and the change log are Usher's. This works only while Leaf Juice runs this server, because it types Usher's commands into the console.") {
+            Callout(tone: .info, title: "Approvals go through Usher \(version)", detail: "Profiles, questions and the change log are Usher's. This works only while LeafJuice runs this server, because it types Usher's commands into the console.") {
                 EmptyView()
             }
             if !luckPerms { Callout(tone: .warning, title: "LuckPerms isn't running", detail: "Usher refuses every change without it, saying why.") }

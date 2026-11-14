@@ -52,7 +52,9 @@ struct ShelfCard: View {
                         }
                         Spacer()
                         Button("Resume…") { resuming = entry }.buttonStyle(.juice).disabled(server.activity != nil)
+                            .accessibilityLabel("Resume \(entry.label)")
                         Button("Delete…") { deleting = entry }.buttonStyle(.juiceDanger)
+                            .accessibilityLabel("Delete \(entry.label) from the Shelf")
                     }
                 }
             }

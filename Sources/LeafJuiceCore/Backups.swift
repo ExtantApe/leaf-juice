@@ -71,7 +71,7 @@ public enum Backups {
     }
 
     /// A whole-folder backup is everything needed to run as it was, offline if need be: jars, libraries and
-    /// caches included. Only Leaf Juice's own bookkeeping stays out, because a restore shouldn't rewind that.
+    /// caches included. Only LeafJuice's own bookkeeping stays out, because a restore shouldn't rewind that.
     static let skippedTopLevel: Set<String> = [".leafjuice", ".DS_Store"]
 
     public static func items(_ root: URL, scope: BackupScope) -> [String] {

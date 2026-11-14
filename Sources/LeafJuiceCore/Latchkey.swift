@@ -2,7 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 
-// Latchkey owns invites and browser sessions. Leaf Juice makes and lists invites through Latchkey's format-1
+// Latchkey owns invites and browser sessions. LeafJuice makes and lists invites through Latchkey's format-1
 // commands, so it can do that only while it runs the server. It checks a sign-in by reading Latchkey's session
 // file. Agreed with the Plugins Lead and decided by the owner on 2026-11-09; see docs/PLAN.md.
 
@@ -59,7 +59,7 @@ public struct NewInvite: Sendable, Equatable {
 
 public struct InviteList: Sendable, Equatable {
     public let invites: [LatchkeyInvite]
-    /// True when there were more than Leaf Juice read, or a cursor it wouldn't send back.
+    /// True when there were more than LeafJuice read, or a cursor it wouldn't send back.
     public let more: Bool
 }
 
@@ -77,21 +77,21 @@ extension ServerController {
     public func latchkeyStatus() async -> LatchkeyStatus {
         guard hasLatchkey else { return .notInstalled }
         guard Modules.shared.isOn(.pluginCommands) else {
-            return .unavailable("Turn on Plugin commands so Leaf Juice can make invites through Latchkey.")
+            return .unavailable("Turn on Plugin commands so LeafJuice can make invites through Latchkey.")
         }
         guard state == .running, process != nil else {
-            return .unavailable("Invites from Leaf Juice only work while Leaf Juice runs this server, because it types Latchkey's commands into the console. Start it here first.")
+            return .unavailable("Invites from LeafJuice only work while LeafJuice runs this server, because it types Latchkey's commands into the console. Start it here first.")
         }
         let described: PluginDescription
         switch await commands.describe("latchkey") {
         case .described(let d): described = d
-        case .newerFormat(let n): return .unavailable("Latchkey speaks command format \(n), newer than this Leaf Juice knows. Update Leaf Juice.")
+        case .newerFormat(let n): return .unavailable("Latchkey speaks command format \(n), newer than this LeafJuice knows. Update LeafJuice.")
         case .unreadable: return .unavailable("Latchkey's list of commands couldn't be read.")
         case .outcome(let outcome): return .unavailable(Self.plain(outcome, doing: "Asking Latchkey what it offers"))
         }
         let have = Set(described.commands.map(\.name))
         if let missing = Self.latchkeyCommandsNeeded.first(where: { !have.contains($0) }) {
-            return .unavailable("This Latchkey (\(described.version)) has no \(missing) command. Leaf Juice needs Latchkey 0.2.0 or later.")
+            return .unavailable("This Latchkey (\(described.version)) has no \(missing) command. LeafJuice needs Latchkey 0.2.0 or later.")
         }
         let reply = await commands.run("latchkey", ["status"])
         guard case .done(let answer) = reply.outcome else { return .unavailable(Self.plain(reply.outcome, doing: "Asking Latchkey how it's set up")) }
@@ -190,7 +190,7 @@ extension ServerController {
     /// Ends every browser sign-in someone has. Their allowlist place and profiles stay.
     public func signOutEverywhere(name: String) async -> Result<Int, UsherProblem> {
         guard AccountLookup.isValidName(name) else { return .failure(UsherProblem("That account's name isn't valid.")) }
-        guard await latchkeyOffers(Self.latchkeySessionCommands) else { return .failure(UsherProblem("This Latchkey can't sign people out from Leaf Juice.")) }
+        guard await latchkeyOffers(Self.latchkeySessionCommands) else { return .failure(UsherProblem("This Latchkey can't sign people out from LeafJuice.")) }
         let reply = await commands.run("latchkey", ["session", "revoke"], [.player(name)])
         guard case .done(let answer) = reply.outcome else { return .failure(UsherProblem(Self.plain(reply.outcome, doing: "Signing \(name) out"))) }
         struct Wire: Decodable { let ended: Int }

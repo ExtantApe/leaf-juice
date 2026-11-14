@@ -90,7 +90,7 @@ let tools: [[String: Any]] = [
      "inputSchema": ["type": "object", "properties": [String: Any](), "additionalProperties": false], "annotations": readOnly],
     ["name": "server_summary", "description": "Software, version, plugin file names, a fixed set of harmless settings, and health numbers: TPS, tick time, memory, garbage collection and crashes. Lag and memory trouble can show here with nothing in the log.",
      "inputSchema": ["type": "object", "properties": ["server": serverProperty()], "required": ["server"], "additionalProperties": false], "annotations": readOnly],
-    ["name": "open_issues", "description": "Open problems Leaf Juice has catalogued: rule, severity, plugin, count and stack trace. Log wording is never included.",
+    ["name": "open_issues", "description": "Open problems LeafJuice has catalogued: rule, severity, plugin, count and stack trace. Log wording is never included.",
      "inputSchema": ["type": "object", "properties": ["server": serverProperty(), "limit": ["type": "integer", "minimum": 1, "maximum": 100]], "required": ["server"], "additionalProperties": false], "annotations": readOnly],
     ["name": "recent_problems", "description": "Recognised problems from the start and end of the log, each with its stack trace and how many times it repeated. A message that isn't a recognised shape is withheld and counted, because it could say anything.",
      "inputSchema": ["type": "object", "properties": ["server": serverProperty(), "limit": ["type": "integer", "minimum": 1, "maximum": 500]], "required": ["server"], "additionalProperties": false], "annotations": readOnly],

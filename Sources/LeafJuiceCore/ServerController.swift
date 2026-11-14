@@ -29,7 +29,7 @@ public final class ServerController: Identifiable {
     public internal(set) var linksWeb: LinksWeb?
     public internal(set) var linksListener: LinksListener?
     public var linksPageError: String?
-    /// Plugin commands in the shared format, for servers Leaf Juice started. Off unless the module is on.
+    /// Plugin commands in the shared format, for servers LeafJuice started. Off unless the module is on.
     @ObservationIgnored public private(set) lazy var commands = PluginCommandRunner(
         isEnabled: { Modules.shared.isOn(.pluginCommands) },
         send: { [weak self] line in self?.sendPluginCommand(line) ?? false })
@@ -99,7 +99,7 @@ public final class ServerController: Identifiable {
     public var nextScheduledRestart: Date?
 
     public var blockers: [Blocker] = []
-    /// Set by the app, to tell you about something you'd otherwise only see with Leaf Juice open in front of you.
+    /// Set by the app, to tell you about something you'd otherwise only see with LeafJuice open in front of you.
     public var onAlert: (@MainActor (_ title: String, _ detail: String) -> Void)?
     /// The most recent ones, so tests and the app can both see what's been raised.
     public private(set) var recentAlerts: [String] = []
@@ -148,7 +148,7 @@ public final class ServerController: Identifiable {
         load()
     }
 
-    /// Opens a folder that's already managed by Leaf Juice.
+    /// Opens a folder that's already managed by LeafJuice.
     public static func open(root: URL) -> ServerController? {
         let paths = ServerPaths(root: root)
         guard let profile = readProfile(root: root) else { return nil }
@@ -156,7 +156,7 @@ public final class ServerController: Identifiable {
         // An unreadable settings file is set aside, so without this the server would just look reset.
         let saved = ServerPaths(root: root).profile
         if FileOps.exists(saved.appendingPathExtension("corrupt")), !FileOps.exists(saved) {
-            controller.notice = "This server's Leaf Juice settings couldn't be read, so they're back to their defaults. The old file was kept as server.json.corrupt in its .leafjuice folder."
+            controller.notice = "This server's LeafJuice settings couldn't be read, so they're back to their defaults. The old file was kept as server.json.corrupt in its .leafjuice folder."
         }
         // The Lab is disposable, so it skips restore points, schedules and analytics.
         controller.isTrialCopy = LabFiles.isLab(root: root, profile: profile)
@@ -332,7 +332,7 @@ public final class ServerController: Identifiable {
     /// Renames the server. Moving the folder is optional, and only possible while it's stopped.
     public func rename(to name: String, moveFolderTo folderName: String?) throws -> URL? {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !isLab else { throw LeafError("The Lab keeps its name, so Leaf Juice can always find it.") }
+        guard !isLab else { throw LeafError("The Lab keeps its name, so LeafJuice can always find it.") }
         guard !clean.isEmpty else { throw LeafError("The name can't be empty.") }
         var moved: URL?
         if let folderName, folderName != paths.root.lastPathComponent {
@@ -410,7 +410,7 @@ public final class ServerController: Identifiable {
                 out.append(Blocker(kind: .java(required: needed), title: "That Java can't be found", detail: java.path))
             }
         } else {
-            out.append(Blocker(kind: .java(required: needed), title: "Java \(needed) is needed", detail: "No suitable Java was found on this Mac. Leaf Juice can download one."))
+            out.append(Blocker(kind: .java(required: needed), title: "Java \(needed) is needed", detail: "No suitable Java was found on this Mac. LeafJuice can download one."))
         }
         if SystemInfo.isPortBusy(serverPort) {
             out.append(Blocker(kind: .portBusy(serverPort), title: "Port \(serverPort) is in use", detail: "Another program is using it. Stop it, or change server-port in server.properties."))
@@ -574,7 +574,7 @@ public final class ServerController: Identifiable {
         persistIssues()
     }
 
-    /// A server left running by a previous session, or started outside Leaf Juice.
+    /// A server left running by a previous session, or started outside LeafJuice.
     public func detectExternalServer() async {
         guard process == nil else { return }
         // After a reboot the saved number can belong to something else, even another Java program.
@@ -685,7 +685,7 @@ public final class ServerController: Identifiable {
     }
 
     public func appendWrapper(_ text: String, level: LogLevel) {
-        append("[Leaf Juice] \(text)", level: level, origin: .wrapper)
+        append("[LeafJuice] \(text)", level: level, origin: .wrapper)
     }
 
     private static let donePattern = regex(#"^Done \(\d+[.,]\d+s\)!"#)
@@ -695,6 +695,13 @@ public final class ServerController: Identifiable {
     private func observe(_ line: ParsedLogLine) {
         // A player can type anything, so chat never finishes a wait or teaches the app a uuid.
         if line.isChat { return }
+        // The server says which Minecraft it is as it starts. A jar changed outside LeafJuice shows up here.
+        if let running = ServerDetector.versionFromStartLine(line.message), running != profile.software.mcVersion {
+            let was = profile.software.mcVersion
+            profile.software.mcVersion = running
+            saveProfile()
+            appendWrapper(was.isEmpty ? "This server runs Minecraft \(running)." : "This server now runs Minecraft \(running), not \(was). LeafJuice has updated its record.", level: .info)
+        }
         if !waiters.isEmpty {
             let lower = line.message.lowercased()
             for (i, waiter) in waiters.enumerated().reversed() where waiter.needles.contains(where: lower.contains) {

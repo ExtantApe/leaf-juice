@@ -33,7 +33,7 @@ struct ConnectionsCard: View {
                 urlRow("Web map", loaded.settings.mapURL, key: "map")
                 urlRow("Sign-in page", loaded.settings.signInURL, key: "signin")
                 if loaded.settings.services.isEmpty {
-                    Hint("No tunnels or services yet. Add playit, Tailscale or anything else that carries players or web traffic, so Leaf Juice can say whether each is working.")
+                    Hint("No tunnels or services yet. Add playit, Tailscale or anything else that carries players or web traffic, so LeafJuice can say whether each is working.")
                 }
                 ForEach(loaded.settings.services) { service in row(service) }
                 HStack {
@@ -192,7 +192,7 @@ struct ConnectionsEditor: View {
                 removing = nil
             }
         } message: {
-            Text("Only Leaf Juice's entry is removed, when you save. The tunnel itself, and any secret in the Keychain, stay as they are.")
+            Text("Only LeafJuice's entry is removed, when you save. The tunnel itself, and any secret in the Keychain, stay as they are.")
         }
     }
 
@@ -255,9 +255,8 @@ private struct ServiceEditor: View {
             HStack {
                 Toggle(isOn: $service.enabled) { Text(service.name.isEmpty ? service.id : service.name).font(.headline) }
                     .toggleStyle(.switch)
-                    .accessibilityLabel("Check \(service.name)")
                 Spacer()
-                Button("Remove…", role: .destructive, action: remove).buttonStyle(.juice)
+                Button("Remove…", role: .destructive, action: remove).buttonStyle(.juice).accessibilityLabel("Remove \(service.name)")
             }
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 6) {
                 GridRow {
@@ -316,9 +315,9 @@ private struct ServiceEditor: View {
             case .file(let path)?:
                 TextField("~/Library/Application Support/<service>/secret", text: Binding(get: { path }, set: { service.secret = .file(path: $0) }))
                     .textFieldStyle(.roundedBorder).accessibilityLabel("Path of the secret file")
-                Hint("Leaf Juice only checks the file is there and private. It never reads or copies it.")
+                Hint("LeafJuice only checks the file is there and private. It never reads or copies it.")
             case .agent?:
-                Hint("The provider's own agent keeps it. Leaf Juice asks the agent whether it has one.")
+                Hint("The provider's own agent keeps it. LeafJuice asks the agent whether it has one.")
             case nil:
                 EmptyView()
             }

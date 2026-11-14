@@ -364,7 +364,9 @@ struct PlayerDetail: View {
                         }
                         Spacer()
                         Button("View") { viewing = viewing == snapshot ? nil : snapshot }.buttonStyle(.juice)
+                            .accessibilityLabel("View the snapshot from \(snapshot.date.formatted(date: .abbreviated, time: .shortened))")
                         Button("Restore…") { restoring = snapshot }.buttonStyle(.juice)
+                            .accessibilityLabel("Restore the snapshot from \(snapshot.date.formatted(date: .abbreviated, time: .shortened))")
                     }
                     if viewing == snapshot {
                         let folder = PlayerSnapshots.location(snapshot, profile: server.profile)
@@ -591,6 +593,7 @@ struct CleanupPage: View {
                             Spacer()
                             Button("Bring Back") { server.attempt { try await server.undoCleanup(batch) } }.buttonStyle(.juice).disabled(!server.state.canStart)
                             Button("Delete…") { discarding = batch }.buttonStyle(.juiceDanger)
+                                .accessibilityLabel("Delete the cleanup from \(batch.date.formatted(date: .abbreviated, time: .shortened))")
                         }
                     }
                 }

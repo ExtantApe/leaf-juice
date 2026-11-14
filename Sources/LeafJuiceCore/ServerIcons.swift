@@ -71,7 +71,7 @@ public enum ServerIcons {
     /// so pixel art stays sharp. Anything else is refused with the reason.
     public static func add(_ source: URL, paths: ServerPaths) throws -> Added {
         guard let image = CGImageSourceCreateWithURL(source as CFURL, nil), let cg = CGImageSourceCreateImageAtIndex(image, 0, nil) else {
-            throw LeafError("\(source.lastPathComponent) isn't an image Leaf Juice can read.")
+            throw LeafError("\(source.lastPathComponent) isn't an image LeafJuice can read.")
         }
         guard cg.width == cg.height else {
             throw LeafError("\(source.lastPathComponent) is \(cg.width)×\(cg.height). A server icon has to be square; crop it first, then add it.")

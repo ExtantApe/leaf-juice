@@ -90,7 +90,7 @@ private let head = "[12:00:00 INFO]: "
     for spoof in spoofs { check(PluginCommandWire.answerLine(spoof) == nil, "not an answer: \(spoof.prefix(60))") }
 }
 
-/// A stand-in for a plugin: it reads what Leaf Juice typed and answers through `ingest`, like the console would.
+/// A stand-in for a plugin: it reads what LeafJuice typed and answers through `ingest`, like the console would.
 @MainActor private final class FakeConsole {
     var sent: [String] = []
     var reply: ((String, String) -> [String])?
@@ -174,7 +174,7 @@ private let head = "[12:00:00 INFO]: "
     check(!runner.ingest("\(head)ea-result \(slow.id) {\"id\":\"\(slow.id)\",\"ok\":false,\"error\":{\"code\":\"x\",\"message\":\"x\"}}"), "but only the first")
     check(late.count == 1 && late.first?.id == slow.id, "and passed on under its id")
 
-    // Nothing is typed when it's switched off, or when there's no console of Leaf Juice's own.
+    // Nothing is typed when it's switched off, or when there's no console of LeafJuice's own.
     let typed = console.sent.count
     enabled = false
     if case .refused = await runner.run("fakeplug", ["ping"]).outcome { equal(console.sent.count, typed, "switched off: nothing typed") } else { check(false, "switched off refuses") }
@@ -197,7 +197,7 @@ private let head = "[12:00:00 INFO]: "
         equal(d.commands[0].words, ["invite", "create"], "a command's words are what the runner sends")
         check(d.commands[0].secret && !d.commands[1].secret, "secret is read, and false when left out")
         equal(d.commands[0].confirms, ["two-circles"], "confirm question ids")
-        equal(d.commands[0].args.map(\.isKnown), [true, true, true, false], "a type Leaf Juice doesn't know is marked, not guessed")
+        equal(d.commands[0].args.map(\.isKnown), [true, true, true, false], "a type LeafJuice doesn't know is marked, not guessed")
         equal(d.commands[0].args[1].values ?? [], ["kid", "builder"], "a list of choices keeps its values")
         equal(d.errors, ["already-invited"], "the plugin's own error codes")
     } else { check(false, "describe read") }
@@ -256,7 +256,7 @@ private let head = "[12:00:00 INFO]: "
     if case .success(let s) = take(e) { check(s.expires == nil, "a secret that doesn't expire") } else { check(false, "no expiry is fine") }
     check(!exists(eURL), "deleted too")
 
-    // Paths Leaf Juice won't follow.
+    // Paths LeafJuice won't follow.
     let elsewhere = folder("once-elsewhere").appendingPathComponent("target.json")
     write("{\"id\":\"x\",\"kind\":\"k\",\"value\":\"keep me\",\"expires\":null}", elsewhere)
     chmod(elsewhere.path, 0o600)
@@ -302,7 +302,7 @@ private let head = "[12:00:00 INFO]: "
     check(!store.isOn(.pluginCommands), "and off again")
 }
 
-/// A Java program that talks like a server with a format-1 plugin, through Leaf Juice's real console.
+/// A Java program that talks like a server with a format-1 plugin, through LeafJuice's real console.
 @MainActor private func fakePluginServerChecks() async {
     let runtimes = await JavaManager.discover()
     guard let jdk = runtimes.first(where: { FileManager.default.isExecutableFile(atPath: URL(fileURLWithPath: $0.path).deletingLastPathComponent().appendingPathComponent("javac").path) }) else {
@@ -457,7 +457,7 @@ private func buildFakeFormatOne(jdk: JavaRuntime, into jar: URL) async throws {
           answer(id, "\"ok\":true,\"secretFile\":\"once/" + id + ".json\"," + fields.substring(1, fields.length() - 1));
         } else if (body.startsWith("invite list")) {
           if (!new File("latchkey-v3").exists()) { answer(id, "\"ok\":true,\"invites\":[" + String.join(",", invites) + "],\"next\":null"); return; }
-          // 0.3.0: the spec's paging, items and a string cursor. latchkey-bad-cursor hands out one Leaf Juice must not type.
+          // 0.3.0: the spec's paging, items and a string cursor. latchkey-bad-cursor hands out one LeafJuice must not type.
           String[] a = body.split(" ");
           int limit = a.length > 2 ? Integer.parseInt(a[2]) : 20, from = a.length > 3 ? Integer.parseInt(a[3]) : 0;
           int to = Math.min(from + limit, invites.size());
@@ -535,7 +535,7 @@ extension Result {
 }
 
 /// Real Paper with a real Usher jar (given on the command line) on a throwaway server on 127.0.0.1:
-/// its describe, a list, a refusal and an unknown command, all through Leaf Juice's console.
+/// its describe, a list, a refusal and an unknown command, all through LeafJuice's console.
 @MainActor func runRealUsher(jar: URL, dump: URL?) async {
     section("REAL USHER THROUGH PLUGIN COMMANDS (EULA accepted by the person running this)")
     do {
@@ -566,7 +566,7 @@ extension Result {
                       + (cmd.confirms.isEmpty ? "" : "  asks \(cmd.confirms)") + (cmd.secret ? "  secret" : ""))
             }
             check(d.plugin == "Usher" && d.format == 1, "Usher answers describe in format 1")
-            check(d.commands.flatMap(\.args).allSatisfy(\.isKnown), "every argument type is one Leaf Juice knows")
+            check(d.commands.flatMap(\.args).allSatisfy(\.isKnown), "every argument type is one LeafJuice knows")
             func optionals(_ name: String) -> [String] { d.commands.first { $0.name == name }?.args.filter(\.optional).map(\.name) ?? ["missing"] }
             equal(optionals("apply"), ["whitelist", "via"], "apply's whitelist and via are optional")
             equal(optionals("attempts"), ["limit", "cursor"], "attempts' limit and cursor are optional")
@@ -707,7 +707,7 @@ extension Result {
     check(!c.allowlist.contains { $0.name == "MadeUpOther" }, "and nobody was added around it")
 
     let log = (try? String(contentsOf: root.appendingPathComponent("plugins/Usher/changes.log"), encoding: .utf8)) ?? ""
-    check(log.contains("leaf-juice"), "Usher's change log says the changes came from Leaf Juice")
+    check(log.contains("leaf-juice"), "Usher's change log says the changes came from LeafJuice")
     if case .success(let list) = await c.usherAttempts() { print("  attempts: \(list.count)") } else { check(false, "attempts read on real Usher") }
 }
 
@@ -917,8 +917,8 @@ private final class PageClient {
     }
 }
 
-/// Real Paper with LuckPerms, Usher and Latchkey: an invite made through Leaf Juice is redeemed on Latchkey's page,
-/// a bot signs in, Leaf Juice reads the session file, and taking them off the whitelist ends it. Made-up offline accounts.
+/// Real Paper with LuckPerms, Usher and Latchkey: an invite made through LeafJuice is redeemed on Latchkey's page,
+/// a bot signs in, LeafJuice reads the session file, and taking them off the whitelist ends it. Made-up offline accounts.
 @MainActor func runRealInvites(usher: URL, latchkey: URL) async {
     section("REAL INVITES THROUGH LATCHKEY AND USHER (EULA accepted by the person running this)")
     do {
@@ -971,7 +971,7 @@ private final class PageClient {
         if case .success(let p) = await c.usherShow(uuid: uuid) { equal(p.profiles, ["young"], "Usher applied the invite's profile") } else { check(false, "show after redeeming") }
         if case .success(let list) = await c.listInvites() { equal(list.invites.first { $0.name == name }?.stateText(), "Used", "the invite shows as used") }
 
-        // A bot signs in, and Leaf Juice reads Latchkey's session file.
+        // A bot signs in, and LeafJuice reads Latchkey's session file.
         // Sign-in is op-only by default; an admin gives it to the players who should have it.
         await expectLine(c, "lp user \(name) permission set latchkey.signin true", "latchkey.signin", "sign-in allowed for \(name)")
         let bot = try await join(name, c, table, port: port)
@@ -988,11 +988,11 @@ private final class PageClient {
         print("  sign-in: HTTP \(signed.status)")
         guard let cookie = signin.cookies[LatchkeySessions.cookie] else { check(false, "Latchkey set its session cookie"); return }
         let session = LatchkeySessions.read(plugins: c.paths.plugins, cookieValue: cookie)
-        check(session?.uuid == uuid && session?.name == name, "Leaf Juice reads the real session file: \(String(describing: session))")
+        check(session?.uuid == uuid && session?.name == name, "LeafJuice reads the real session file: \(String(describing: session))")
         let web2 = LinksWeb(paths: c.paths, settings: { var s = LinksPageSettings(); s.address = "https://links.example.test/"; return s }, content: { LinksPageContent(serverVersion: "Paper", plugins: []) })
         web2.requireOnlineMode = false
         func page() -> String { String(decoding: web2.handle(.init(method: "GET", path: "/", headers: ["host": "links.example.test", "cookie": "\(LatchkeySessions.cookie)=\(cookie)"], body: Data())).body, as: UTF8.self) }
-        check(page().contains("Signed in as \(name)"), "Leaf Juice's links page signs them in by Latchkey's cookie")
+        check(page().contains("Signed in as \(name)"), "LeafJuice's links page signs them in by Latchkey's cookie")
 
         if version.hasPrefix("0.2.") {
             equal(await c.latchkeySignIns(name: name), .unsupported, "Latchkey \(version) has no session commands in describe, so no web sign-in section")
@@ -1002,13 +1002,13 @@ private final class PageClient {
             equal(await c.latchkeySignIns(name: name), .signedIn(browsers: 1), "the player sheet sees one browser signed in")
             if case .success(let ended) = await c.signOutEverywhere(name: name) { equal(ended, 1, "Sign Out Everywhere ends it") } else { check(false, "signed out everywhere") }
             await checkUntil(5, "which deletes the session file") { LatchkeySessions.read(plugins: c.paths.plugins, cookieValue: cookie) == nil }
-            check(!page().contains("Signed in as"), "and Leaf Juice's page no longer signs them in")
+            check(!page().contains("Signed in as"), "and LeafJuice's page no longer signs them in")
             equal(await c.latchkeySignIns(name: name), .signedIn(browsers: 0), "and the count is back to none")
         }
 
         await expectLine(c, "whitelist remove \(name)", "Removed", "taken off the whitelist")
         await checkUntil(5, "which ends the session file") { LatchkeySessions.read(plugins: c.paths.plugins, cookieValue: cookie) == nil }
-        check(!page().contains("Signed in as"), "and Leaf Juice's page with it")
+        check(!page().contains("Signed in as"), "and LeafJuice's page with it")
         bot.leave()
 
         c.stop()

@@ -11,7 +11,7 @@ public struct JavaRuntime: Identifiable, Equatable, Sendable {
     public var label: String {
         var text = "Java \(major)"
         if let vendor { text += " (\(vendor))" }
-        if managed { text += ", installed by Leaf Juice" }
+        if managed { text += ", installed by LeafJuice" }
         return text
     }
 }
@@ -68,7 +68,7 @@ public enum JavaManager {
         runtimes.filter { $0.major >= required }.min { $0.major < $1.major }
     }
 
-    /// Downloads an Eclipse Temurin runtime into Leaf Juice's own folder.
+    /// Downloads an Eclipse Temurin runtime into LeafJuice's own folder.
     public static func installTemurin(major: Int, progress: (@Sendable (Double) -> Void)? = nil) async throws -> JavaRuntime {
         #if arch(arm64)
         let arch = "aarch64"

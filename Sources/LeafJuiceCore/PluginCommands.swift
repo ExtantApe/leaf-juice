@@ -3,11 +3,11 @@ import Foundation
 
 // The shared plugin command format, format 1 (ops `briefs/plugin-commands-spec.md`, agreed 2026-11-09).
 //
-// Leaf Juice types a command into the console of a server it started, with `--json <id>` on the end.
-// The plugin answers with one line, `ea-result <id> <json>`. Leaf Juice reads only lines where that
+// LeafJuice types a command into the console of a server it started, with `--json <id>` on the end.
+// The plugin answers with one line, `ea-result <id> <json>`. LeafJuice reads only lines where that
 // prefix comes straight after the log header, so a player typing "ea-result …" in chat (logged as
 // `]: <Name> ea-result …`) never matches. Ids are 32 random hex characters, only the first answer to
-// an id counts, and answers to ids Leaf Juice didn't send are ignored.
+// an id counts, and answers to ids LeafJuice didn't send are ignored.
 //
 // Secrets never come through the console. The answer names a file in `plugins/<Plugin>/once/`, and
 // `OnceSecrets.take` reads it once and deletes it.
@@ -52,11 +52,11 @@ public enum PluginCommandWire {
         pattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil
     }
 
-    /// The whole command line, or why Leaf Juice won't send it.
+    /// The whole command line, or why LeafJuice won't send it.
     /// Flags go after every argument, including free text: `<plugin> <subcommand…> <args…> [--yes a,b] --json <id>`.
     public static func line(plugin: String, subcommand: [String], args: [CommandArg], yes: [String] = [], id: String) -> Result<String, CommandRefusal> {
-        guard matches(labelPattern, plugin) else { return .failure(.init("“\(plugin)” isn't a plugin command Leaf Juice can send.")) }
-        guard !subcommand.isEmpty, subcommand.allSatisfy({ matches(wordPattern, $0) }) else { return .failure(.init("That isn't a subcommand Leaf Juice can send.")) }
+        guard matches(labelPattern, plugin) else { return .failure(.init("“\(plugin)” isn't a plugin command LeafJuice can send.")) }
+        guard !subcommand.isEmpty, subcommand.allSatisfy({ matches(wordPattern, $0) }) else { return .failure(.init("That isn't a subcommand LeafJuice can send.")) }
         guard matches(idPattern, id) else { return .failure(.init("Bad request id.")) }
         guard yes.allSatisfy({ matches(choicePattern, $0) }) else { return .failure(.init("Bad confirm question id.")) }
         var parts = [plugin] + subcommand
@@ -138,7 +138,7 @@ public struct CommandError: Sendable, Equatable {
 
     /// The codes every plugin uses where they fit. Plugins can add their own, listed in `describe`.
     public static let baseCodes = ["unknown-command", "bad-argument", "no-permission", "not-found", "needs-online-player", "busy", "internal"]
-    /// Leaf Juice's own codes, for answers it couldn't use.
+    /// LeafJuice's own codes, for answers it couldn't use.
     public static let badAnswer = "bad-answer"
     public static let tooLong = "answer-too-long"
 
@@ -185,7 +185,7 @@ public enum CommandOutcome: Sendable {
     case needsYes([ConfirmQuestion])
     /// No answer in time. It may still have happened: re-read the state rather than saying it failed.
     case notConfirmed
-    /// Leaf Juice didn't send it.
+    /// LeafJuice didn't send it.
     case refused(String)
 
     /// Decodes one answer's JSON, checking it's for this id.
@@ -252,7 +252,7 @@ public final class PluginCommandRunner {
     public func run(_ plugin: String, _ subcommand: [String], _ args: [CommandArg] = [], yes: [String] = []) async -> CommandReply {
         var id = PluginCommandWire.newID()
         while used.contains(id) { id = PluginCommandWire.newID() }
-        guard isEnabled() else { return CommandReply(id: id, outcome: .refused("Plugin commands are switched off in Leaf Juice's settings.")) }
+        guard isEnabled() else { return CommandReply(id: id, outcome: .refused("Plugin commands are switched off in LeafJuice's settings.")) }
         let line: String
         switch PluginCommandWire.line(plugin: plugin, subcommand: subcommand, args: args, yes: yes, id: id) {
         case .success(let l): line = l
@@ -264,7 +264,7 @@ public final class PluginCommandRunner {
             waiting[id] = done
             guard send(line) else {
                 waiting[id] = nil
-                done.resume(returning: .refused("Leaf Juice can only send plugin commands to a server it started and is running."))
+                done.resume(returning: .refused("LeafJuice can only send plugin commands to a server it started and is running."))
                 return
             }
             Task { @MainActor [weak self] in
@@ -278,7 +278,7 @@ public final class PluginCommandRunner {
         return CommandReply(id: id, outcome: outcome)
     }
 
-    /// Reads one console line. True if it answered a command Leaf Juice is waiting on.
+    /// Reads one console line. True if it answered a command LeafJuice is waiting on.
     @discardableResult
     public func ingest(_ line: String) -> Bool {
         guard let (id, json) = PluginCommandWire.answerLine(line) else { return false }
@@ -305,13 +305,13 @@ public final class PluginCommandRunner {
 
 public enum DescribeResult: Sendable {
     case described(PluginDescription)
-    /// The plugin speaks a newer format than this Leaf Juice. Leaf Juice needs updating.
+    /// The plugin speaks a newer format than this LeafJuice. LeafJuice needs updating.
     case newerFormat(Int)
     case unreadable
     case outcome(CommandOutcome)
 }
 
-/// What a plugin's `describe` says it offers. Keys Leaf Juice doesn't know are ignored.
+/// What a plugin's `describe` says it offers. Keys LeafJuice doesn't know are ignored.
 public struct PluginDescription: Sendable, Equatable {
     public let format: Int
     public let plugin: String
@@ -380,7 +380,7 @@ public struct PluginDescription: Sendable, Equatable {
         guard head.format <= PluginCommandWire.format else { return .newerFormat(head.format) }
         guard head.format >= 1, let wire = try? JSONDecoder().decode(Wire.self, from: json),
               PluginCommandWire.matches(regex(#"^[A-Za-z0-9_-]{1,64}\z"#), wire.plugin) else { return .unreadable }
-        // A required argument after an optional one would leave Leaf Juice guessing which slot a value fills.
+        // A required argument after an optional one would leave LeafJuice guessing which slot a value fills.
         for command in wire.commands ?? [] {
             guard let firstOptional = command.args.firstIndex(where: \.optional) else { continue }
             if command.args[firstOptional...].contains(where: { !$0.optional }) { return .unreadable }
@@ -389,7 +389,7 @@ public struct PluginDescription: Sendable, Equatable {
     }
 }
 
-/// Secrets a plugin left for Leaf Juice in `plugins/<Plugin>/once/<id>.json`.
+/// Secrets a plugin left for LeafJuice in `plugins/<Plugin>/once/<id>.json`.
 public enum OnceSecrets {
     public struct Secret: Sendable, Equatable {
         public let kind: String
@@ -402,9 +402,9 @@ public enum OnceSecrets {
 
         public var message: String {
             switch self {
-            case .badPath: "The plugin named a file Leaf Juice won't read."
+            case .badPath: "The plugin named a file LeafJuice won't read."
             case .missing: "The plugin's file wasn't there. It may have been cleared after 5 minutes."
-            case .notPrivate: "The plugin's file could be read by others on this Mac, so Leaf Juice deleted it without showing it. Ask the plugin again."
+            case .notPrivate: "The plugin's file could be read by others on this Mac, so LeafJuice deleted it without showing it. Ask the plugin again."
             case .unreadable: "The plugin's file couldn't be read."
             case .wrongRequest: "The plugin's file was for a different request."
             case .expired: "That has already expired."

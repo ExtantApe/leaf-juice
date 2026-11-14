@@ -128,7 +128,7 @@ struct PackContributionsView: View {
             if file.isImage, let url = locator?.url(path: file.path, pack: copy.pack) {
                 AsyncTexture(url: url)
             } else {
-                Image(systemName: "doc").foregroundStyle(Juice.muted)
+                Image(systemName: "doc").foregroundStyle(Juice.muted).accessibilityHidden(true)
             }
         }
         .frame(width: 44, height: 44)

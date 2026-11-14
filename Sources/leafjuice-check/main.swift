@@ -15,7 +15,7 @@ import ImageIO
 //   ... --real-map --i-accept-the-minecraft-eula
 //                                      Real BlueMap, Multiverse and LuckPerms behind the sign-in page, on a throwaway server.
 //   ... --real-pack --i-accept-the-minecraft-eula
-//                                      A throwaway Paper server and bots, with made-up packs served by Leaf Juice.
+//                                      A throwaway Paper server and bots, with made-up packs served by LeafJuice.
 //   ... --mc <version>                 The version --real-map, --real-prejoin, --real-signin and --real-pack boot. 26.3 by default.
 //   ... --real-paper --i-accept-the-minecraft-eula
 //                                      Boots real Paper. The second flag is your own acceptance of
@@ -133,9 +133,10 @@ defer { try? FileManager.default.removeItem(at: scratch) }
 nonisolated(unsafe) var passed = 0
 nonisolated(unsafe) var failures: [String] = []
 
-// ... --connections  Only the connection checks, which need no server or network.
+// ... --connections  Only the connection and color checks, which need no server or network.
 if CommandLine.arguments.contains("--connections") {
     await connectionChecks()
+    paletteChecks()
     // --live: also asks this Mac's own playit agent and Tailscale, read-only, and prints only health and summaries.
     if CommandLine.arguments.contains("--live") {
         section("Connections: this Mac's real agents (read-only)")
@@ -442,6 +443,22 @@ do {
     let pages = Set(["resourcePacks", "links", "allowlist", "launch", "plugins", "configs", "software", "backups", "changes", "console", "overview", "worlds", "players", "history", "cleanup"])
     for rule in rules { if let a = rule.action { check(pages.contains(a.page), "\(rule.id) action page") } }
     check(rules.allSatisfy { !$0.title.isEmpty && !$0.explanation.isEmpty }, "rules have text")
+    // Reported on 2026-11-14: a database plugin's normal pool line isn't a failure.
+    for fine in ["[12:00:01] [Server thread/INFO]: [com.zaxxer.hikari.pool.HikariPool] prism - Added connection org.sqlite.jdbc4.JDBC4Connection@1a2b3c",
+                 "[12:00:01] [Server thread/INFO]: [com.zaxxer.hikari.HikariDataSource] prism - Start completed."] {
+        let a = IssueAnalyzer(rules: rules); a.ingest(fine)
+        check(a.sorted.first?.ruleID != "database", "a pool's normal line isn't a database failure: \(fine.suffix(40))")
+    }
+    for broken in ["com.zaxxer.hikari.pool.HikariPool$PoolInitializationException: Failed to initialize pool: Exception during pool initialization",
+                   "java.sql.SQLTransientConnectionException: prism - Connection is not available, request timed out after 30000ms."] {
+        let a = IssueAnalyzer(rules: rules); a.ingest(broken)
+        equal(a.sorted.first?.ruleID, "database", "a real pool failure still is: \(broken.prefix(50))")
+    }
+    // And the server's start line keeps its recorded version right (also 2026-11-14).
+    equal(ServerDetector.versionFromStartLine("Starting minecraft server version 26.3"), "26.3", "the start line names the version")
+    equal(ServerDetector.versionFromStartLine("Starting minecraft server version 1.21.11"), "1.21.11", "older versions too")
+    check(ServerDetector.versionFromStartLine("<MadeUp> Starting minecraft server version 99") == nil, "chat-shaped text isn't read")
+    check(ServerDetector.versionFromStartLine("Starting minecraft server version not-a-version") == nil, "nonsense isn't read")
 }
 
 section("Issue catalog")
@@ -537,7 +554,7 @@ do {
     check(FileOps.exists(root.appendingPathComponent("logs/latest.log")), "logs untouched")
     equal(try! String(contentsOf: root.appendingPathComponent("libraries/f"), encoding: .utf8), "x", "libraries come back")
 
-    // Anything added since goes, so it's exactly as it was. Leaf Juice's own records stay.
+    // Anything added since goes, so it's exactly as it was. LeafJuice's own records stay.
     let wholeBackup = try await Backups.create(profile, root: root, trigger: "manual")
     write("new", root.appendingPathComponent("paper-99.jar"))
     write("new", root.appendingPathComponent("extra_world/level.dat"))
@@ -3291,7 +3308,7 @@ func localAddresses() -> [String] {
         }
         check(FileOps.exists(c.paths.plugins.appendingPathComponent("MadeUpFine.jar")) && FileOps.exists(c.paths.plugins.appendingPathComponent("MadeUpSoft.jar")), "the rest stay on")
         check(!FileOps.children(c.paths.upgradeFolder.appendingPathComponent("restore-points")).isEmpty, "the tool kept its own plugin restore point")
-        check(!c.backups.isEmpty, "after Leaf Juice's whole-server restore point")
+        check(!c.backups.isEmpty, "after LeafJuice's whole-server restore point")
         equal(await c.switchedOffPlugins().entries.map(\.name).sorted(), ["MadeUpBadApi", "MadeUpNeedsBad", "MadeUpNeedsNeeds"], "the tool's status lists them")
 
         try await c.switchBackOn(["MadeUpBadApi", "MadeUpNeedsBad", "MadeUpNeedsNeeds"])
@@ -3300,7 +3317,7 @@ func localAddresses() -> [String] {
     } catch { failures.append("real plugins on upgrade threw: \(error)") }
 }
 
-/// K160 for real: a throwaway Paper server with the management server turned on by Leaf Juice, and a bot joining and
+/// K160 for real: a throwaway Paper server with the management server turned on by LeafJuice, and a bot joining and
 /// leaving while the player list comes from the management server, not the console.
 @MainActor func runRealManagement() async {
     section("REAL MANAGEMENT SERVER (EULA accepted by the person running this)")
@@ -4665,6 +4682,7 @@ func makePack(_ name: String, _ files: [String: String], inside: String? = nil) 
     await exactPackChecks()
     await packGateChecks()
     await connectionChecks()
+    paletteChecks()
     await packSongChecks()
     await pluginUpgradeChecks()
     await serverIconChecks()
@@ -4804,7 +4822,7 @@ func madeUpImage(_ w: Int, _ h: Int, to url: URL, type: CFString = "public.png" 
         check(apply.first == "apply" && apply.contains("--yes") && apply.contains(root.path), "apply passes the server and --yes, after the person confirmed: \(apply)")
         equal(planSent, switchOff, "the tool gets back the plan exactly as it gave it")
         check(!FileOps.children(c.paths.meta).contains { $0.lastPathComponent.hasPrefix("upgrade-plan-") }, "and the plan file is cleaned up")
-        check(c.backups.count > backupsBefore, "after Leaf Juice's own restore point")
+        check(c.backups.count > backupsBefore, "after LeafJuice's own restore point")
 
         reply = ToolResult(code: 13, out: "", err: "Refused: BadApi.jar has changed since the check.\n")
         var changed = ""
@@ -4997,7 +5015,7 @@ func madeUpImage(_ w: Int, _ h: Int, to url: URL, type: CFString = "public.png" 
         let c = try await ServerController.adopt(root: root, name: "exact-packs")
         defer { c.stopPackHost() }
         let port = 28767
-        // A plugin's own export, zipped its way: odd order, extra fields, a comment. Leaf Juice mustn't touch it.
+        // A plugin's own export, zipped its way: odd order, extra fields, a comment. LeafJuice mustn't touch it.
         let made = await makePack("Plugin Export", ["pack.mcmeta": #"{"pack":{"pack_format":75,"description":"export"}}"#, "assets/madeup/font/hud.json": "{}"])
         _ = try? await Tool.run("/usr/bin/zip", ["-q", "-z", made.path], cwd: nil)
         let original = try Data(contentsOf: made)
@@ -5371,7 +5389,7 @@ func residentBytes() -> UInt64 {
         try c.setPackElsewhere("", recipe: "world-two")
         check(c.packAddress(recipe: "world-two")?.contains("127.0.0.1") == true, "and it can come back")
 
-        // Butler on the server: Leaf Juice keeps its hands off.
+        // Butler on the server: LeafJuice keeps its hands off.
         let before = try String(contentsOf: c.paths.properties, encoding: .utf8)
         try FileOps.ensureDir(c.paths.plugins)
         makeJar(c.paths.plugins.appendingPathComponent("ResourcePackButler.jar"), yaml: "name: ResourcePackButler\nversion: 0.0.1\nmain: x.Y\napi-version: '1.21'\n")
@@ -5681,7 +5699,7 @@ func residentBytes() -> UInt64 {
 
 @MainActor func seedSandbox(_ root: URL, table: ProtocolTable) async throws {
     try FileOps.ensureDir(root)
-    write("server-port=25580\nonline-mode=false\nview-distance=4\nsimulation-distance=4\nmotd=Leaf Juice sandbox\nlevel-type=minecraft\\:flat\nnetwork-compression-threshold=-1\nspawn-protection=0\nmax-tick-time=-1\n", root.appendingPathComponent("server.properties"))
+    write("server-port=25580\nonline-mode=false\nview-distance=4\nsimulation-distance=4\nmotd=LeafJuice sandbox\nlevel-type=minecraft\\:flat\nnetwork-compression-threshold=-1\nspawn-protection=0\nmax-tick-time=-1\n", root.appendingPathComponent("server.properties"))
     let c = try await ServerController.adopt(root: root, name: "Sandbox seed")
     defer { c.forceStop(); c.stopTicker() }
     c.profile.backup.enabled = false

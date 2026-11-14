@@ -63,7 +63,7 @@ struct WorldsPage: View {
                     Button("Review") { model.page = .changes }.buttonStyle(.juice)
                 }
             } else {
-                Callout(tone: .info, title: "Run many worlds with Multiverse-Core", detail: "The standard plugin for creating and managing extra worlds. Leaf Juice checks it fits your Minecraft version, then works with it from here.") {
+                Callout(tone: .info, title: "Run many worlds with Multiverse-Core", detail: "The standard plugin for creating and managing extra worlds. LeafJuice checks it fits your Minecraft version, then works with it from here.") {
                     Button("Install") { server.attempt { try await server.addPlugin(source: Multiverse.source) } }
                         .buttonStyle(.juicePrimary).disabled(server.activity != nil)
                 }
@@ -384,7 +384,7 @@ private struct DeleteWorldSheet: View {
 
     var body: some View {
         SheetFrame(title: "Delete \(world.title)?") {
-            Callout(tone: .danger, title: "This permanently deletes the world's folder", detail: "\(Format.bytes(world.size)) of data. Anyone in it is moved out first. Leaf Juice takes a backup of your worlds before deleting, and stops if that backup fails.")
+            Callout(tone: .danger, title: "This permanently deletes the world's folder", detail: "\(Format.bytes(world.size)) of data. Anyone in it is moved out first. LeafJuice takes a backup of your worlds before deleting, and stops if that backup fails.")
             TextField("Type \(world.title) to confirm", text: $typed).textFieldStyle(.roundedBorder)
         } actions: {
             Button("Back Up and Delete") {

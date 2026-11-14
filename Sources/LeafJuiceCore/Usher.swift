@@ -2,7 +2,7 @@ import Foundation
 
 // Usher looks after who may join and which profiles they have: a profile is a LuckPerms group plus the
 // worlds and chat circle it opens, with Usher's own safety rules and change log. On a server with Usher,
-// Leaf Juice goes through Usher's commands (format 1) and never falls back to raw LuckPerms or
+// LeafJuice goes through Usher's commands (format 1) and never falls back to raw LuckPerms or
 // `whitelist add`: owner decision, 2026-11-07, recorded in docs/PLAN.md.
 
 public struct UsherProfile: Sendable, Equatable, Decodable, Identifiable {
@@ -65,7 +65,7 @@ public struct UsherAttempt: Sendable, Equatable, Decodable, Identifiable {
 
 public enum UsherStatus: Sendable, Equatable {
     case notInstalled
-    /// Usher is on the server, but Leaf Juice can't reach it right now. Changes are refused, never done another way.
+    /// Usher is on the server, but LeafJuice can't reach it right now. Changes are refused, never done another way.
     case unavailable(String)
     case ready(version: String, profiles: [UsherProfile], luckPerms: Bool, problems: [String])
 
@@ -84,28 +84,28 @@ public enum UsherApplyResult: Sendable, Equatable {
 extension ServerController {
     public var hasUsher: Bool { plugins.contains { $0.enabled && $0.key == "usher" } }
 
-    /// The commands Leaf Juice needs, as `describe` names them.
+    /// The commands LeafJuice needs, as `describe` names them.
     static let usherCommandsNeeded = ["profiles", "show", "apply", "attempts"]
 
-    /// Whether Leaf Juice can go through Usher on this server now, and its profiles if so.
+    /// Whether LeafJuice can go through Usher on this server now, and its profiles if so.
     public func usherStatus() async -> UsherStatus {
         guard hasUsher else { return .notInstalled }
         guard Modules.shared.isOn(.pluginCommands) else {
-            return .unavailable("Usher looks after who can join this server. Turn on Plugin commands so Leaf Juice can go through it.")
+            return .unavailable("Usher looks after who can join this server. Turn on Plugin commands so LeafJuice can go through it.")
         }
         guard state == .running, process != nil else {
-            return .unavailable("Usher can only be reached while Leaf Juice runs this server. Start it here first.")
+            return .unavailable("Usher can only be reached while LeafJuice runs this server. Start it here first.")
         }
         let described: PluginDescription
         switch await commands.describe("usher") {
         case .described(let d): described = d
-        case .newerFormat(let n): return .unavailable("Usher speaks command format \(n), newer than this Leaf Juice knows. Update Leaf Juice.")
+        case .newerFormat(let n): return .unavailable("Usher speaks command format \(n), newer than this LeafJuice knows. Update LeafJuice.")
         case .unreadable: return .unavailable("Usher's list of commands couldn't be read.")
         case .outcome(let outcome): return .unavailable(Self.plain(outcome, doing: "Asking Usher what it offers"))
         }
         let have = Set(described.commands.map(\.name))
         if let missing = Self.usherCommandsNeeded.first(where: { !have.contains($0) }) {
-            return .unavailable("This Usher (\(described.version)) has no \(missing) command. Leaf Juice needs Usher 0.4.0 or later.")
+            return .unavailable("This Usher (\(described.version)) has no \(missing) command. LeafJuice needs Usher 0.4.0 or later.")
         }
         let reply = await commands.run("usher", ["profiles"])
         guard case .done(let answer) = reply.outcome else { return .unavailable(Self.plain(reply.outcome, doing: "Reading Usher's profiles")) }

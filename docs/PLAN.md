@@ -1,9 +1,9 @@
-# Leaf Juice: plan
+# LeafJuice: plan
 
 A free, unsigned, native Mac wrapper for Minecraft Java servers. It should be the obvious step
 up from `java -jar paper.jar`, and cost about as little to run.
 
-Open work isn't tracked here. Every open item is a task in the ops task log (D22, D26): K61 to K73 as of 2026-11-10, listed by `~/Code/ops/scripts/task.py list --owner "Minecraft: Leaf Juice App"`. This file keeps the design and the decisions.
+Open work isn't tracked here. Every open item is a task in the ops task log (D22, D26): K61 to K73 as of 2026-11-10, listed by `~/Code/ops/scripts/task.py list --owner "Minecraft: LeafJuice App"`. This file keeps the design and the decisions.
 
 ## What's out there, and where this fits
 
@@ -16,7 +16,7 @@ Open work isn't tracked here. Every open item is a task in the ops task log (D22
 | A `start.sh` | One line of shell | Lean; no backups, no updates, no safety |
 
 The panels solve *remote multi-tenant hosting*. None is a native Mac app, and none makes
-plugin compatibility its central concern. Leaf Juice takes those two gaps as its job. It stays
+plugin compatibility its central concern. LeafJuice takes those two gaps as its job. It stays
 a single local app with no web server, no daemon and no container.
 
 ## Decisions
@@ -25,7 +25,7 @@ a single local app with no web server, no daemon and no container.
 |---|---|
 | **SwiftUI + SwiftPM, zero dependencies** | Truly native and accessible; idle cost near zero; builds with just the Command Line Tools. OnePedigree's Tauri stack would add Rust and a web view for no gain here. |
 | **macOS 14+** | `@Observable`, `.inspector`, `Table` are all solid there. |
-| **The server folder stays yours** | Everything we add lives in `<server>/.leafjuice/`. Deleting it (or Leaf Juice) leaves a normal server. Importing changes nothing else. |
+| **The server folder stays yours** | Everything we add lives in `<server>/.leafjuice/`. Deleting it (or LeafJuice) leaves a normal server. Importing changes nothing else. |
 | **The Change Queue is the core idea** | Nothing that needs a restart touches disk while the server runs. See below. |
 | **No AI at runtime** | Rules are a data table with a tested sample per rule. Anything unmatched is still catalogued and grouped. "Copy report" lets a person paste it wherever they like. |
 | **Unsigned, GitHub Releases only** | Ad-hoc signed; the README explains first launch. In-app "update available" notice links to the release; no self-updater. |
@@ -43,24 +43,25 @@ Settled by the owner. Follow them without asking again.
 | 2026-11-07 | One test server per session at a time, stopped when the run ends, with no copies left between runs. |
 | Before 2026-11-07 | A player sees a world's map only if they can enter that world. If that can't be read reliably, they see no maps. |
 | Before 2026-11-07 | The map stays open directly until the gateway ships on a real server. That server's BlueMap change is made separately. |
-| Before 2026-11-07 | An exact pack can be served unchanged under its own SHA-1. The screen states both risks: it's offline while Leaf Juice is closed, and New Address breaks the address. |
-| Before 2026-11-07 | Real servers wait for the owner's go. The allowlist screen stays off real servers for children's and adults' groups until Stationmaster exists and Leaf Juice calls it. Children's safety and privacy come first. |
+| Before 2026-11-07 | An exact pack can be served unchanged under its own SHA-1. The screen states both risks: it's offline while LeafJuice is closed, and New Address breaks the address. |
+| Before 2026-11-07 | Real servers wait for the owner's go. The allowlist screen stays off real servers for children's and adults' groups until Stationmaster exists and LeafJuice calls it. Children's safety and privacy come first. |
 | 2026-11-08 | Per-song toggles: a pack can list its songs in `songs.json`, and each recipe can leave any song out so Minecraft's own track plays. Each choice is a new build with its own SHA-1 and per-build address. A private pack that uses this stays unserved until the owner's in-game test. |
 | 2026-11-08 | Plugins on upgrade: build it, after the per-song toggles. It shows the plan and asks for a yes, works only on a stopped server with a backup, and every step can be undone. Which plugins don't fit comes from Preflight's report on a throwaway copy booted on the target version, not from version metadata. Tested on throwaway copies only. |
-| 2026-11-08 | The upgrade helper's logic moves into Preflight, as a command-line tool in its jar (plan, apply, restore, with JSON output), so people without Leaf Juice can use it. Leaf Juice keeps the screens and the test-copy boot, and calls the tool once Preflight 0.3.0 is out. Its own planning code is then removed, and the real 26.3 run happens against the tool. Done with Preflight 0.3.0 the same day. |
+| 2026-11-08 | The upgrade helper's logic moves into Preflight, as a command-line tool in its jar (plan, apply, restore, with JSON output), so people without LeafJuice can use it. LeafJuice keeps the screens and the test-copy boot, and calls the tool once Preflight 0.3.0 is out. Its own planning code is then removed, and the real 26.3 run happens against the tool. Done with Preflight 0.3.0 the same day. |
 | 2026-11-08 | Server icons can be rotated: choices live in `<server>/server-icons/`, picking one copies it over `server-icon.png`, and nothing in the folder is ever moved or deleted. The one in use is found by its contents. Added images must be square, and are scaled to 64×64 with nearest-neighbour. A change shows after the next restart. |
-| 2026-11-09 | Player browser sessions belong to Latchkey, not Leaf Juice, so servers without Leaf Juice get them too. When Latchkey's side is built, the links page and map gateway check sessions through its local admin API, and Leaf Juice keeps no player sessions of its own. Session length is a setting from 1 to 30 days, default 1. Anything Leaf Juice shows or sets stays in that range. |
-| 2026-11-09 | Commands are the API. Plugins work without Leaf Juice in any combination. Leaf Juice sends the same commands through the console of a server it started (`<plugin> <subcommand> … --json <id>`, answered by one `ea-result <id> <json>` line), and no secret ever goes through the console: it comes in a one-time file the plugin writes and Leaf Juice deletes. Screens are decided per feature. |
-| 2026-11-09 | The Players page invite flow is built by hand and filled from each plugin's `describe`. It says plainly that invites from the app only work while Leaf Juice is running that server. |
+| 2026-11-09 | Player browser sessions belong to Latchkey, not LeafJuice, so servers without LeafJuice get them too. When Latchkey's side is built, the links page and map gateway check sessions through its local admin API, and LeafJuice keeps no player sessions of its own. Session length is a setting from 1 to 30 days, default 1. Anything LeafJuice shows or sets stays in that range. |
+| 2026-11-09 | Commands are the API. Plugins work without LeafJuice in any combination. LeafJuice sends the same commands through the console of a server it started (`<plugin> <subcommand> … --json <id>`, answered by one `ea-result <id> <json>` line), and no secret ever goes through the console: it comes in a one-time file the plugin writes and LeafJuice deletes. Screens are decided per feature. |
+| 2026-11-09 | The Players page invite flow is built by hand and filled from each plugin's `describe`. It says plainly that invites from the app only work while LeafJuice is running that server. |
 | 2026-11-09 | The links page and map gateway check a player's session through a file per session that Latchkey keeps, named by the cookie's hash and deleted on revoke. |
 | 2026-11-07 | On a server with Usher, the Allowlist page goes through Usher (profiles, questions, change log) and never around it with raw LuckPerms or `whitelist add`; if Usher can't be reached, it refuses. Built 2026-11-10 behind Plugin commands, off by default. |
-| 2026-11-10 | Built: invites through Latchkey 0.2.0 on the Allowlist page (code shown once, from Latchkey's once-file), and the links page and map gateway accepting Latchkey's session file alongside Leaf Juice's own sign-in, which goes once the owner has checked the screens (T24). |
-| 2026-11-09 | A session lasts one day and is extended by a day while its player is playing: at most 7 days in a row, and never past 30 days from sign-in. Latchkey's session file gains `since`, the sign-in time, and rewrites `expires` atomically when it extends. Leaf Juice rereads the file rather than keeping `expires`, and refuses a file whose `expires` isn't after `since` or is more than 30 days after it. |
+| 2026-11-10 | Built: invites through Latchkey 0.2.0 on the Allowlist page (code shown once, from Latchkey's once-file), and the links page and map gateway accepting Latchkey's session file alongside LeafJuice's own sign-in, which goes once the owner has checked the screens (T24). |
+| 2026-11-09 | A session lasts one day and is extended by a day while its player is playing: at most 7 days in a row, and never past 30 days from sign-in. Latchkey's session file gains `since`, the sign-in time, and rewrites `expires` atomically when it extends. LeafJuice rereads the file rather than keeping `expires`, and refuses a file whose `expires` isn't after `since` or is more than 30 days after it. |
 | 2026-11-09 | The Advisor is merged into `main` now, off by default, after one more independent review against `docs/ADVISOR-SECURITY.md`, instead of waiting for the real-data trial. The trial (Check Now on the overhauled server after its first boot) and encrypting the key file come later. |
-| 2026-11-10 | The Advisor's token list is sealed with a key in the Keychain. Owner's words, through Helm: "Use Keychain because I'm going to buy the Apple Developer stuff soon and then it will be signed". Built the same day (`b9a1f87`): `key.sealed` (AES-GCM, a 256-bit key in the login Keychain), the helper never prompts and fails closed, and Allow Keychain Access on the Advisor page lets macOS ask. While Leaf Juice is unsigned, macOS asks again after each rebuild. Those prompts go away once the app is signed with an Apple Developer ID (Apple Developer Program, ops N21). Switching to signing is a later step, after the owner enrolls. |
+| 2026-11-10 | The Advisor's token list is sealed with a key in the Keychain. Owner's words, through Helm: "Use Keychain because I'm going to buy the Apple Developer stuff soon and then it will be signed". Built the same day (`b9a1f87`): `key.sealed` (AES-GCM, a 256-bit key in the login Keychain), the helper never prompts and fails closed, and Allow Keychain Access on the Advisor page lets macOS ask. While LeafJuice is unsigned, macOS asks again after each rebuild. Those prompts go away once the app is signed with an Apple Developer ID (Apple Developer Program, ops N21). Switching to signing is a later step, after the owner enrolls. |
 | 2026-11-10 | Served packs go only to players joining. Owner's words, through Helm: "I'm fine if an authorized player just uses the standard pack URL. It's more than I don't want a random person to hit pack and be able to download it". One address stays. A request needs the game's X-Minecraft-Username, -UUID and -Version headers, for a whitelisted player the server's own log shows connecting in the last 5 minutes or online now. Anyone else gets the same 404 as a wrong address. On by default, with a switch. The docs say headers can be faked. The app's own Check uses a one-time pass. No plugin hook was needed: Paper logs "UUID of player" on its login thread in both online and offline mode. Before this is used on Sonoran Realms, a real 26.x client has to load a pack through it (owner test T28). |
-| 2026-11-14 | Leaf Juice holds the config for the server's tunnels and services, agnostic where possible. Owner's words, through Helm: "Make sure Leaf Juice has config for the playit and any other services we had (if possible make them agnostic, but a playitt thing is fine too)." Built the same day: `.leafjuice/connections.json` with a provider (`playit`, `tailscale`, `other`), what it carries (`game`, `web`, `dns`, `access`), an on or off switch, addresses, and where its secret lives. Real addresses and secrets stay on this Mac, in that file or the Keychain, never in the repo. A missing secret shows the service as not ready. The Server lead enters the real values. |
+| 2026-11-14 | LeafJuice holds the config for the server's tunnels and services, agnostic where possible. Owner's words, through Helm: "Make sure Leaf Juice has config for the playit and any other services we had (if possible make them agnostic, but a playitt thing is fine too)." Built the same day: `.leafjuice/connections.json` with a provider (`playit`, `tailscale`, `other`), what it carries (`game`, `web`, `dns`, `access`), an on or off switch, addresses, and where its secret lives. Real addresses and secrets stay on this Mac, in that file or the Keychain, never in the repo. A missing secret shows the service as not ready. The Server lead enters the real values. |
 | 2026-11-14 | The connections file also holds the web map and the website sign-in page. Owner's words, through Helm: "Does Leaf Juice need to know the server map URL or the main login URL? Or... wait... yeah, because it helps issue the code in the UI after we do the account lookup". Each gets a check and a plain status. The invite code screen shows the sign-in page beside the code; with none set it says so and still shows the code. Real domains stay in local config; the README and checks use example.test. |
+| 2026-11-14 | A full UX audit with a WCAG color evaluation, enforced in code. Owner's words, through Helm: "Please have them do a full UX audit while they're under the hood. ... WCAG color evaluation." Done the same day: `docs/ux-audit.md`. The palette moved to LeafJuiceCore, where `leafjuice-check` holds every pair to AA in four appearances and five kinds of color vision. |
 
 ### From the ops decision feed
 
@@ -69,19 +70,20 @@ Settled decisions reach this repo through `~/Code/ops/decisions/all.md` and `dec
 | ID | Decision | What it means here |
 |---|---|---|
 | D1 | Decision feeds for every area (2026-11-10) | Settled entries are acted on, not re-argued. One may be raised once, with evidence, only under `ops/rules/decision-feeds.md`. |
-| D2 | Agnostic plugins, best architecture first (2026-11-10) | Leaf Juice talks to plugins (Usher, Latchkey, Preflight and the rest) only through their own commands and files, never as a hard dependency, and each works without it. New capabilities are built on the right structure from the start, cutting scope rather than structure. |
+| D2 | Agnostic plugins, best architecture first (2026-11-10) | LeafJuice talks to plugins (Usher, Latchkey, Preflight and the rest) only through their own commands and files, never as a hard dependency, and each works without it. New capabilities are built on the right structure from the start, cutting scope rather than structure. |
 | D3 | Owner steps and tests go through `ops/inbox` (2026-11-10) | New owner items go to `~/Code/ops/inbox/<ID>-<slug>.md` with a one-line note to Helm, never straight into `needs-you.md` or `tests.md`. T24, T25 and T28 went in before this. |
-| D4 | Priority order (2026-11-10) | Docker media first, then the Minecraft server, then Captive Origins, then Slothdoku and Theseus. Leaf Juice work serves the Minecraft server and follows that order. |
+| D4 | Priority order (2026-11-10) | Docker media first, then the Minecraft server, then Captive Origins, then Slothdoku and Theseus. LeafJuice work serves the Minecraft server and follows that order. |
 | D5 | No private repos because of CI minutes (2026-11-10) | This repo stays public. CI follows `ops/rules/actions-minutes.md`. |
-| D6 | Plugin names need the owner's approval (2026-11-10) | Leaf Juice uses only plugin names in `ops/plugin-names.md`. It creates no plugins of its own. Any new one would go to the owner through Helm first. |
-| D22 | One task log for every open task (2026-11-10) | Leaf Juice's open work is K61 to K73 in `ops/tasks/log.jsonl`, written only through `task.py`. Nothing is deleted. Moves need an ack, and closes need a reference. |
-| D23 | Leads own their helpers (2026-11-10) | Leaf Juice is a helper under the Minecraft Server lead (Minecraft: Sonoran Realms Server) and reports to it, not to Helm. |
+| D6 | Plugin names need the owner's approval (2026-11-10) | LeafJuice uses only plugin names in `ops/plugin-names.md`. It creates no plugins of its own. Any new one would go to the owner through Helm first. |
+| D22 | One task log for every open task (2026-11-10) | LeafJuice's open work is K61 to K73 in `ops/tasks/log.jsonl`, written only through `task.py`. Nothing is deleted. Moves need an ack, and closes need a reference. |
+| D23 | Leads own their helpers (2026-11-10) | LeafJuice is a helper under the Minecraft Server lead and reports to it. |
 | D24 | Helpers are subagents first (2026-11-10) | Helper work here runs in subagents of this session. A separate session only for long parallel work on its own branch. |
-| D25 | Retire finished sessions only after handover (2026-11-10) | The Leaf Juice AI Advisor, Wiki and Mac server wrapper sessions retire once their tasks are moved here and acked. |
+| D25 | Retire finished sessions only after handover (2026-11-10) | The LeafJuice AI Advisor, Wiki and Mac server wrapper sessions retire once their tasks are moved here and acked. |
 | D26 | No separate backlogs (2026-11-10) | No "next" or "later" lists live in this repo. Each is a task with a priority and a category, and this file points at the task log. |
-| D27 | Three "now" tasks at a time (2026-11-10) | Whoever works Leaf Juice keeps at most three tasks in "now", takes the next when one is done, and blocks a stuck one while working the others. |
-| D28 | Pause after the current task for a brief (2026-11-10) | This helper finished K47's check (no change needed: Leaf Juice already speaks Usher 0.4, and passes against 0.4.1) and took nothing new. |
-| D29 | Helpers hand over and bow out (2026-11-10) | The Leaf Juice App helper handed everything to the Minecraft Server lead (Minecraft: Sonoran Realms Server): `~/Code/ops/handoffs/Minecraft: Leaf Juice App.md`, and every task moved. That lead now owns Leaf Juice. |
+| D27 | Three "now" tasks at a time (2026-11-10) | Whoever works LeafJuice keeps at most three tasks in "now", takes the next when one is done, and blocks a stuck one while working the others. |
+| D28 | Pause after the current task for a brief (2026-11-10) | This helper finished K47's check (no change needed: LeafJuice already speaks Usher 0.4, and passes against 0.4.1) and took nothing new. |
+| D185 | LeafJuice everywhere (2026-11-14) | The product is spelled LeafJuice in the app, docs and release notes. The repo becomes LeafJuice with or after the ExtantApe transfer, which has happened. The bundle identifier and the data folder on disk keep their old names, so permissions and settings carry over. |
+| D29 | Helpers hand over and bow out (2026-11-10) | The LeafJuice App helper handed everything to the Minecraft Server lead (its handoff file is in the ops repo), and every task moved. That lead now owns LeafJuice. |
 
 ## The Change Queue
 
@@ -130,7 +132,7 @@ downloaded directly).
 Year-based versions (`26.3`) and old ones (`1.21.11`) compare correctly.
 
 **Java:** detects installed runtimes (`java_home`, Homebrew, SDKMAN), picks one that meets the
-requirement, and can download Temurin into Leaf Juice's own folder with a checksum check.
+requirement, and can download Temurin into LeafJuice's own folder with a checksum check.
 
 ## Plugins
 
@@ -301,15 +303,15 @@ Ideas for later modules: scheduled announcements, a player whitelist manager, a 
 Most specific wins: My changes, then a pick for one file, then a pack for a category, then rank. Builds fix file times, order and permissions so identical inputs give an identical SHA-1. A git submodule was considered and left out: many packs aren't in git, binaries don't diff, and every user would need git. Lock files give the history that was wanted, and a GitHub source covers packs that are in git.
 
 Zip work uses the system's `unzip` and `zip`, so there are still no dependencies. 
-Serving is a separate read-only listener on loopback, with settings per server in `.leafjuice/pack-hosting.json`, not in the recipe, so an exported recipe never carries an address. It answers `GET` and `HEAD` for `/<token>/pack.zip` and `/<token>/pack.zip.sha1`, and 404 for everything else. It streams in 256 KiB pieces, allows 32 connections, drops a connection that sends nothing for 10 seconds or stalls for 60, and doesn't log addresses. It works out the build per request: `resource-pack-sha1` if `server.properties` points at this address and Packmule isn't installed, otherwise the build chosen with Serve This Build. A tunnel and Caddy aren't part of Leaf Juice and haven't been tested.
+Serving is a separate read-only listener on loopback, with settings per server in `.leafjuice/pack-hosting.json`, not in the recipe, so an exported recipe never carries an address. It answers `GET` and `HEAD` for `/<token>/pack.zip` and `/<token>/pack.zip.sha1`, and 404 for everything else. It streams in 256 KiB pieces, allows 32 connections, drops a connection that sends nothing for 10 seconds or stalls for 60, and doesn't log addresses. It works out the build per request: `resource-pack-sha1` if `server.properties` points at this address and Packmule isn't installed, otherwise the build chosen with Serve This Build. A tunnel and Caddy aren't part of LeafJuice and haven't been tested.
 
 ### Handoff to per-world pack plugins
 
-Packmule (called Resource Pack Butler before 0.2.0, 2026-11-09) and WorldResourcepacks are treated the same way. What Leaf Juice offers either one:
+Packmule (called Resource Pack Butler before 0.2.0, 2026-11-09) and WorldResourcepacks are treated the same way. What LeafJuice offers either one:
 
 - **An address per build,** `/<token>/<sha1>.zip`, which only ever gives that build. A config holding that address and its SHA-1 can't fall out of step, because publishing a new build doesn't change what the old address gives. Old builds stay reachable while their file is kept. This is what the Hosting card shows when one of these plugins is installed.
 - **A stable address,** `/<token>/pack.zip`, plus `pack.zip.sha1`, a plain text file with the current hash. This one switches when you press Serve This Build, so a plugin using it has to re-read the hash.
-- With a plugin named `Packmule`, `ResourcePackButler` (Packmule 0.1.x) or `WorldResourcepacks` present, enabled or not, Leaf Juice refuses to write the pack settings, and warns if `server.properties` still sets a pack.
+- With a plugin named `Packmule`, `ResourcePackButler` (Packmule 0.1.x) or `WorldResourcepacks` present, enabled or not, LeafJuice refuses to write the pack settings, and warns if `server.properties` still sets a pack.
 
 For Packmule: per-build addresses are the suggested format. A new build then means changing the address and the hash in Butler's config together.
 

@@ -151,8 +151,8 @@ struct ResourcePacksPage: View {
             }
             Button { move(index, by: -1) } label: { Image(systemName: "arrow.up") }.buttonStyle(.juice).disabled(index == 0).accessibilityLabel("Higher priority")
             Button { move(index, by: 1) } label: { Image(systemName: "arrow.down") }.buttonStyle(.juice).disabled(index == recipe.entries.count - 1).accessibilityLabel("Lower priority")
-            Button("Look Through") { browsing = pack }.buttonStyle(.juice)
-            Button("Remove…") { confirmRemove = pack }.buttonStyle(.juice)
+            Button("Look Through") { browsing = pack }.buttonStyle(.juice).accessibilityLabel("Look through \(pack.title)")
+            Button("Remove…") { confirmRemove = pack }.buttonStyle(.juice).accessibilityLabel("Remove \(pack.title)")
         }
     }
 
@@ -363,7 +363,7 @@ struct ResourcePacksPage: View {
             }
             if let newest = history.first, !server.hasPerWorldPacks {
                 Divider()
-                Hint("Players' games download a pack from the web. Serve it from Hosting below, or upload it somewhere such as mc-packs.net. Leaf Juice downloads it from the address first to check it's the same file.")
+                Hint("Players' games download a pack from the web. Serve it from Hosting below, or upload it somewhere such as mc-packs.net. LeafJuice downloads it from the address first to check it's the same file.")
                 HStack {
                     Link("Open mc-packs.net", destination: URL(string: "https://mc-packs.net")!).buttonStyle(.juice)
                     TextField("Address", text: $url, prompt: Text(server.packAddress(recipe: recipe.name) ?? "https://download.mc-packs.net/pack/\(newest.sha1).zip"))

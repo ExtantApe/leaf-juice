@@ -195,7 +195,7 @@ public enum SourceKind: String, CaseIterable, Identifiable, Sendable {
     }
     public var evidence: String {
         switch self {
-        case .none: "Leaf Juice won't look for updates."
+        case .none: "LeafJuice won't look for updates."
         case .modrinth, .hangar: "Each release lists its Minecraft versions, so compatibility is exact."
         case .spigot: "Authors tag the whole resource rather than each release, so this is a good guess at best. Premium plugins can only notify."
         case .github: "Only knows the Minecraft version if releases are tagged (mc1.21.4). The jar is still checked after download."

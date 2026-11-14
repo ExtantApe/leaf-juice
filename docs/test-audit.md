@@ -1,6 +1,20 @@
 # Test audit
 
-Each audit lists what Leaf Juice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
+Each audit lists what LeafJuice promises, which checks prove each promise, and the gaps. Run the checks with `swift run leafjuice-check` (offline, made-up data, about 80 seconds). The `--real-*`, `--lab` and `--sandbox` runs boot real Paper and are listed apart.
+
+## 2026-11-14: colors, and three reported fixes
+
+- **Colors.** Every pair the app draws (47), in four appearances and five kinds of color vision: 940 combinations, all
+  at WCAG AA. The formula and the simulations are checked against fixed points. A weak pair fails the run, and the first
+  run caught three real ones (see `docs/ux-audit.md`).
+- **The `secret` field.** The README's own shapes (`agent`, `keychain`, `file`) aren't flagged. A value pasted straight
+  into `secret` is named, not repeated, and dropped, keeping the rest of the entry. This was a gap: the first checks
+  accepted any count of problems at or above six, so the false flag passed. They now check the documented shape gives none.
+- **The database rule.** HikariPool's normal INFO lines from a SQLite plugin don't match. Two real pool failures do.
+- **The start line.** "Starting minecraft server version" is read for 26.3 and 1.21.11. Chat-shaped and nonsense
+  text isn't. The update to the saved record wasn't run against a real server here; the Server lead's next start will show it.
+
+Gaps skipped: hands-on VoiceOver and keyboard use (no screen control this session; listed in `docs/ux-audit.md`).
 
 ## 2026-11-14: connections (tunnels and services)
 
@@ -147,7 +161,7 @@ Covered:
   - With Plugin commands off, nothing is asked.
 
   Making the `describe` gate always say yes failed 5 checks.
-- **Web sign-ins, for real.** Real Latchkey 0.3.0 on throwaway Paper 26.3: the bot's one browser is counted, and Sign Out Everywhere deletes the session file and ends Leaf Juice's page sign-in. The 0.2.0 run still proves that `whitelist remove` ends a session.
+- **Web sign-ins, for real.** Real Latchkey 0.3.0 on throwaway Paper 26.3: the bot's one browser is counted, and Sign Out Everywhere deletes the session file and ends LeafJuice's page sign-in. The 0.2.0 run still proves that `whitelist remove` ends a session.
 - **The Advisor, against `docs/ADVISOR-SECURITY.md`.** Each threat in its table maps to a section of the run:
 
   | Threat | Section |
@@ -198,7 +212,7 @@ Covered:
   - Invites can be listed and revoked.
   - The code works when typed in lowercase on Latchkey's own page. That whitelists the player, and Usher applies the profile.
   - A bot signs in with `/signin`, after an admin gives `latchkey.signin`, which is op-only by default.
-  - Leaf Juice reads the real session file, and its links page signs the player in.
+  - LeafJuice reads the real session file, and its links page signs the player in.
   - `whitelist remove` ends both.
 - **Looked at by hand by this session, against `--demo-invites`.** An invite was made through the real screen: the question showed inline, the code appeared once, and the list updated. One fix came from it: the hint under the profiles no longer moves the button.
 
@@ -206,7 +220,7 @@ Gaps skipped:
 
 - **Keyboard, VoiceOver and wording, by a person.** That's owner test T24.
 - **A real server, a real browser and a real client.** These wait for the owner's go. Latchkey's HTTPS through a tunnel is Latchkey's own gap.
-- **Leaf Juice's own sign-in.** It still works alongside Latchkey's. Retiring it is a later change, after T24.
+- **LeafJuice's own sign-in.** It still works alongside Latchkey's. Retiring it is a later change, after T24.
 
 ## 2026-11-10: the Allowlist page goes through Usher
 
@@ -225,9 +239,9 @@ Covered:
   - `grown_sky` asks `confirm-grown-sky`.
   - Adding and removing in one go works.
   - The raw path is refused.
-  - Usher's change log names Leaf Juice.
+  - Usher's change log names LeafJuice.
   - Every account is made up and offline.
-- **Usher 0.4.0's `attempts`.** It uses `attempts` and a number for `next`, where the spec says `items` and a string. Leaf Juice reads both, and the Plugins Lead has been told.
+- **Usher 0.4.0's `attempts`.** It uses `attempts` and a number for `next`, where the spec says `items` and a string. LeafJuice reads both, and the Plugins Lead has been told.
 
 Gaps skipped:
 
@@ -236,11 +250,11 @@ Gaps skipped:
 
 ## 2026-11-10: optional arguments in describe
 
-Signalbox 0.2.0 marks an argument that may be left out with `"optional": true`, and Usher 0.4.0 uses it. Leaf Juice now reads it, and refuses a describe with a required argument after an optional one (fail closed: it couldn't tell which slot a value fills). Two checks added; 2468 passed, 0 failed. Not yet tried against Usher 0.4.0 itself, which isn't released.
+Signalbox 0.2.0 marks an argument that may be left out with `"optional": true`, and Usher 0.4.0 uses it. LeafJuice now reads it, and refuses a describe with a required argument after an optional one (fail closed: it couldn't tell which slot a value fills). Two checks added; 2468 passed, 0 failed. Not yet tried against Usher 0.4.0 itself, which isn't released.
 
 ## 2026-11-09: plugin commands, format 1
 
-Leaf Juice's side of the shared plugin command format (ops `briefs/plugin-commands-spec.md`), behind a new module, Plugin commands, that starts off. 2463 passed, 0 failed (111 new).
+LeafJuice's side of the shared plugin command format (ops `briefs/plugin-commands-spec.md`), behind a new module, Plugin commands, that starts off. 2463 passed, 0 failed (111 new).
 
 Covered:
 
@@ -248,10 +262,10 @@ Covered:
 - **Spoofing (fail closed).** An answer counts only when `ea-result ` comes straight after an INFO log header. Thirteen spoof lines are refused: chat, `[Not Secure]` chat, the chat thread, `/say`, `/me`, a logged player command, a Discord bridge, WARN, no header, and junk before the header. Ids are 32 secure random hex characters and never repeat. A second answer, a reused id, an unknown id, a mismatched id inside the JSON, an answer over 8 KB and a refusal with no reason are each refused.
 - **Confirm questions.** Nothing goes ahead until every question id is sent back.
 - **Timeouts.** No answer is "not confirmed", not "failed". A late answer is passed on once, under its id.
-- **Switched off, or not Leaf Juice's own console.** Nothing is typed, and the refusal says why.
+- **Switched off, or not LeafJuice's own console.** Nothing is typed, and the refusal says why.
 - **describe.** It is read. Unknown keys are ignored, and unknown types are marked rather than guessed. A newer format is refused. No format, format 0 or a plugin name that's a path is unreadable.
 - **Once-files (fail closed).** A secret is read once and deleted. These are refused, and the file is still deleted: one others could read, one in a folder others could look in, one for another request, and an expired one. A link to another file isn't followed, and its target is kept. A plugin folder that's a link elsewhere isn't read, and nothing is deleted through it. A path or another request's file named in the answer is refused.
-- **End to end.** A fake server in Java with a format-1 plugin runs through Leaf Juice's real console. A player's chat answer with the same id comes first, and the real answer is still read. Free text with quotes and backslashes survives. describe comes through. An invite code reaches only the once-file, never the console. A plugin that never answers gives "not confirmed". Switched off, nothing is typed into a running server.
+- **End to end.** A fake server in Java with a format-1 plugin runs through LeafJuice's real console. A player's chat answer with the same id comes first, and the real answer is still read. Free text with quotes and backslashes survives. describe comes through. An invite code reaches only the once-file, never the console. A plugin that never answers gives "not confirmed". Switched off, nothing is typed into a running server.
 - **Proved by breaking it.** Loosening the parser to accept the prefix anywhere in a line failed 11 checks, including the end-to-end one. Then it was put back.
 
 Gaps skipped:
@@ -261,11 +275,11 @@ Gaps skipped:
 
 ## 2026-11-09: BlueMinimap rename
 
-BlueMapHUD became BlueMinimap 0.2.0. Leaf Juice never looks for this plugin by name or folder: an exact pack is whatever zip you add, stored under its own SHA-1. So no check changes. Only the README and the Exact Pack hint now name `/blueminimap pack export`. The new export has a new SHA-1, so it needs adding again as a new exact pack. Leaf Juice already handles that (a new export gets a new address, old ones keep serving). Built clean; the default run was not repeated, because no code path changed.
+BlueMapHUD became BlueMinimap 0.2.0. LeafJuice never looks for this plugin by name or folder: an exact pack is whatever zip you add, stored under its own SHA-1. So no check changes. Only the README and the Exact Pack hint now name `/blueminimap pack export`. The new export has a new SHA-1, so it needs adding again as a new exact pack. LeafJuice already handles that (a new export gets a new address, old ones keep serving). Built clean; the default run was not repeated, because no code path changed.
 
 ## 2026-11-09: Packmule rename
 
-Resource Pack Butler became Packmule 0.2.0. Serving packs now checks that Packmule is noticed under both names, `Packmule` and `ResourcePackButler` (0.1.x), and that the pack settings are refused under each. Nothing else needed: Leaf Juice reads only the plugin's name, never its folder, so the window where both `plugins/ResourcePackButler/` and `plugins/Packmule/` exist doesn't matter here. 1829 passed, 0 failed.
+Resource Pack Butler became Packmule 0.2.0. Serving packs now checks that Packmule is noticed under both names, `Packmule` and `ResourcePackButler` (0.1.x), and that the pack settings are refused under each. Nothing else needed: LeafJuice reads only the plugin's name, never its folder, so the window where both `plugins/ResourcePackButler/` and `plugins/Packmule/` exist doesn't matter here. 1829 passed, 0 failed.
 
 ## 2026-11-08: first audit
 

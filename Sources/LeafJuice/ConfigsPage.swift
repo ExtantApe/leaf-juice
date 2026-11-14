@@ -108,7 +108,7 @@ struct ConfigEditor: View {
                     isLocked: locked, running: !server.state.canStart)
             } else {
                 PlainTextEditor(text: $text, isEditable: !locked)
-                    .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Juice.border, lineWidth: 1) }
+                    .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Juice.controlBorder, lineWidth: 1) }
                     .accessibilityLabel("Contents of \(file.title)")
             }
             ForEach(Array(problems.prefix(3).enumerated()), id: \.offset) { _, problem in
@@ -388,7 +388,7 @@ struct PlayerListForm: View {
                             HStack {
                                 Text(name).foregroundStyle(Juice.ink)
                                 Spacer()
-                                Button("Remove") { run("\(commands.remove) \(name)") }.buttonStyle(.juice).disabled(!running)
+                                Button("Remove") { run("\(commands.remove) \(name)") }.buttonStyle(.juice).disabled(!running).accessibilityLabel("Remove \(name)")
                             }
                             .padding(.vertical, 5)
                             Divider()

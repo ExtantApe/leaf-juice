@@ -374,6 +374,6 @@ public enum EULA {
     /// Records the owner's own acceptance. Only called from an explicit choice in the interface.
     public static func accept(_ paths: ServerPaths) throws {
         let stamp = ISO8601DateFormatter().string(from: Date())
-        try FileOps.writeAtomic("# Accepted in Leaf Juice on \(stamp). \(url.absoluteString)\neula=true\n", to: paths.eula)
+        try FileOps.writeAtomic("# Accepted in LeafJuice on \(stamp). \(url.absoluteString)\neula=true\n", to: paths.eula)
     }
 }

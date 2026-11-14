@@ -48,7 +48,7 @@ differ from a real check's.
 | The AI recovers a real name from a token | No tool translates tokens. Only `--suggestions` does, for a person at a terminal |
 | Tokens are reversed by guessing | They're random, not derived from the value |
 | A long line hangs the program | Over-long lines are withheld before any pattern runs, and suggestions are refused or cut to a fixed length first. A flood of new players can still make an answer take many seconds |
-| The token list is read from disk | It's sealed with a key in the Keychain. The helper never lets macOS ask for it: a locked Keychain, a refusal or a missing key stops every answer with a plain reason, and nothing is written. A missing key never replaces a sealed file. Allow Keychain Access on the Advisor page is the only place macOS may ask, and it says why first. Until Leaf Juice is signed, macOS asks again after each update |
+| The token list is read from disk | It's sealed with a key in the Keychain. The helper never lets macOS ask for it: a locked Keychain, a refusal or a missing key stops every answer with a plain reason, and nothing is written. A missing key never replaces a sealed file. Allow Keychain Access on the Advisor page is the only place macOS may ask, and it says why first. Until LeafJuice is signed, macOS asks again after each update |
 | A safeguard fails silently | A damaged, oversized or linked key stops every answer. So does a damaged, oversized or linked player or issues file when that answer reads it, and a server folder that's gone. A key deleted while running is treated as a fresh start, so players get new tokens |
 
 ## What it does not protect against
@@ -56,7 +56,7 @@ differ from a real check's.
 - **An agent that also has shell or file access.** This is the big one. Claude Code running as you can read `~/Minecraft`
   directly, and could ask the Keychain for the Advisor's key, which macOS would show you. Nothing in this program can stop that. **Without the restriction shown below, the privacy
   layer is not a security boundary.**
-- **Other programs running as you.** The token list is sealed with a key in your Keychain, and macOS only hands that key to Leaf Juice and its helper, or to a program you allow. A program running as you can still ask for it, and macOS shows you that request. Something that can read your memory or your unlocked Keychain can read it too.
+- **Other programs running as you.** The token list is sealed with a key in your Keychain, and macOS only hands that key to LeafJuice and its helper, or to a program you allow. A program running as you can still ask for it, and macOS shows you that request. Something that can read your memory or your unlocked Keychain can read it too.
 - **A malicious or careless plugin.** Plugin code runs inside your server, so it's already trusted with far more than this.
   It can write fake frames up to the limits, and quite long phrases fit in hyphenated or dotted identifiers such as
   `Ignore.previous.rules.now`. A name it splices into a word, or that isn't a known player's, wouldn't be recognised. It can
@@ -96,7 +96,7 @@ differ from a real check's.
 system allows it:
 
 - `key.sealed`: the token map, sealed with AES-GCM. A token is only created for a value in an answer, for the server when it's checked, or for a known player named in a suggestion. The file starts with `LJAK1`, followed by the nonce, the sealed JSON and its tag.
-- The key that seals it is in your login Keychain, as "Leaf Juice Advisor key" (service `io.github.mgilardi.leafjuice.advisor`). A key Leaf Juice makes trusts Leaf Juice and its helper, `leafjuice-mcp`.
+- The key that seals it is in your login Keychain, as "LeafJuice Advisor key" (its service is the app's bundle identifier followed by `.advisor`). A key LeafJuice makes trusts LeafJuice and its helper, `leafjuice-mcp`.
 - An older plain `key.json` is sealed the first time the key can be reached, then deleted. Until then it isn't used.
 - `suggestions/`: suggestions as written, with tokens still in them.
 

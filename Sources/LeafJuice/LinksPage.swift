@@ -138,7 +138,7 @@ struct LinksPage: View {
                 Badge(text: serving ? "On, this Mac only" : "Off", tone: serving ? .good : .neutral)
                 Spacer()
             }
-            Hint("Leaf Juice only listens on this Mac. Getting it to players needs HTTPS that ends on this Mac, set up in Caddy with a tunnel. See the README.")
+            Hint("LeafJuice only listens on this Mac. Getting it to players needs HTTPS that ends on this Mac, set up in Caddy with a tunnel. See the README.")
             mapSection
             if let web = server.linksWeb, !web.signedIn.isEmpty {
                 Text("Signed in now").font(.callout.weight(.semibold)).foregroundStyle(Juice.ink)

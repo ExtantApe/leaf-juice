@@ -74,6 +74,13 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     check(!savedText.contains(pasted) && !savedText.contains("authKey") && !savedText.contains("\"token\""), "saving drops the pasted secrets")
     equal(ConnectionStore.load(saved).settings, loaded.settings, "and everything else reads back the same")
 
+    // Reported on 2026-11-14: the README's own shape must not be flagged.
+    let readmeShaped = ConnectionStore.parse(Data(#"{"playerAddress":"play.example.test","services":[{"id":"play","provider":"playit","traffic":"game","enabled":true,"localAddress":"127.0.0.1:25565","secret":{"agent":{}}},{"id":"api","provider":"other","traffic":"web","enabled":true,"secret":{"keychain":{"account":"api"}}},{"id":"f","provider":"other","traffic":"web","secret":{"file":{"path":"~/x"}}}]}"#.utf8))
+    check(readmeShaped.problems.isEmpty, "the documented secret field, holding where a secret lives, isn't flagged (\(readmeShaped.problems))")
+    let pastedIntoSecret = ConnectionStore.parse(Data(#"{"services":[{"id":"play","provider":"playit","secret":"made-up-pasted-value"}]}"#.utf8))
+    check(pastedIntoSecret.problems.contains { $0.contains("secret") } && !pastedIntoSecret.problems.joined().contains("made-up-pasted-value"), "but a secret pasted straight into that field is named, without repeating it")
+    check(pastedIntoSecret.settings.services.first?.id == "play" && pastedIntoSecret.settings.services.first?.secret == nil, "and isn't kept, while the rest of the entry is")
+
     section("Connections: addresses")
     equal(HostPort.parse("127.0.0.1:25565"), HostPort(host: "127.0.0.1", port: 25565), "host and port")
     equal(HostPort.parse("[::1]:8766"), HostPort(host: "::1", port: 8766), "IPv6 in brackets")
@@ -160,7 +167,7 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     status = await run(play, p)
     check(status.health == .warning && status.summary.contains("2 times"), "recent refusals in playit's log for this address are counted, older ones and other addresses aren't: \(status.summary)")
 
-    // Secrets kept by Leaf Juice: missing is not ready, never a crash; the value is never read.
+    // Secrets kept by LeafJuice: missing is not ready, never a crash; the value is never read.
     var keyed = ConnectionService(id: "status-api", name: "Status page", provider: .other, traffic: .web, publicAddress: "https://status.example.test", secret: .keychain(account: "status-api"))
     p = FakeConnectionProbe()
     status = await run(keyed, p)

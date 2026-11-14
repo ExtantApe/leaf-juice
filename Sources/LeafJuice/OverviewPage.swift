@@ -22,7 +22,7 @@ struct OverviewPage: View {
                 Button("Show in Finder") { NSWorkspace.shared.open(server.paths.root) }.buttonStyle(.juice)
                 if !server.isLab {
                     Menu {
-                        Button("Remove from Leaf Juice…") { confirmRemove = true }.disabled(server.state.isLive)
+                        Button("Remove from LeafJuice…") { confirmRemove = true }.disabled(server.state.isLive)
                     } label: {
                         Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
                     }
@@ -57,7 +57,7 @@ struct OverviewPage: View {
                 if !server.isLab { ServerIconCard(server: server) }
             }
         }
-        .confirmationDialog("Remove \(server.profile.name) from Leaf Juice?", isPresented: $confirmRemove) {
+        .confirmationDialog("Remove \(server.profile.name) from LeafJuice?", isPresented: $confirmRemove) {
             Button("Remove", role: .destructive) { model.remove(server) }
         } message: {
             Text("The server's folder stays where it is, with all its files and worlds. Backups aren't deleted either.")

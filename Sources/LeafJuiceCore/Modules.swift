@@ -38,7 +38,7 @@ public enum LeafModule: String, CaseIterable, Identifiable, Sendable {
         case .resourcePacks: "Look through resource packs, and combine them into one."
         case .links: "Each plugin, its version and a link to its documentation."
         case .advisor: "Optional AI suggestions, using your own Claude account. Off until you turn it on, and shares nothing until you choose a server."
-        case .pluginCommands: "Lets Leaf Juice talk to plugins through the shared command format, on servers it started. A preview: off until plugins support it."
+        case .pluginCommands: "Lets LeafJuice talk to plugins through the shared command format, on servers it started. A preview: off until plugins support it."
         case .sourceLookup: "Finds where a plugin came from by sending its file's checksum (not the file) to Modrinth. Off keeps every checksum on this Mac."
         }
     }

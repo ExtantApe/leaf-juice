@@ -20,7 +20,7 @@ public enum Flavor: String, Codable, CaseIterable, Identifiable, Sendable {
         case .folia: "Paper split across CPU cores for very busy servers. Many plugins don't support it."
         case .purpur: "Paper with extra gameplay options."
         case .vanilla: "Mojang's server. No plugins."
-        case .custom: "Any jar you provide, such as Spigot built with BuildTools. Leaf Juice won't update it."
+        case .custom: "Any jar you provide, such as Spigot built with BuildTools. LeafJuice won't update it."
         }
     }
     public var supportsPlugins: Bool { self != .vanilla }

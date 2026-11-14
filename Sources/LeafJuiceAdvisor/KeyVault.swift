@@ -25,8 +25,8 @@ public enum KeyVaultProblem: Error, Equatable, Sendable {
 
     public var message: String {
         switch self {
-        case .needsAccess: "The Advisor's key is in your Keychain, and macOS needs your OK before it can be used. Open Leaf Juice's Advisor page and press Allow Keychain Access. Nothing was shared."
-        case .denied: "The Keychain refused the Advisor's key, so nothing was shared. Open Leaf Juice's Advisor page and press Allow Keychain Access, then choose Always Allow."
+        case .needsAccess: "The Advisor's key is in your Keychain, and macOS needs your OK before it can be used. Open LeafJuice's Advisor page and press Allow Keychain Access. Nothing was shared."
+        case .denied: "The Keychain refused the Advisor's key, so nothing was shared. Open LeafJuice's Advisor page and press Allow Keychain Access, then choose Always Allow."
         case .missing: "The Advisor's key is missing from your Keychain, so its token list can't be opened. Nothing was shared. Forget Everything on the Advisor page starts afresh."
         case .unavailable: "The Keychain couldn't be used just now, so nothing was shared."
         }
@@ -37,7 +37,7 @@ public enum KeyVaultProblem: Error, Equatable, Sendable {
 public final class KeychainVault: KeyVault {
     public static let service = "io.github.mgilardi.leafjuice.advisor"
     public static let account = "token-map-key-v1"
-    static let label = "Leaf Juice Advisor key"
+    static let label = "LeafJuice Advisor key"
 
     /// Set by a person's action in the app. Off, macOS is never allowed to show a prompt: the call fails instead.
     private let interactive: Bool

@@ -600,7 +600,7 @@ extension ServerController {
     /// Writes the pack into server.properties. With a per-world pack plugin this refuses, because the packs are its to send.
     public func usePack(url: String, sha1: String, required: Bool, recipe: String) async throws -> SaveOutcome {
         await refreshPlugins()
-        if let plugin = perWorldPackPlugin { throw LeafError("\(plugin) is on this server, so Leaf Juice leaves its pack settings alone. Give \(plugin) the build's address and SHA-1 instead.") }
+        if let plugin = perWorldPackPlugin { throw LeafError("\(plugin) is on this server, so LeafJuice leaves its pack settings alone. Give \(plugin) the build's address and SHA-1 instead.") }
         if isServedFromHere(address: url, recipe: recipe) || isBuildAddress(url, recipe: recipe), !packHostIsListening {
             throw LeafError("That address is served by this app, and serving is off. Start it first, or players couldn't download the pack.")
         }

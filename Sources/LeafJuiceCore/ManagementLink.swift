@@ -1,13 +1,13 @@
 import Foundation
 
 /// Minecraft's own management server (JSON-RPC over a WebSocket, 1.21.9 and later), as a steadier source than the
-/// console's text for who's online and whether the server is up (K160). Leaf Juice only ever talks to it on this Mac.
+/// console's text for who's online and whether the server is up (K160). LeafJuice only ever talks to it on this Mac.
 public struct ManagementEndpoint: Equatable, Sendable {
     public let port: Int
     public let secret: String
 
     /// What `server.properties` says, if it's usable here: on, on a loopback address, a real port, plain WebSocket
-    /// (it never leaves this Mac), and a secret. Anything else is nil, so Leaf Juice falls back to reading the console.
+    /// (it never leaves this Mac), and a secret. Anything else is nil, so LeafJuice falls back to reading the console.
     public static func from(properties text: String) -> ManagementEndpoint? {
         let doc = PropertiesDocument(text)
         guard doc.value("management-server-enabled") == "true",
@@ -61,7 +61,7 @@ public enum ManagementText {
 }
 
 /// One WebSocket to one server's management endpoint on 127.0.0.1. Calls are matched by id and time out;
-/// notifications go to `onEvent`. Any failure just closes it, and Leaf Juice goes back to the console's text.
+/// notifications go to `onEvent`. Any failure just closes it, and LeafJuice goes back to the console's text.
 public final class ManagementLink: NSObject, @unchecked Sendable {
     private let task: URLSessionWebSocketTask
     private let lock = NSLock()

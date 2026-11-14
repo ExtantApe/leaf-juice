@@ -792,7 +792,7 @@ public enum ResourcePacks {
 
     public static func credits(_ recipe: PackRecipe) -> String {
         let packs = list()
-        var lines = ["Combined with Leaf Juice from these packs. Their authors made them, so please credit them.", "Shared for free, not for sale.", ""]
+        var lines = ["Combined with LeafJuice from these packs. Their authors made them, so please credit them.", "Shared for free, not for sale.", ""]
         for entry in recipe.entries where entry.enabled {
             guard let pack = packs.first(where: { $0.id == entry.pack }) else { continue }
             lines.append(pack.title)
@@ -856,7 +856,7 @@ public enum ResourcePacks {
         if distinct.count > 1 {
             warnings.append("These packs were made for different Minecraft versions (formats \(distinct.sorted().map(String.init).joined(separator: ", "))). Some files may not work on your version.")
         }
-        var body: [String: Any] = ["description": "Combined by Leaf Juice: " + sources.filter { $0.id != mineID }.map(\.title).joined(separator: " + ")]
+        var body: [String: Any] = ["description": "Combined by LeafJuice: " + sources.filter { $0.id != mineID }.map(\.title).joined(separator: " + ")]
         // Newer packs give min_format instead, and it counts just the same.
         let top = distinct.max()
         if let top { body["pack_format"] = top }
@@ -932,9 +932,9 @@ public enum ResourcePacks {
     /// Fetches what it can and verifies it. A pack already here by hash needs no download.
     public static func importRecipe(_ data: Data, mc: String?) async throws -> RecipeImport {
         guard let file = try? JSONStore.decoder.decode(RecipeExport.self, from: data), file.kind == "leaf-juice-pack-recipe" else {
-            throw LeafError("That isn't a Leaf Juice recipe.")
+            throw LeafError("That isn't a LeafJuice recipe.")
         }
-        guard file.formatVersion <= 1 else { throw LeafError("That recipe was made by a newer Leaf Juice.") }
+        guard file.formatVersion <= 1 else { throw LeafError("That recipe was made by a newer LeafJuice.") }
         var out = RecipeImport(recipe: file.recipe)
         var idMap: [String: String] = [:]
         for wanted in file.packs {

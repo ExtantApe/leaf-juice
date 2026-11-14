@@ -26,7 +26,7 @@ struct InvitesCard: View {
 
     var body: some View {
         Card(title: "Invites", systemImage: "envelope.badge.person.crop") {
-            Hint("An invite is a six-character code for one Minecraft name. They type it on your sign-up page, and they're on the allowlist with the profiles you chose. Invites from Leaf Juice only work while Leaf Juice runs this server.")
+            Hint("An invite is a six-character code for one Minecraft name. They type it on your sign-up page, and they're on the allowlist with the profiles you chose. Invites from LeafJuice only work while LeafJuice runs this server.")
             switch status {
             case nil: Hint("Checking Latchkey…")
             case .notInstalled?: EmptyView()
@@ -140,7 +140,7 @@ struct InvitesCard: View {
         if let note = address.note { Hint(note) }
         Button("Done") { made = nil; copied = false; name = ""; chosen = [] }
             .buttonStyle(.juicePrimary).keyboardShortcut(.defaultAction)
-        Hint("After Done, the code can't be shown again. Leaf Juice keeps no copy.")
+        Hint("After Done, the code can't be shown again. LeafJuice keeps no copy.")
     }
 
     @ViewBuilder private var listView: some View {

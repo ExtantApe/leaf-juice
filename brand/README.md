@@ -1,4 +1,4 @@
-# Leaf Juice brand
+# LeafJuice brand
 
 ## The idea
 
@@ -33,17 +33,20 @@ swift scripts/make-icon.swift brand
 | Background | `#F8F6E9` | `#2A3225` | |
 | Surface | `#FFFEF8` | `#343E2E` | |
 | Raised | `#ECF1DA` | `#414D39` | |
-| Border | `#CDD5B6` | `#5A6950` | |
+| Border (cards and dividers only) | `#CDD5B6` | `#5A6950` | Decoration |
+| Control outline (buttons, fields) | `#76845F` | `#95A487` | 3.5 / 3.4 |
 | Ink | `#2A3520` | `#F4F6E9` | 11.2 / 8.2 |
 | Muted | `#55614A` | `#CBD4BC` | 5.7 / 5.8 |
 | Juice green | `#4A6E22` | `#C3E491` | 5.1 / 6.3 |
 | Pink grapefruit (fill) | `#F4846B` | `#FF9E86` | Text on it, `#3A140B`: 6.5 / 8.2 |
-| Pink grapefruit (text) | `#B4452B` | `#FFA892` | 4.7 / 4.8 |
+| Pink grapefruit (text, and the main button's outline) | `#A33C25` | `#FFB8A6` | 5.6 / 5.4 |
 | Warning | `#85540A` | `#F8CC72` | 5.6 / 5.9 |
 | Danger | `#A8202E` | `#FFB3B0` | 6.2 / 5.3 |
 | Info | `#1C6478` | `#9ADAEE` | 5.8 / 5.8 |
 
-All text colors meet WCAG AA (4.5:1) on all three surfaces in both appearances. Source of truth: `Sources/LeafJuice/Theme.swift`.
+Every pair the app draws meets WCAG AA (4.5:1 for text, 3:1 for controls and icons) in light, dark and both increased-contrast
+appearances, and still does with protanopia, deuteranopia, tritanopia or achromatopsia simulated. `leafjuice-check` fails
+if any pair drops below, so CI catches it. Source of truth: `Sources/LeafJuiceCore/Palette.swift`. Details: `docs/ux-audit.md`.
 Artwork colors, for illustration only: line `#3F5236`, juice `#93A255`, cream `#F5E8CF`.
 
 ## Voice

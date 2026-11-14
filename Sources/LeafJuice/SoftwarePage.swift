@@ -191,7 +191,7 @@ struct ChangeVersionCard: View {
         case .same, .newBuild:
             Hint("Same Minecraft version. This installs the newest build.")
         case .upgrade:
-            Callout(tone: .warning, title: "This upgrades your world", detail: "A world that has run on \(target) can't open on \(server.profile.software.mcVersion) again. Leaf Juice first saves the whole server as a restore point and checks it can be read back. If that fails, the upgrade doesn't happen. Afterwards you can roll back in one step.")
+            Callout(tone: .warning, title: "This upgrades your world", detail: "A world that has run on \(target) can't open on \(server.profile.software.mcVersion) again. LeafJuice first saves the whole server as a restore point and checks it can be read back. If that fails, the upgrade doesn't happen. Afterwards you can roll back in one step.")
             if SoftwareCatalog.crossesWorldLayoutChange(from: server.profile.software.mcVersion, to: target) {
                 Callout(tone: .warning, title: "Minecraft 26 stores worlds differently", detail: "Worlds are reorganized on first run, and Nether and End folders move inside the main world. Plugins that work with world folders directly may need updates, so check them below first.")
             }
@@ -297,7 +297,7 @@ struct ChangeVersionCard: View {
     }
 }
 
-/// Lets you correct what Leaf Juice detected, or point it at your own jar.
+/// Lets you correct what LeafJuice detected, or point it at your own jar.
 struct IdentifyCard: View {
     @Bindable var server: ServerController
     @State private var open = false
@@ -317,7 +317,7 @@ struct IdentifyCard: View {
                     }
                     TextField("Minecraft version", text: $server.profile.software.mcVersion, prompt: Text("26.3"))
                     TextField("Build", value: $server.profile.software.build, format: .number.grouping(.never), prompt: Text("Optional"))
-                    Hint("This only changes what Leaf Juice believes is installed. Plugin compatibility and updates rely on it.")
+                    Hint("This only changes what LeafJuice believes is installed. Plugin compatibility and updates rely on it.")
                 }
                 .padding(.top, 8)
             }

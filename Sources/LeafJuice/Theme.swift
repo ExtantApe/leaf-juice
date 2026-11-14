@@ -2,43 +2,47 @@ import AppKit
 import LeafJuiceCore
 import SwiftUI
 
-/// The Leaf Juice palette: cream and sage, with pink grapefruit as the one pop of color.
-/// Every text color meets WCAG AA (4.5:1) on all three surfaces in both appearances; see brand/README.md.
+/// The LeafJuice palette: cream and sage, with pink grapefruit as the one pop of color.
+/// Every pair meets WCAG AA in all four appearances and under common color blindness, checked by leafjuice-check
+/// against `Palette` (see docs/ux-audit.md).
 /// State is always shown by shape and word as well as color.
 enum Juice {
-    static let background = dynamic(light: 0xF8F6E9, dark: 0x2A3225)
-    static let surface = dynamic(light: 0xFFFEF8, dark: 0x343E2E)
-    static let raised = dynamic(light: 0xECF1DA, dark: 0x414D39)
-    static let border = dynamic(light: 0xCDD5B6, dark: 0x5A6950, contrast: (0x5F6E50, 0xA3B292))
-    static let ink = dynamic(light: 0x2A3520, dark: 0xF4F6E9, contrast: (0x000000, 0xFFFFFF))
-    static let muted = dynamic(light: 0x55614A, dark: 0xCBD4BC, contrast: (0x2F3926, 0xE6ECDA))
+    static let background = dynamic(Palette.background)
+    static let surface = dynamic(Palette.surface)
+    static let raised = dynamic(Palette.raised)
+    /// Card outlines and dividers only. Buttons and fields use controlBorder.
+    static let border = dynamic(Palette.border)
+    static let controlBorder = dynamic(Palette.controlBorder)
+    static let ink = dynamic(Palette.ink)
+    static let muted = dynamic(Palette.muted)
     /// Juice green: structure, such as icons, toggles, selection and focus.
-    static let pulp = dynamic(light: 0x4A6E22, dark: 0xC3E491)
-    static let pulpWash = dynamic(light: 0xE2EEC6, dark: 0x43552F)
+    static let pulp = dynamic(Palette.pulp)
+    static let pulpWash = dynamic(Palette.pulpWash)
     /// Pink grapefruit: the pop. Only for the main action on a page.
-    static let grapefruit = dynamic(light: 0xF4846B, dark: 0xFF9E86)
-    static let onGrapefruit = dynamic(light: 0x3A140B, dark: 0x3A140B)
-    /// Grapefruit as a text color, where it's needed.
-    static let grapefruitText = dynamic(light: 0xB4452B, dark: 0xFFA892)
-    static let warning = dynamic(light: 0x85540A, dark: 0xF8CC72)
-    static let warningWash = dynamic(light: 0xFBEFD0, dark: 0x524223)
-    static let danger = dynamic(light: 0xA8202E, dark: 0xFFB3B0)
-    static let dangerWash = dynamic(light: 0xFBE0E0, dark: 0x572C2E)
-    static let info = dynamic(light: 0x1C6478, dark: 0x9ADAEE)
-    static let infoWash = dynamic(light: 0xDDF0F5, dark: 0x274650)
+    static let grapefruit = dynamic(Palette.grapefruit)
+    static let onGrapefruit = dynamic(Palette.onGrapefruit)
+    /// Grapefruit as a text color, and the main button's outline.
+    static let grapefruitText = dynamic(Palette.grapefruitText)
+    static let warning = dynamic(Palette.warning)
+    static let warningWash = dynamic(Palette.warningWash)
+    static let danger = dynamic(Palette.danger)
+    static let dangerWash = dynamic(Palette.dangerWash)
+    static let info = dynamic(Palette.info)
+    static let infoWash = dynamic(Palette.infoWash)
 
     static let controlHeight: CGFloat = 32
     static let controlRadius: CGFloat = 8
     static let cardRadius: CGFloat = 10
 
-    private static func dynamic(light: UInt32, dark: UInt32, contrast: (UInt32, UInt32)? = nil) -> Color {
+    /// The palette's numbers live in LeafJuiceCore, where `leafjuice-check` holds every pair to WCAG AA.
+    private static func dynamic(_ swatch: Palette.Swatch) -> Color {
         Color(nsColor: NSColor(name: nil) { appearance in
             let match = appearance.bestMatch(from: [.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua])
             switch match {
-            case .accessibilityHighContrastAqua: return nsColor(contrast?.0 ?? light)
-            case .accessibilityHighContrastDarkAqua: return nsColor(contrast?.1 ?? dark)
-            case .darkAqua: return nsColor(dark)
-            default: return nsColor(light)
+            case .accessibilityHighContrastAqua: return nsColor(swatch.contrastLight)
+            case .accessibilityHighContrastDarkAqua: return nsColor(swatch.contrastDark)
+            case .darkAqua: return nsColor(swatch.dark)
+            default: return nsColor(swatch.light)
             }
         })
     }
@@ -105,8 +109,8 @@ struct JuiceButtonStyle: ButtonStyle {
         }
         private var borderColor: Color {
             switch kind {
-            case .primary: Juice.grapefruit
-            case .secondary: Juice.border
+            case .primary: Juice.grapefruitText
+            case .secondary: Juice.controlBorder
             case .danger: Juice.danger
             }
         }

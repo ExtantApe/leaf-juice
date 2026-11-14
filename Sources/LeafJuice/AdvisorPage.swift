@@ -103,7 +103,7 @@ final class AdvisorCenter {
         }
         share(server, true)
         guard isShared(server) else {
-            fail(server, "Leaf Juice couldn't save that choice, so this server isn't shared.")
+            fail(server, "LeafJuice couldn't save that choice, so this server isn't shared.")
             return
         }
         say(server, .good, "Sharing is on for \(server.profile.name)", "That's the folder \(Self.shown(root)). Nothing has been sent. A check only runs when you press Check Now.")
@@ -113,7 +113,7 @@ final class AdvisorCenter {
         phases[server.paths.root.path] = .idle
         share(server, false)
         guard !isShared(server) else {
-            fail(server, "Leaf Juice couldn't save that choice, so this server is still shared.")
+            fail(server, "LeafJuice couldn't save that choice, so this server is still shared.")
             return
         }
         say(server, .info, "Stopped sharing \(server.profile.name)", "Nothing more will be sent unless you share it again.")
@@ -178,7 +178,7 @@ final class AdvisorCenter {
     /// Whether this app and its helper can both reach the key without asking anyone. Makes the key if there's none.
     /// Nil when both can; otherwise the reason, and Allow Keychain Access is offered when that would fix it.
     func keychainProblem() async -> String? {
-        guard let program = advisorProgram else { return "This build of Leaf Juice is missing its Advisor program." }
+        guard let program = advisorProgram else { return "This build of LeafJuice is missing its Advisor program." }
         var said: String?
         do { _ = try PrivacyKey.defaultVault().key(create: true) } catch { said = (error as? KeyVaultProblem)?.message ?? KeyVaultProblem.unavailable.message }
         if said == nil { said = await Self.helper(program, "--keychain-check") }
@@ -189,7 +189,7 @@ final class AdvisorCenter {
     /// The one place macOS may ask. It asks for this app first, then for the helper, each only if needed.
     func allowKeychain(_ server: ServerController) async {
         let path = server.paths.root.path
-        guard let program = advisorProgram else { phases[path] = .failed("This build of Leaf Juice is missing its Advisor program."); return }
+        guard let program = advisorProgram else { phases[path] = .failed("This build of LeafJuice is missing its Advisor program."); return }
         do {
             _ = try KeychainVault(interactive: true, alsoTrusted: [program]).key(create: true)
         } catch {
@@ -199,7 +199,7 @@ final class AdvisorCenter {
         if let refused = await Self.helper(program, "--allow-keychain") { phases[path] = .failed(refused); return }
         if let still = await keychainProblem() { phases[path] = .failed(still); return }
         phases[path] = .idle
-        say(server, .good, "The Advisor can use its key", "Nothing else needs allowing until Leaf Juice is updated.")
+        say(server, .good, "The Advisor can use its key", "Nothing else needs allowing until LeafJuice is updated.")
         refresh(server)
     }
 
@@ -313,7 +313,7 @@ final class AdvisorCenter {
         }
         findClaude()
         guard let claude = claudePath else { phases[path] = .failed("Claude Code isn't installed on this Mac."); return }
-        guard let program = advisorProgram else { phases[path] = .failed("This build of Leaf Juice is missing its Advisor program."); return }
+        guard let program = advisorProgram else { phases[path] = .failed("This build of LeafJuice is missing its Advisor program."); return }
         guard !AdvisorPaths.homeIsInside(server: server.paths.root) else { phases[path] = .failed("The Advisor's private folder is inside this server's folder, so nothing was shared."); return }
         // Asked first and quietly, so a Keychain that needs your OK stops the check here, with the button to fix it,
         // rather than part-way through with nothing to show.
@@ -393,7 +393,7 @@ final class AdvisorCenter {
                           self.signature(server) != self.defaults.string(forKey: "advisorSeen:\(path)") ?? "" else { continue }
                     await self.check(server, automatic: true)
                     if self.items[path]?.contains(where: { $0.severity == .important }) == true {
-                        server.raiseAlert("The Advisor has something for \(server.profile.name)", "Open Leaf Juice to read it.")
+                        server.raiseAlert("The Advisor has something for \(server.profile.name)", "Open LeafJuice to read it.")
                     }
                 }
             }
@@ -476,7 +476,7 @@ struct AdvisorTrialView: View {
             if let server = selected {
                 AdvisorPage(model: model, server: server).id(server.paths.root.path)
             } else {
-                Text("Leaf Juice doesn't list any servers yet.").foregroundStyle(Juice.muted).frame(maxWidth: .infinity, maxHeight: .infinity)
+                Text("LeafJuice doesn't list any servers yet.").foregroundStyle(Juice.muted).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
@@ -514,7 +514,7 @@ struct AdvisorPage: View {
                 Task { await center.allowKeychain(server); allowing = false }
             }
         } message: {
-            Text("The Advisor keeps its list of who each code name stands for locked with a key in your Keychain. macOS will ask up to twice, once for Leaf Juice and once for its helper, leafjuice-mcp. Choose Always Allow each time, and type your Mac password if it asks. Until Leaf Juice is signed by its developer, macOS asks again after each update.")
+            Text("The Advisor keeps its list of who each code name stands for locked with a key in your Keychain. macOS will ask up to twice, once for LeafJuice and once for its helper, leafjuice-mcp. Choose Always Allow each time, and type your Mac password if it asks. Until LeafJuice is signed by its developer, macOS asks again after each update.")
         }
         .confirmationDialog("Forget everything the Advisor has stored?", isPresented: $confirmingForget, titleVisibility: .visible) {
             Button("Forget Everything", role: .destructive) { center.forgetEverything(servers: model.servers) }
@@ -565,13 +565,13 @@ struct AdvisorPage: View {
 
     @ViewBuilder private var introduction: some View {
         Card(title: "A second pair of eyes", systemImage: "sparkle.magnifyingglass") {
-            Text("When something goes wrong on a busy server, it can be hard to tell what matters. The Advisor reads what Leaf Juice has noticed and tells you, in plain words, what's wrong and what to do first.")
+            Text("When something goes wrong on a busy server, it can be hard to tell what matters. The Advisor reads what LeafJuice has noticed and tells you, in plain words, what's wrong and what to do first.")
                 .foregroundStyle(Juice.ink).fixedSize(horizontal: false, vertical: true)
         }
         HStack(alignment: .top, spacing: 14) {
             Card(title: "What it sees", systemImage: "eye") {
                 AdvisorBullet("Plugin file names, and your Minecraft version")
-                AdvisorBullet("Errors Leaf Juice recognises, with their technical traces")
+                AdvisorBullet("Errors LeafJuice recognises, with their technical traces")
                 AdvisorBullet("Speed, memory and crash numbers")
                 AdvisorBullet("Players as code names, only if a problem involves them")
             }
@@ -585,7 +585,7 @@ struct AdvisorPage: View {
         Hint("A badly behaved plugin could still slip a name or a phrase into its technical text, so have a look before you share.")
         Button("See Exactly What Would Be Shared") { showingPreview = true }.buttonStyle(.juice)
         if center.claudePath == nil {
-            Callout(tone: .info, title: "This needs Claude Code", detail: "The Advisor uses your own Claude account through Claude Code, a free program from Anthropic. Leaf Juice stays free, and has no AI of its own.") {
+            Callout(tone: .info, title: "This needs Claude Code", detail: "The Advisor uses your own Claude account through Claude Code, a free program from Anthropic. LeafJuice stays free, and has no AI of its own.") {
                 HStack {
                     Link("Get Claude Code", destination: URL(string: "https://claude.com/claude-code")!).buttonStyle(.juice)
                     Button("Check Again") { center.lookForClaude(server) }.buttonStyle(.juice)
@@ -650,7 +650,7 @@ struct AdvisorPage: View {
                 Toggle(isOn: Binding(get: { center.isAutomatic(server) }, set: { center.setAutomatic(server, $0) })) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Check by itself when something new goes wrong").foregroundStyle(Juice.ink)
-                        Text("At most every six hours, while Leaf Juice is open. Quiet servers cost nothing.").font(.caption).foregroundStyle(Juice.muted)
+                        Text("At most every six hours, while LeafJuice is open. Quiet servers cost nothing.").font(.caption).foregroundStyle(Juice.muted)
                     }
                 }
             }

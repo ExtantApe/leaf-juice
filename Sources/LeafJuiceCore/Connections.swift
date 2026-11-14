@@ -12,7 +12,7 @@ public struct ConnectionSettings: Codable, Equatable, Sendable {
     public var playerAddress = ""
     /// The web map players open, such as https://map.example.test.
     public var mapURL = ""
-    /// The website sign-in page that goes with the code Leaf Juice issues after an account lookup.
+    /// The website sign-in page that goes with the code LeafJuice issues after an account lookup.
     public var signInURL = ""
     public var services: [ConnectionService] = []
     public init() {}
@@ -70,7 +70,7 @@ public enum ConnectionTraffic: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// Where a service's secret lives. The value itself is never in Leaf Juice's files.
+/// Where a service's secret lives. The value itself is never in LeafJuice's files.
 public enum SecretLocation: Codable, Equatable, Sendable {
     /// In the login Keychain, under ConnectionSecrets.service and this account.
     case keychain(account: String)
@@ -112,7 +112,8 @@ public struct ConnectionService: Codable, Equatable, Identifiable, Sendable {
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
         localAddress = try c.decodeIfPresent(String.self, forKey: .localAddress) ?? ""
         publicAddress = try c.decodeIfPresent(String.self, forKey: .publicAddress) ?? ""
-        secret = try c.decodeIfPresent(SecretLocation.self, forKey: .secret)
+        // A pasted value instead of a location is dropped (and named by the loader), keeping the rest of the entry.
+        secret = (try? c.decodeIfPresent(SecretLocation.self, forKey: .secret)) ?? nil
         note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
     }
 
@@ -188,6 +189,8 @@ public enum ConnectionStore {
 
     private static func flagSecrets(_ entry: [String: Any], at label: String, into problems: inout [String]) {
         for key in entry.keys.sorted() where secretLooking.contains(key.lowercased()) {
+            // `secret` holding where a secret lives ({"agent":{}}, {"keychain":…}, {"file":…}) is the real field.
+            if key == "secret", entry[key] is [String: Any] { continue }
             problems.append("\(label) has a field called \(key), which was ignored. Secrets belong in the Keychain, never in this file.")
         }
     }
@@ -213,7 +216,7 @@ public enum SecretPresence: Equatable, Sendable {
     case unavailable(String)
 }
 
-/// The login Keychain, for services that need a secret Leaf Juice itself holds.
+/// The login Keychain, for services that need a secret LeafJuice itself holds.
 public enum ConnectionSecrets {
     public static let service = "LeafJuice connections"
 
@@ -232,7 +235,7 @@ public enum ConnectionSecrets {
         switch status {
         case errSecSuccess: return .present
         case errSecItemNotFound: return .missing
-        case errSecInteractionNotAllowed, errSecAuthFailed: return .unavailable("The Keychain is locked, or didn't let Leaf Juice look.")
+        case errSecInteractionNotAllowed, errSecAuthFailed: return .unavailable("The Keychain is locked, or didn't let LeafJuice look.")
         default: return .unavailable("The Keychain answered with error \(status).")
         }
     }
@@ -243,7 +246,7 @@ public enum ConnectionSecrets {
         remove(account: account, in: keychain)
         var q = query(account)
         q[kSecValueData as String] = Data(value.utf8)
-        q[kSecAttrLabel as String] = "Leaf Juice connection: \(account)"
+        q[kSecAttrLabel as String] = "LeafJuice connection: \(account)"
         if let keychain { q[kSecUseKeychain as String] = keychain }
         else { q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly }
         let status = SecItemAdd(q as CFDictionary, nil)
@@ -570,7 +573,7 @@ public enum ConnectionCheck {
         func note(_ h: ConnectionHealth, _ t: String) { out.append(Finding(health: h, text: t)) }
         func info(_ t: String) { out.append(Finding(health: nil, text: t)) }
         guard let tool = playitTools(home: probe.home).first(where: probe.isExecutable) else {
-            note(.notReady, "playit's agent isn't installed where Leaf Juice looks (\(playitTools(home: "~").first!)).")
+            note(.notReady, "playit's agent isn't installed where LeafJuice looks (\(playitTools(home: "~").first!)).")
             return out
         }
         // `status` can stay open after printing, so it gets a short limit and whatever it printed is read.

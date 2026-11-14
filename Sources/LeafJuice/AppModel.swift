@@ -198,7 +198,7 @@ final class AppModel {
     }
 }
 
-/// Tells you when something goes wrong and Leaf Juice isn't in front of you.
+/// Tells you when something goes wrong and LeafJuice isn't in front of you.
 @MainActor enum Alerts {
     static var enabled: Bool {
         get { UserDefaults.standard.object(forKey: "macAlerts") as? Bool ?? true }
@@ -345,7 +345,7 @@ struct LeafJuiceApp: App {
     }
 
     var body: some Scene {
-        Window("Leaf Juice", id: "main") {
+        Window("LeafJuice", id: "main") {
             RootView(model: model)
                 .frame(minWidth: 1120, minHeight: 640)
                 .tint(Juice.pulp)
@@ -366,7 +366,7 @@ struct LeafJuiceApp: App {
             StatusMenu(model: model)
         } label: {
             Image(systemName: model.anyLive ? "leaf.fill" : "leaf")
-                .accessibilityLabel(model.anyLive ? "Leaf Juice, server running" : "Leaf Juice")
+                .accessibilityLabel(model.anyLive ? "LeafJuice, server running" : "LeafJuice")
         }
     }
 }
@@ -417,7 +417,7 @@ struct StatusMenu: View {
             }
             Divider()
         }
-        Button("Open Leaf Juice") {
+        Button("Open LeafJuice") {
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -436,7 +436,7 @@ struct SettingsView: View {
                 Text("Light").tag("light")
                 Text("Dark").tag("dark")
             }
-            Toggle("Tell me when a new Leaf Juice is on GitHub", isOn: $model.checkAppUpdates)
+            Toggle("Tell me when a new LeafJuice is on GitHub", isOn: $model.checkAppUpdates)
             Toggle("Notify me about crashes, failed backups and low disk space", isOn: Binding(get: { Alerts.enabled }, set: { Alerts.enabled = $0 }))
             LabeledContent("Version", value: LeafJuice.version)
             LabeledContent("Servers folder") {

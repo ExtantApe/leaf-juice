@@ -69,9 +69,9 @@ struct ServersFolderSheet: View {
     }
 
     private var message: String {
-        guard homeExists else { return "Leaf Juice keeps servers together in one folder. It can make one for you, or use a folder you already have." }
+        guard homeExists else { return "LeafJuice keeps servers together in one folder. It can make one for you, or use a folder you already have." }
         switch found {
-        case 0: return "You already have a \(homeLabel) folder. Leaf Juice can keep your servers there."
+        case 0: return "You already have a \(homeLabel) folder. LeafJuice can keep your servers there."
         case 1: return "You already have a \(homeLabel) folder, with what looks like 1 server in it."
         default: return "You already have a \(homeLabel) folder, with what look like \(found) servers in it."
         }
@@ -102,7 +102,7 @@ struct WelcomeView: View {
     var body: some View {
         VStack(spacing: 14) {
             Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 96, height: 96).accessibilityHidden(true)
-            Text("Leaf Juice").font(.largeTitle.weight(.semibold)).foregroundStyle(Juice.ink)
+            Text("LeafJuice").font(.largeTitle.weight(.semibold)).foregroundStyle(Juice.ink)
             Text("A lean home for your Minecraft server.").foregroundStyle(Juice.muted)
             Button("Add a Server") { model.showAddServer = true }.buttonStyle(.juicePrimary)
         }
@@ -157,12 +157,12 @@ struct ServerWindow: View {
                 }
             }
             if case let .external(pid) = server.state {
-                Callout(tone: .warning, title: "This server is already running outside Leaf Juice", detail: "Process \(pid) is using this folder. Its console isn't available here. Stop it here to take over.") {
+                Callout(tone: .warning, title: "This server is already running outside LeafJuice", detail: "Process \(pid) is using this folder. Its console isn't available here. Stop it here to take over.") {
                     Button("Stop It") { Task { await server.stopExternalServer() } }.buttonStyle(.juice)
                 }
             }
             if let update = model.appUpdate {
-                Callout(tone: .info, title: "Leaf Juice \(update.version) is available") {
+                Callout(tone: .info, title: "LeafJuice \(update.version) is available") {
                     Link("Open on GitHub", destination: update.url).buttonStyle(.juice)
                 }
             }
@@ -261,7 +261,7 @@ struct Sidebar: View {
             }
             .padding(8)
             .background(Juice.surface.opacity(0.7), in: RoundedRectangle(cornerRadius: Juice.controlRadius))
-            .overlay { RoundedRectangle(cornerRadius: Juice.controlRadius).strokeBorder(Juice.border, lineWidth: 1) }
+            .overlay { RoundedRectangle(cornerRadius: Juice.controlRadius).strokeBorder(Juice.controlBorder, lineWidth: 1) }
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -385,7 +385,7 @@ struct BlockersSheet: View {
                 .buttonStyle(.juicePrimary).disabled(server.activity != nil)
                 Button("Choose on Launch Page") { server.blockers = []; model.page = .launch }.buttonStyle(.juice)
             }
-            Hint("Downloads Eclipse Temurin into Leaf Juice's own folder. Nothing else on your Mac changes.")
+            Hint("Downloads Eclipse Temurin into LeafJuice's own folder. Nothing else on your Mac changes.")
             if let activity = server.activity { Hint(activity) }
         case .noJar:
             Button("Open Software Page") { server.blockers = []; model.page = .software }.buttonStyle(.juice)
@@ -416,13 +416,13 @@ struct RenameSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Rename Server").font(.title2.weight(.semibold)).foregroundStyle(Juice.ink)
             Form {
-                TextField("Name in Leaf Juice", text: $name)
+                TextField("Name in LeafJuice", text: $name)
                 TextField("Server message", text: $message)
                 TextField("Folder name", text: $folder).disabled(!server.state.canStart)
             }
             .formStyle(.columns)
             if !server.state.canStart { Hint("Stop the server to rename its folder.") }
-            Hint("The name is your label in Leaf Juice. The server message (motd) is what players see in their server list\(server.state.canStart ? "." : ", and a change to it applies at the next restart.")")
+            Hint("The name is your label in LeafJuice. The server message (motd) is what players see in their server list\(server.state.canStart ? "." : ", and a change to it applies at the next restart.")")
             if let error { Callout(tone: .danger, title: error) }
             HStack {
                 Button("Cancel") { dismiss() }.buttonStyle(.juice).keyboardShortcut(.cancelAction)
@@ -516,7 +516,7 @@ struct AddServerSheet: View {
                 .textFieldStyle(.roundedBorder)
 
             if mode == .existing {
-                Hint("Leaf Juice reads what's there and detects the software, version and start script settings. Everything it adds goes in a .leafjuice folder inside; your server files aren't touched.")
+                Hint("LeafJuice reads what's there and detects the software, version and start script settings. Everything it adds goes in a .leafjuice folder inside; your server files aren't touched.")
             } else {
                 newServerFields
             }
@@ -542,7 +542,7 @@ struct AddServerSheet: View {
 
     private var serversPath: String { (AppPaths.servers.path as NSString).abbreviatingWithTildeInPath }
 
-    /// Servers in the servers folder that aren't already in Leaf Juice.
+    /// Servers in the servers folder that aren't already in LeafJuice.
     private var available: [URL] {
         let known = Set(model.servers.map { $0.paths.root.standardizedFileURL.path })
         return found.filter { !known.contains($0.standardizedFileURL.path) }

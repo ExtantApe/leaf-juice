@@ -118,7 +118,7 @@ public final class ServerReader {
         return lines
     }
 
-    /// Numbers only, from the files Leaf Juice and Java keep. A server can be badly lagging or out of memory with nothing in its log.
+    /// Numbers only, from the files LeafJuice and Java keep. A server can be badly lagging or out of memory with nothing in its log.
     private func health() throws -> [String: Any] {
         var out: [String: Any] = [:]
         if let data = try read(".leafjuice/metrics.jsonl", tailBytes: 1 << 20) {

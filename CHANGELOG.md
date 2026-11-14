@@ -10,6 +10,14 @@
   Tailscale. Not yet run against the real servers.
 - **Map and sign-in addresses** in the same file, each with a check. The invite code screen shows the sign-in page
   beside the code, with Copy Both. If none is set, it says so and still shows the code.
+- **Colors held to WCAG AA in code.** Every text and control pair, in light, dark and increased contrast, and with
+  common color blindness simulated. Buttons and fields get outlines at 3:1 or better, and the main button an outline
+  of its own. See `docs/ux-audit.md`.
+- **VoiceOver:** repeated row buttons now name their row, such as "Remove" plus the pack's name.
+- **Spelled LeafJuice** everywhere you see the name. Your data folder and macOS permissions stay as they were.
+- **Fixed:** a database plugin's normal connection-pool line no longer shows as "A database connection failed".
+- **Fixed:** the documented `secret` field in connections.json is no longer flagged as a pasted secret.
+- **Fixed:** the recorded Minecraft version updates when the server starts on a different one.
 
 ## 0.2.0
 
@@ -17,11 +25,11 @@ Tested against real Paper 26.x servers started for the tests, with made-up playe
 below. Not yet tested by anyone running it on a server people play on. The new screens haven't been checked with a
 keyboard and VoiceOver yet. Plugin commands and the Advisor are off until you turn them on.
 
-**Opening it:** Leaf Juice is unsigned, so macOS blocks the first launch. Allow it one of two ways:
+**Opening it:** LeafJuice is unsigned, so macOS blocks the first launch. Allow it one of two ways:
 
 - **System Settings:** try to open the app once, then go to System Settings > Privacy & Security, scroll down, click
   **Open Anyway**, and click **Open** when the warning comes back. Apple says to do this only for an app you trust.
-- **Terminal:** `xattr -dr com.apple.quarantine "/Applications/Leaf Juice.app"`
+- **Terminal:** `xattr -dr com.apple.quarantine "/Applications/LeafJuice.app"`
 
 Players and sign-in:
 
@@ -49,7 +57,7 @@ Upgrades and the rest:
   It's off until you turn it on in Settings, each server has to be shared, and the first check asks before sending.
   Only recognised log lines, stack traces and a fixed list of settings are sent, with players and addresses replaced
   by code names. The list of who each code name stands for is sealed with a key in your Keychain. macOS asks for
-  that key once, and again after each update until Leaf Juice is signed. See `docs/ADVISOR-SECURITY.md`. Tested with
+  that key once, and again after each update until LeafJuice is signed. See `docs/ADVISOR-SECURITY.md`. Tested with
   made-up servers. It hasn't been run on a real server yet.
 
 ## 0.1.0

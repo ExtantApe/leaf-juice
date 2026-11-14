@@ -28,7 +28,7 @@ struct PackHostingCard: View {
             if let error { Callout(tone: .danger, title: error) }
             if let problem = server.packHostError { Callout(tone: .danger, title: "Serving stopped", detail: problem) }
             if let plugin = server.perWorldPackPlugin {
-                Callout(tone: .info, title: "\(plugin) is on this server", detail: "It sends the pack for each world, so Leaf Juice won't change this server's pack settings. Give it each build's own address and SHA-1 from here. That address only ever gives that build, so the two can't fall out of step.")
+                Callout(tone: .info, title: "\(plugin) is on this server", detail: "It sends the pack for each world, so LeafJuice won't change this server's pack settings. Give it each build's own address and SHA-1 from here. That address only ever gives that build, so the two can't fall out of step.")
                 if live.isSet { Callout(tone: .warning, title: "server.properties still sets a pack", detail: "With \(plugin) sending the packs, this should usually be empty. Clear it on the Configs page if \(plugin) is meant to send every pack.") }
             }
             serving
@@ -80,7 +80,7 @@ struct PackHostingCard: View {
                 }
             }
             if PackHosting.isOnlyThisMac(settings.address) { Hint("This address only works on this Mac, so it's good for testing and no use to players.") }
-            Hint("Leaf Juice listens on this Mac only, so something like Caddy has to carry it through your tunnel. Use a different hostname from any sign-in page.")
+            Hint("LeafJuice listens on this Mac only, so something like Caddy has to carry it through your tunnel. Use a different hostname from any sign-in page.")
             Toggle(isOn: Binding(get: { settings.joiningOnly }, set: { on in
                 do { try server.setPackJoiningOnly(on); error = nil } catch { self.error = error.localizedDescription }
                 reload()
@@ -94,7 +94,7 @@ struct PackHostingCard: View {
             if settings.joiningOnly {
                 Hint("This stops casual downloads and shared links. A game's request can be faked, so someone who knows a whitelisted player's name and ID could still get the pack while that player is joining. Only players listed in the whitelist get it, whether or not the whitelist is switched on.")
             }
-            Hint("The game can't sign in, so a long random path hides a pack, and every player's game is given it. It runs only while Leaf Juice is open, uses your upload speed, and keeps no record of who downloads.")
+            Hint("The game can't sign in, so a long random path hides a pack, and every player's game is given it. It runs only while LeafJuice is open, uses your upload speed, and keeps no record of who downloads.")
         }
     }
 
@@ -120,7 +120,7 @@ struct PackHostingCard: View {
                         Button("Copy") { copy(template) }.buttonStyle(.juice).accessibilityLabel("Copy the address with {sha1}")
                     }
                 }
-                Callout(tone: .warning, title: "Players can't get this pack while Leaf Juice is closed", detail: "If it's required, they can't join without it. Keep Leaf Juice open whenever the server is running.")
+                Callout(tone: .warning, title: "Players can't get this pack while LeafJuice is closed", detail: "If it's required, they can't join without it. Keep LeafJuice open whenever the server is running.")
                 Hint("Each version keeps its own address. New Address changes all of them, so a plugin's public-url breaks until you paste the new one in.")
                 ForEach(ResourcePacks.history(name).first?.warnings ?? [], id: \.self) { Hint($0) }
             }

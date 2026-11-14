@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds dist/Leaf Juice.app, ad-hoc signed. Needs only the Command Line Tools.
+# Builds dist/LeafJuice.app, ad-hoc signed. Needs only the Command Line Tools.
 #   scripts/build-app.sh              this Mac's architecture
 #   scripts/build-app.sh --universal  Apple silicon and Intel
 #   scripts/build-app.sh --dmg        also makes a .zip and .dmg for a GitHub release
@@ -16,7 +16,7 @@ for arg in "$@"; do
 done
 
 version=$(sed -n 's/.*static let version = "\(.*\)"/\1/p' Sources/LeafJuiceCore/Support.swift)
-app="dist/Leaf Juice.app"
+app="dist/LeafJuice.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
@@ -48,8 +48,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Leaf Juice</string>
-    <key>CFBundleDisplayName</key><string>Leaf Juice</string>
+    <key>CFBundleName</key><string>LeafJuice</string>
+    <key>CFBundleDisplayName</key><string>LeafJuice</string>
     <key>CFBundleIdentifier</key><string>io.github.mgilardi.leafjuice</string>
     <key>CFBundleExecutable</key><string>LeafJuice</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
@@ -69,11 +69,11 @@ PLIST
 codesign --force --deep --sign - "$app"
 
 if $dmg; then
-    ( cd dist && rm -f LeafJuice-*.zip LeafJuice-*.dmg && ditto -c -k --keepParent "Leaf Juice.app" "LeafJuice-$version.zip" )
+    ( cd dist && rm -f LeafJuice-*.zip LeafJuice-*.dmg && ditto -c -k --keepParent "LeafJuice.app" "LeafJuice-$version.zip" )
     staging=$(mktemp -d)
     cp -R "$app" "$staging/"
     ln -s /Applications "$staging/Applications"
-    hdiutil create -quiet -volname "Leaf Juice" -srcfolder "$staging" -ov -format UDZO "dist/LeafJuice-$version.dmg"
+    hdiutil create -quiet -volname "LeafJuice" -srcfolder "$staging" -ov -format UDZO "dist/LeafJuice-$version.dmg"
     rm -rf "$staging"
 fi
 

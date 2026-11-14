@@ -29,7 +29,7 @@ public enum AppPaths {
             return URL(fileURLWithPath: override, isDirectory: true)
         }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Leaf Juice", isDirectory: true)
+            .appendingPathComponent("Leaf Juice", isDirectory: true)  // Keeps its first name, so existing data stays put (D185).
     }
     /// Where servers live. `~/Minecraft` unless changed in Settings. `LEAFJUICE_SERVERS` redirects it for tests.
     public static var servers: URL {
@@ -55,7 +55,7 @@ public enum AppPaths {
         UserDefaults.standard.set(folder.path, forKey: "serversFolder")
         UserDefaults.standard.set(true, forKey: "serversFolderChosen")
     }
-    /// Leaf Juice's own folder beside the servers. Holds backups, and is never listed as a server.
+    /// LeafJuice's own folder beside the servers. Holds backups, and is never listed as a server.
     public static let ownFolderName = "LeafJuice"
     public static var backups: URL {
         servers.appendingPathComponent(ownFolderName, isDirectory: true).appendingPathComponent("backups", isDirectory: true)
@@ -65,7 +65,7 @@ public enum AppPaths {
     public static var rules: URL { home.appendingPathComponent("rules", isDirectory: true) }
 }
 
-/// Everything Leaf Juice adds to a server lives under `.leafjuice`.
+/// Everything LeafJuice adds to a server lives under `.leafjuice`.
 public struct ServerPaths: Sendable {
     public let root: URL
     public init(root: URL) { self.root = root }

@@ -2,10 +2,10 @@ import Foundation
 
 // Plugins on upgrade, through Preflight's own command-line tool (preflight-upgrade, ExtantApe/Preflight). The tool
 // decides: it boots a copy on the new version, says what won't start and what needs it, switches plugins off and
-// back on, and keeps its own plugin restore point. Leaf Juice makes the copy with saving paused, asks the person,
+// back on, and keeps its own plugin restore point. LeafJuice makes the copy with saving paused, asks the person,
 // adds its own verified restore point of the whole server, and shows the result. See docs/PLAN.md, 2026-11-08.
 
-/// Which release of the tool Leaf Juice uses, pinned by hash so a changed download is refused.
+/// Which release of the tool LeafJuice uses, pinned by hash so a changed download is refused.
 public enum UpgradeTool {
     public static let version = "0.3.0"
     public static let sha256 = "1789f326e44f841ede148e6338e2d9399b52a0695c4a6f1397d1c8ed9609b7ef"
@@ -104,11 +104,11 @@ public struct PluginUpgradePlan: Equatable, Sendable {
 
     public init(target: String, stop: String) { self.target = target; self.stop = stop }
 
-    /// nil if it isn't the tool's JSON. A format Leaf Juice doesn't know becomes a stop.
+    /// nil if it isn't the tool's JSON. A format LeafJuice doesn't know becomes a stop.
     public static func decode(_ data: Data, target fallback: String) -> PluginUpgradePlan? {
         guard let body = try? JSONDecoder().decode(Body.self, from: data) else { return nil }
         guard body.format == 1 else {
-            return PluginUpgradePlan(target: fallback, stop: "The upgrade tool gave format \(body.format), which this version of Leaf Juice doesn't know. Look for a Leaf Juice update.")
+            return PluginUpgradePlan(target: fallback, stop: "The upgrade tool gave format \(body.format), which this version of LeafJuice doesn't know. Look for a LeafJuice update.")
         }
         var plan = PluginUpgradePlan(target: fallback, stop: "")
         if let t = body.target, let mc = t.minecraft { plan.target = "\(t.brand ?? "Paper") \(mc)" + (t.build.map { " build \($0)" } ?? "") }
@@ -125,7 +125,7 @@ public struct PluginUpgradePlan: Equatable, Sendable {
         case "stop":
             plan.stop = body.stop ?? "The upgrade tool stopped without saying why."
             plan.sharedDatabase = body.stop?.contains("--allow-shared-database") == true || body.stop?.localizedCaseInsensitiveContains("outside database") == true
-        default: plan.stop = "The upgrade tool gave a result Leaf Juice doesn't know: \(body.status)."
+        default: plan.stop = "The upgrade tool gave a result LeafJuice doesn't know: \(body.status)."
         }
         return plan
     }
@@ -153,7 +153,7 @@ public struct SwitchedOffPlugins: Equatable, Sendable {
 }
 
 extension ServerPaths {
-    /// The tool's own files on this server, readable without Leaf Juice.
+    /// The tool's own files on this server, readable without LeafJuice.
     public var upgradeFolder: URL { plugins.appendingPathComponent("Preflight/upgrade", isDirectory: true) }
     public var upgradeRules: URL { upgradeFolder.appendingPathComponent("rules.json") }
     public var switchedOffFile: URL { upgradeFolder.appendingPathComponent("switched-off.json") }
@@ -228,7 +228,7 @@ extension ServerController {
         try await Trial.clone(paths.root, to: copy)
     }
 
-    /// Switches off what the plan lists, through the tool. Leaf Juice's own verified restore point of the whole server
+    /// Switches off what the plan lists, through the tool. LeafJuice's own verified restore point of the whole server
     /// comes first. The tool then refuses if the server is running or a jar changed since the check.
     public func applyPluginPlan(_ plan: PluginUpgradePlan) async throws {
         guard plan.canApply else { throw LeafError(plan.stop ?? (plan.blocked.isEmpty ? "There's nothing to switch off." : "A plugin that must stay on would have to go, so the upgrade waits.")) }

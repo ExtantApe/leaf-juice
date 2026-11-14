@@ -57,7 +57,7 @@ let testKeychainFile: String = {
     let (path, _) = throwawayKeychain("advisor-helper")
     let helper = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().appendingPathComponent("leafjuice-mcp").path
     let hex = testKeychainKey.withUnsafeBytes { $0.map { String(format: "%02x", $0) }.joined() }
-    runSecurity(["add-generic-password", "-s", KeychainVault.service, "-a", KeychainVault.account, "-l", "Leaf Juice Advisor key (check)", "-X", hex, "-T", helper, path])
+    runSecurity(["add-generic-password", "-s", KeychainVault.service, "-a", KeychainVault.account, "-l", "LeafJuice Advisor key (check)", "-X", hex, "-T", helper, path])
     return path
 }()
 

@@ -25,18 +25,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
-          Download the .dmg and drag Leaf Juice to Applications. It's unsigned, so macOS blocks the first launch. Allow it one of two ways:
+          Download the .dmg and drag LeafJuice to Applications. It's unsigned, so macOS blocks the first launch. Allow it one of two ways:
 
           **System Settings:** try to open the app once, then go to System Settings > Privacy & Security, scroll down, click **Open Anyway**, and click **Open** when the warning comes back. Apple says to do this only for an app you trust.
 
           **Terminal:**
 
           ```
-          xattr -dr com.apple.quarantine "/Applications/Leaf Juice.app"
+          xattr -dr com.apple.quarantine "/Applications/LeafJuice.app"
           ```
 
           What changed is in [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
           EOF
           gh release create "$GITHUB_REF_NAME" dist/LeafJuice-*.dmg dist/LeafJuice-*.zip \
-            --title "Leaf Juice $GITHUB_REF_NAME" \
+            --title "LeafJuice $GITHUB_REF_NAME" \
             --notes-file notes.md
