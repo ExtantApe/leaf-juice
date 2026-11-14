@@ -46,7 +46,7 @@ struct InvitesCard: View {
                 } else {
                     if let publicURL, !publicURL.isEmpty { Fact(label: "Sign-up page", value: publicURL) }
                     Hint("Signing in to the web pages with /signin needs the latchkey.signin permission, which only operators have until you give it to a group in LuckPerms.")
-                    if let made { codeView(made) } else { form }
+                    if let made { codeView(made, latchkeyURL: publicURL) } else { form }
                 }
                 listView
             }
@@ -99,7 +99,8 @@ struct InvitesCard: View {
             .disabled(working || !nameIsValid || questions.contains { !answered.contains($0.id) })
     }
 
-    @ViewBuilder private func codeView(_ new: NewInvite) -> some View {
+    @ViewBuilder private func codeView(_ new: NewInvite, latchkeyURL: String?) -> some View {
+        let address = InviteAddress.choose(configured: server.savedConnections.settings.signInURL, latchkey: latchkeyURL)
         Callout(tone: .good, title: "Invite for \(new.invite.name)", detail: "Shown once. Send it to them privately. It works once, until \(new.invite.expires.formatted(date: .abbreviated, time: .shortened)).") { EmptyView() }
         if let warning = new.warning { Callout(tone: .warning, title: warning) }
         HStack(spacing: 12) {
@@ -115,6 +116,28 @@ struct InvitesCard: View {
             }
             .buttonStyle(.juice)
         }
+        if let url = address.url {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Sign in at").font(.callout).foregroundStyle(Juice.muted)
+                Text(url).font(.title3.weight(.semibold)).foregroundStyle(Juice.ink).textSelection(.enabled)
+                    .accessibilityLabel("Sign-in page: \(url)")
+            }
+            .accessibilityElement(children: .combine)
+            HStack {
+                Button("Copy Address") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(url, forType: .string)
+                }
+                .buttonStyle(.juice)
+                Button("Copy Both") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString("Sign in at \(url) with the code \(new.code)", forType: .string)
+                    copied = true
+                }
+                .buttonStyle(.juice)
+            }
+        }
+        if let note = address.note { Hint(note) }
         Button("Done") { made = nil; copied = false; name = ""; chosen = [] }
             .buttonStyle(.juicePrimary).keyboardShortcut(.defaultAction)
         Hint("After Done, the code can't be shown again. Leaf Juice keeps no copy.")
@@ -237,3 +260,4 @@ struct WebSignInSection: View {
         }
     }
 }
+

@@ -4,7 +4,7 @@ Each audit lists what Leaf Juice promises, which checks prove each promise, and 
 
 ## 2026-11-14: connections (tunnels and services)
 
-The owner's request of 2026-11-14 (see `docs/PLAN.md`). `leafjuice-check --connections`: 88 passed, also part of the default run.
+The owner's requests of 2026-11-14 (see `docs/PLAN.md`). `leafjuice-check --connections`: 112 passed, also part of the default run.
 
 Covered:
 
@@ -20,6 +20,8 @@ Covered:
 - **Real sockets on 127.0.0.1:** the status ping sees a fake server that answers it, doesn't mistake an HTTP answer for Minecraft, and a closed port isn't seen. The real lookup finds localhost.
 - **A real keychain:** a throwaway keychain file, never the login Keychain. Missing, saved, replaced, removed, an empty secret refused, and a locked keychain not mistaken for a missing secret.
 - **Mutations:** ignoring a missing Keychain secret, ignoring an agent with no secret, always checking from outside, checking a service that's off, and not flagging pasted secrets each failed at least one check.
+- **The map and sign-in page.** Both read, saved and missing from older files. Five bad addresses refused. Unset says so and asks nothing; the quiet check never fetches; plain http is flagged. From outside: a page, a sign-in prompt (401) and a refusal (403) count as answering, 404 needs a look, a proxy error or no answer is not ready.
+- **Beside the invite code:** the configured address, with Latchkey's named when it differs, Latchkey's when none is configured (labelled), and with neither the screen says so and still shows the code.
 - **Read-only against this Mac's real agents** (`--connections --live`): the playit agent was found running with its secret, and its log showed the pack tunnel refused while pack serving was off. Tailscale read as connected.
 
 Gaps skipped:

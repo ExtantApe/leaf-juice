@@ -8,6 +8,8 @@
   or the service's own file, and a missing one shows as not ready. Checking from outside only runs when you click it.
   Tested with made-up answers, a throwaway keychain and local sockets, and read-only against a real playit agent and
   Tailscale. Not yet run against the real servers.
+- **Map and sign-in addresses** in the same file, each with a check. The invite code screen shows the sign-in page
+  beside the code, with Copy Both. If none is set, it says so and still shows the code.
 
 ## 0.2.0
 

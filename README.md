@@ -167,16 +167,18 @@ values:
 
 ```json
 {
-  "playerAddress": "play.example.net",
+  "playerAddress": "play.example.test",
+  "mapURL": "https://map.example.test",
+  "signInURL": "https://example.test/signin",
   "services": [
     { "id": "play", "name": "Game tunnel", "provider": "playit", "traffic": "game", "enabled": true,
-      "localAddress": "127.0.0.1:25565", "publicAddress": "play.example.net", "secret": { "agent": {} } },
+      "localAddress": "127.0.0.1:25565", "publicAddress": "play.example.test", "secret": { "agent": {} } },
     { "id": "site", "name": "Web tunnel", "provider": "playit", "traffic": "web", "enabled": true,
-      "localAddress": "127.0.0.1:8443", "publicAddress": "https://example.net" },
+      "localAddress": "127.0.0.1:8443", "publicAddress": "https://example.test" },
     { "id": "status-api", "name": "Status page", "provider": "other", "traffic": "web", "enabled": false,
-      "publicAddress": "https://status.example.net", "secret": { "keychain": { "account": "status-api" } } },
+      "publicAddress": "https://status.example.test", "secret": { "keychain": { "account": "status-api" } } },
     { "id": "dns", "name": "Domain name", "provider": "other", "traffic": "dns", "enabled": true,
-      "publicAddress": "example.net" }
+      "publicAddress": "example.test" }
   ]
 }
 ```
@@ -184,6 +186,8 @@ values:
 | Field | Meaning |
 |---|---|
 | `playerAddress` | What players type in Minecraft. Shown on the card, with a Copy button. |
+| `mapURL` | The web map players open. Checked from outside like any web address; a sign-in prompt counts as answering. |
+| `signInURL` | The sign-in page that goes with an invite code. Shown beside the code, with Copy Both, so whoever hands it over can read out both. If it's empty, Latchkey's own address is shown and labelled as such, and with neither the screen says so and still shows the code. |
 | `id` | Short name: lowercase letters, numbers and hyphens. Also names its Keychain item. |
 | `provider` | `playit`, `tailscale` or `other`. An unknown one reads as `other`. |
 | `traffic` | `game` (status ping), `web` (HTTP), `dns` (lookup) or `access` (nothing checked end to end). |

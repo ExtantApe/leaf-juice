@@ -41,15 +41,15 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     write("{not json", ConnectionStore.file(meta))
     loaded = ConnectionStore.load(meta)
     check(loaded.unreadable && loaded.settings.services.isEmpty && loaded.problems.count == 1, "an unreadable file is reported, not a crash")
-    var fresh = ConnectionSettings(); fresh.playerAddress = "play.example.net"
+    var fresh = ConnectionSettings(); fresh.playerAddress = "play.example.test"
     try? ConnectionStore.save(fresh, meta: meta, replacingUnreadable: true)
     check(FileManager.default.fileExists(atPath: meta.appendingPathComponent("connections.json.unreadable").path), "saving over it moves the old file aside first")
     equal(ConnectionStore.load(meta).settings, fresh, "and the new file reads back")
 
     let pasted = "made-up-secret-value-0000"
     let text = """
-    {"playerAddress":"play.example.net","token":"\(pasted)","services":[
-      {"id":"play","name":"Game tunnel","provider":"playit","traffic":"game","enabled":true,"localAddress":"127.0.0.1:25565","publicAddress":"play.example.net","secret":{"agent":{}}},
+    {"playerAddress":"play.example.test","token":"\(pasted)","services":[
+      {"id":"play","name":"Game tunnel","provider":"playit","traffic":"game","enabled":true,"localAddress":"127.0.0.1:25565","publicAddress":"play.example.test","secret":{"agent":{}}},
       {"id":"pack","provider":"playit","traffic":"web","localAddress":"127.0.0.1:8766","secret_key":"x","authKey":"\(pasted)"},
       {"id":"later","provider":"wireguard-someday","traffic":"teleport","enabled":true},
       {"id":"Bad Name","provider":"other","enabled":true},
@@ -77,8 +77,8 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     section("Connections: addresses")
     equal(HostPort.parse("127.0.0.1:25565"), HostPort(host: "127.0.0.1", port: 25565), "host and port")
     equal(HostPort.parse("[::1]:8766"), HostPort(host: "::1", port: 8766), "IPv6 in brackets")
-    equal(HostPort.parse("play.example.net", defaultPort: 25565)?.port, 25565, "a bare name takes the game's port")
-    for bad in ["", "play.example.net", "host:0", "host:70000", "a b:1", "https://x:1", "::1:25565", "[::1", "host:port"] {
+    equal(HostPort.parse("play.example.test", defaultPort: 25565)?.port, 25565, "a bare name takes the game's port")
+    for bad in ["", "play.example.test", "host:0", "host:70000", "a b:1", "https://x:1", "::1:25565", "[::1", "host:port"] {
         check(HostPort.parse(bad) == nil, "refused: '\(bad)'")
     }
     check(HostPort.parse("100.93.1.2:25565")!.isTailscale && !HostPort.parse("100.200.1.2:1")!.isTailscale, "Tailscale's range is told apart")
@@ -95,7 +95,7 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
         return p
     }
     let ctx = ConnectionContext(serverRunning: true, serverIP: "127.0.0.1", serverPort: 25565, packHostPort: 8766)
-    var play = ConnectionService(id: "play", name: "Game tunnel", provider: .playit, traffic: .game, localAddress: "127.0.0.1:25565", publicAddress: "play.example.net", secret: .agent)
+    var play = ConnectionService(id: "play", name: "Game tunnel", provider: .playit, traffic: .game, localAddress: "127.0.0.1:25565", publicAddress: "play.example.test", secret: .agent)
     func run(_ s: ConnectionService, _ p: FakeConnectionProbe, _ c: ConnectionContext = ctx, outside: Bool = false) async -> ConnectionStatus {
         await ConnectionCheck.run(s, context: c, probe: p, outside: outside)
     }
@@ -103,7 +103,7 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     var p = playitProbe()
     var status = await run(play, p)
     equal(status.health, .ready, "a running agent with its secret, forwarding to a server that answers, is ready: \(status.summary)")
-    check(!p.asked.contains { $0.hasPrefix("ping play.example.net") || $0.hasPrefix("http") }, "nothing goes over the internet unless asked")
+    check(!p.asked.contains { $0.hasPrefix("ping play.example.test") || $0.hasPrefix("http") }, "nothing goes over the internet unless asked")
     check(status.details.contains("Not tried from the internet yet."), "and it says so")
 
     var off = play; off.enabled = false
@@ -161,7 +161,7 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     check(status.health == .warning && status.summary.contains("2 times"), "recent refusals in playit's log for this address are counted, older ones and other addresses aren't: \(status.summary)")
 
     // Secrets kept by Leaf Juice: missing is not ready, never a crash; the value is never read.
-    var keyed = ConnectionService(id: "status-api", name: "Status page", provider: .other, traffic: .web, publicAddress: "https://status.example.net", secret: .keychain(account: "status-api"))
+    var keyed = ConnectionService(id: "status-api", name: "Status page", provider: .other, traffic: .web, publicAddress: "https://status.example.test", secret: .keychain(account: "status-api"))
     p = FakeConnectionProbe()
     status = await run(keyed, p)
     equal(status.health, .notReady, "a secret missing from the Keychain: not ready")
@@ -188,7 +188,7 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     equal(v11, .ready, "a private one: fine")
 
     // Bad settings are reported, not run.
-    var broken = play; broken.localAddress = "not an address"; broken.publicAddress = "https://wrong-kind.example.net"
+    var broken = play; broken.localAddress = "not an address"; broken.publicAddress = "https://wrong-kind.example.test"
     status = await run(broken, playitProbe())
     equal(status.health, .notReady, "addresses that can't be read: not ready")
     check(status.details.contains { $0.contains("local address") } && status.details.contains { $0.contains("public address") }, "each one is named")
@@ -199,26 +199,26 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     // From outside, only when asked.
     p = playitProbe()
     status = await run(play, p, outside: true)
-    check(p.asked.contains("ping play.example.net:25565"), "asked, it pings the public address as a player would")
+    check(p.asked.contains("ping play.example.test:25565"), "asked, it pings the public address as a player would")
     equal(status.health, .notReady, "and a public address that doesn't answer is not ready")
-    p = playitProbe(); p.gameAnswering.insert("play.example.net:25565")
+    p = playitProbe(); p.gameAnswering.insert("play.example.test:25565")
     let v13 = await run(play, p, outside: true).health
     equal(v13, .ready, "one that answers is ready")
-    let packTunnel = ConnectionService(id: "pack", name: "Pack tunnel", provider: .playit, traffic: .web, localAddress: "127.0.0.1:8766", publicAddress: "https://pack.example.net:14248", secret: .agent)
-    p = playitProbe(); p.web["https://pack.example.net:14248"] = 404
+    let packTunnel = ConnectionService(id: "pack", name: "Pack tunnel", provider: .playit, traffic: .web, localAddress: "127.0.0.1:8766", publicAddress: "https://pack.example.test:14248", secret: .agent)
+    p = playitProbe(); p.web["https://pack.example.test:14248"] = 404
     status = await run(packTunnel, p, outside: true)
     equal(status.health, .ready, "any web answer proves the web tunnel reaches this Mac (pack serving answers strangers 404)")
     check(p.asked.contains("tcp 127.0.0.1:8766") && !p.asked.contains("ping 127.0.0.1:8766"), "web tunnels are checked with a plain connection, not a game ping")
 
     // A DNS name: looked up only when checking from outside.
-    let name = ConnectionService(id: "dns", name: "Domain name", provider: .other, traffic: .dns, publicAddress: "example.net")
+    let name = ConnectionService(id: "dns", name: "Domain name", provider: .other, traffic: .dns, publicAddress: "example.test")
     p = FakeConnectionProbe()
     let dnsQuiet = await run(name, p)
     check(dnsQuiet.health == .ready && p.asked.isEmpty, "a name isn't looked up by the quiet check")
     p = FakeConnectionProbe()
     let dnsMissing = await run(name, p, outside: true)
-    check(dnsMissing.health == .notReady && p.asked == ["dns example.net"], "from outside, a name that doesn't look up is not ready")
-    p = FakeConnectionProbe(); p.names["example.net"] = ["192.0.2.10"]
+    check(dnsMissing.health == .notReady && p.asked == ["dns example.test"], "from outside, a name that doesn't look up is not ready")
+    p = FakeConnectionProbe(); p.names["example.test"] = ["192.0.2.10"]
     let dnsFound = await run(name, p, outside: true)
     equal(dnsFound.health, .ready, "and one that does is ready")
     let resolved = await SystemConnectionProbe().resolve("localhost")
@@ -244,6 +244,47 @@ final class FakeConnectionProbe: ConnectionProbe, @unchecked Sendable {
     equal(v18, .notReady, "not installed: not ready")
     status = await run(ts, tsProbe(#"{"BackendState":"Running","Self":{"Online":true,"DNSName":"made-up-mac.tail0000.ts.net."},"TailscaleIPs":["100.64.0.9"]}"#))
     check(!(status.summary + status.details.joined()).contains("made-up-mac"), "the tailnet's own name isn't repeated in the status")
+
+    section("Connections: the map and sign-in page")
+    let withURLs = ConnectionStore.parse(Data(#"{"playerAddress":"play.example.test","mapURL":"https://map.example.test","signInURL":"https://example.test/signin","services":[]}"#.utf8))
+    equal(withURLs.settings.mapURL, "https://map.example.test", "the map address is read")
+    equal(withURLs.settings.signInURL, "https://example.test/signin", "and the sign-in page")
+    let urlMeta = folder("connections-urls")
+    try? ConnectionStore.save(withURLs.settings, meta: urlMeta, replacingUnreadable: false)
+    equal(ConnectionStore.load(urlMeta).settings, withURLs.settings, "both survive a save")
+    equal(ConnectionStore.parse(Data(#"{"services":[]}"#.utf8)).settings.signInURL, "", "a file from before them still opens, with them unset")
+    for bad in ["example.test", "ftp://example.test", "https://", "https:// example.test", "javascript:alert(1)"] {
+        check(ConnectionCheck.playerURL(bad) == nil, "not a player address: '\(bad)'")
+    }
+    p = FakeConnectionProbe()
+    let unset = await ConnectionCheck.runURL("", probe: p, outside: true)
+    check(unset.health == .off && unset.summary == "Not set." && p.asked.isEmpty, "unset: says so, and nothing is asked")
+    p = FakeConnectionProbe()
+    let quiet = await ConnectionCheck.runURL("https://map.example.test", probe: p, outside: false)
+    check(quiet.health == .unknown && p.asked.isEmpty, "the quiet check never fetches it")
+    let notURL = await ConnectionCheck.runURL("map.example.test", probe: p, outside: true)
+    equal(notURL.health, .notReady, "an address without https:// is not ready")
+    let plainHTTP = await ConnectionCheck.runURL("http://map.example.test", probe: p, outside: false)
+    check(plainHTTP.health == .warning && plainHTTP.summary.contains("https"), "plain http is flagged even before checking")
+    for (code, health, label) in [(200, ConnectionHealth.ready, "a page"), (401, .ready, "a sign-in prompt"), (403, .ready, "a refusal to strangers"),
+                                  (404, .warning, "not found"), (502, .notReady, "a proxy error"), (nil, .notReady, "no answer")] as [(Int?, ConnectionHealth, String)] {
+        p = FakeConnectionProbe()
+        if let code { p.web["https://map.example.test"] = code }
+        let s = await ConnectionCheck.runURL("https://map.example.test", probe: p, outside: true)
+        equal(s.health, health, "from outside, \(label) (\(code.map(String.init) ?? "none")) is \(health.title)")
+    }
+    p = FakeConnectionProbe(); p.web["http://map.example.test"] = 200
+    equal((await ConnectionCheck.runURL("http://map.example.test", probe: p, outside: true)).health, .warning, "an http page that answers is still flagged")
+
+    // Beside the invite code.
+    let both = InviteAddress.choose(configured: "https://example.test/signin", latchkey: "https://example.test/signin")
+    check(both.url == "https://example.test/signin" && both.note == nil, "the configured address is shown, with nothing to add when Latchkey agrees")
+    let differ = InviteAddress.choose(configured: "https://example.test/signin", latchkey: "https://old.example.test")
+    check(differ.url == "https://example.test/signin" && differ.note?.contains("old.example.test") == true, "when Latchkey disagrees, the configured one is shown and the other named")
+    let fallback = InviteAddress.choose(configured: "", latchkey: "https://example.test/join")
+    check(fallback.url == "https://example.test/join" && fallback.note != nil, "with none configured, Latchkey's is shown and said to be Latchkey's")
+    let none = InviteAddress.choose(configured: " ", latchkey: nil)
+    check(none.url == nil && none.note?.contains("only the code") == true, "with neither, the screen says so and still shows the code")
 
     section("Connections: the game's status ping, on real sockets")
     let request = [UInt8](MinecraftPing.request(host: "127.0.0.1", port: 25565))

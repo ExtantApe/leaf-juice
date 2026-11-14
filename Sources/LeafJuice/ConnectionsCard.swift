@@ -19,6 +19,7 @@ struct ConnectionsCard: View {
     let server: ServerController
     @State private var loaded: ConnectionStore.Loaded?
     @State private var statuses: [String: ConnectionStatus] = [:]
+    @State private var urlStatuses: [String: ConnectionStatus] = [:]
     @State private var checking = false
     @State private var editing = false
     @State private var expanded: Set<String> = []
@@ -29,14 +30,16 @@ struct ConnectionsCard: View {
                 ForEach(loaded.problems, id: \.self) { Callout(tone: .warning, title: "Connections file", detail: $0) }
                 let address = loaded.settings.playerAddress
                 Fact(label: "Players join with", value: address.isEmpty ? "Not set" : address)
+                urlRow("Web map", loaded.settings.mapURL, key: "map")
+                urlRow("Sign-in page", loaded.settings.signInURL, key: "signin")
                 if loaded.settings.services.isEmpty {
                     Hint("No tunnels or services yet. Add playit, Tailscale or anything else that carries players or web traffic, so Leaf Juice can say whether each is working.")
                 }
                 ForEach(loaded.settings.services) { service in row(service) }
                 HStack {
-                    Button("Check") { check(outside: false) }.buttonStyle(.juice).disabled(checking || loaded.settings.services.isEmpty)
+                    Button("Check") { check(outside: false) }.buttonStyle(.juice).disabled(checking || !hasAnything(loaded.settings))
                         .help("Checks each agent and what it forwards to on this Mac. Nothing goes over the internet.")
-                    Button("Check From Outside") { check(outside: true) }.buttonStyle(.juice).disabled(checking || loaded.settings.services.isEmpty)
+                    Button("Check From Outside") { check(outside: true) }.buttonStyle(.juice).disabled(checking || !hasAnything(loaded.settings))
                         .help("Also connects to each public address over the internet, through the tunnel, as a player would.")
                     if checking { ProgressView().controlSize(.small).accessibilityLabel("Checking") }
                 }
@@ -83,10 +86,27 @@ struct ConnectionsCard: View {
         .accessibilityLabel("\(service.name), \(status.health.title)")
     }
 
+    private func hasAnything(_ s: ConnectionSettings) -> Bool { !s.services.isEmpty || !s.mapURL.isEmpty || !s.signInURL.isEmpty }
+
+    @ViewBuilder private func urlRow(_ label: String, _ url: String, key: String) -> some View {
+        let status = urlStatuses[key] ?? (url.isEmpty ? ConnectionStatus(.off, "Not set.") : ConnectionStatus(.unknown, "Not checked yet."))
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(label).foregroundStyle(Juice.muted)
+                Spacer(minLength: 8)
+                Text(url.isEmpty ? "Not set" : url).foregroundStyle(Juice.ink).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                if !url.isEmpty { Badge(text: status.health.title, tone: status.health.tone) }
+            }
+            if !url.isEmpty, status.health != .unknown { Text(status.summary).font(.callout).foregroundStyle(Juice.muted) }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
     private func reload() { loaded = server.savedConnections }
 
     private func check(outside: Bool) {
-        guard let services = loaded?.settings.services, !services.isEmpty, !checking else { return }
+        guard let settings = loaded?.settings, hasAnything(settings), !checking else { return }
+        let services = settings.services
         checking = true
         let context = server.connectionContext
         Task {
@@ -98,6 +118,9 @@ struct ConnectionsCard: View {
                 for await (id, status) in group { results[id] = status }
             }
             statuses = results
+            let probe = SystemConnectionProbe()
+            urlStatuses = ["map": await ConnectionCheck.runURL(settings.mapURL, probe: probe, outside: outside),
+                           "signin": await ConnectionCheck.runURL(settings.signInURL, probe: probe, outside: outside)]
             checking = false
         }
     }
@@ -126,8 +149,16 @@ struct ConnectionsEditor: View {
                 Callout(tone: .warning, title: "The old file couldn't be read", detail: "Saving moves it aside as connections.json.unreadable, so nothing is lost.")
             }
             LabeledContent("Players join with") {
-                TextField("play.example.net", text: $settings.playerAddress).textFieldStyle(.roundedBorder)
+                TextField("play.example.test", text: $settings.playerAddress).textFieldStyle(.roundedBorder)
                     .accessibilityLabel("Address players join with")
+            }
+            LabeledContent("Web map") {
+                TextField("https://map.example.test", text: $settings.mapURL).textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Web map address")
+            }
+            LabeledContent("Sign-in page") {
+                TextField("https://example.test/signin", text: $settings.signInURL).textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Sign-in page address, shown beside each invite code")
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -173,6 +204,10 @@ struct ConnectionsEditor: View {
     }
 
     private func save() {
+        for (label, url) in [("web map", settings.mapURL), ("sign-in page", settings.signInURL)] where !url.isEmpty && ConnectionCheck.playerURL(url) == nil {
+            error = "The \(label) address must start with https:// and name a site."
+            return
+        }
         for s in settings.services where !ConnectionService.isUsableID(s.id) {
             error = "\(s.name)'s short name must be lowercase letters, numbers and hyphens."
             return
@@ -251,7 +286,7 @@ private struct ServiceEditor: View {
                 if service.traffic != .access {
                     GridRow {
                         Text("Public address").foregroundStyle(Juice.muted)
-                        TextField(service.traffic == .web ? "https://pack.example.net" : service.traffic == .dns ? "example.net" : "play.example.net", text: $service.publicAddress)
+                        TextField(service.traffic == .web ? "https://pack.example.test" : service.traffic == .dns ? "example.test" : "play.example.test", text: $service.publicAddress)
                             .textFieldStyle(.roundedBorder).accessibilityLabel("Public address")
                     }
                 }

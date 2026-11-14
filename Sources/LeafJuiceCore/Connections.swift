@@ -8,15 +8,21 @@ import Security
 /// Saved in the server's `.leafjuice/connections.json`. Only names, addresses and where a secret lives are saved here,
 /// never a secret itself: those stay in the Keychain or in the service's own file.
 public struct ConnectionSettings: Codable, Equatable, Sendable {
-    /// What players type in Minecraft to join, such as play.example.net. Shown on the Overview page.
+    /// What players type in Minecraft to join, such as play.example.test. Shown on the Overview page.
     public var playerAddress = ""
+    /// The web map players open, such as https://map.example.test.
+    public var mapURL = ""
+    /// The website sign-in page that goes with the code Leaf Juice issues after an account lookup.
+    public var signInURL = ""
     public var services: [ConnectionService] = []
     public init() {}
 
-    enum CodingKeys: String, CodingKey { case playerAddress, services }
+    enum CodingKeys: String, CodingKey { case playerAddress, mapURL, signInURL, services }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         playerAddress = try c.decodeIfPresent(String.self, forKey: .playerAddress) ?? ""
+        mapURL = try c.decodeIfPresent(String.self, forKey: .mapURL) ?? ""
+        signInURL = try c.decodeIfPresent(String.self, forKey: .signInURL) ?? ""
         services = try c.decodeIfPresent([ConnectionService].self, forKey: .services) ?? []
     }
 }
@@ -47,7 +53,7 @@ public enum ConnectionTraffic: String, Codable, CaseIterable, Sendable {
     case web
     /// Nothing checked end to end, such as Tailscale used for admin access.
     case access
-    /// A name at a DNS provider, such as play.example.net. Checked by looking it up.
+    /// A name at a DNS provider, such as play.example.test. Checked by looking it up.
     case dns
 
     public var title: String {
@@ -83,7 +89,7 @@ public struct ConnectionService: Codable, Equatable, Identifiable, Sendable {
     public var enabled: Bool
     /// What the tunnel forwards to on this Mac, such as 127.0.0.1:25565. Empty when it isn't a tunnel.
     public var localAddress: String
-    /// What people outside use: play.example.net for a game, https://pack.example.net:14248 for web.
+    /// What people outside use: play.example.test for a game, https://pack.example.test:14248 for web.
     public var publicAddress: String
     public var secret: SecretLocation?
     /// Only for Other providers: which tool's agent this is, in words. Shown, not run.
@@ -155,6 +161,8 @@ public enum ConnectionStore {
         }
         var settings = ConnectionSettings()
         settings.playerAddress = (object["playerAddress"] as? String) ?? ""
+        settings.mapURL = (object["mapURL"] as? String) ?? ""
+        settings.signInURL = (object["signInURL"] as? String) ?? ""
         flagSecrets(object, at: "the file", into: &problems)
         var seen = Set<String>()
         for (index, raw) in ((object["services"] as? [Any]) ?? []).enumerated() {
@@ -374,7 +382,7 @@ public enum ConnectionCheck {
         }
         let publicTarget = publicTarget(service)
         if !service.publicAddress.isEmpty, publicTarget == nil {
-            note(.notReady, service.traffic == .web ? "The public address isn't a web address like https://pack.example.net." : "The public address isn't something like play.example.net or play.example.net:25565.")
+            note(.notReady, service.traffic == .web ? "The public address isn't a web address like https://pack.example.test." : "The public address isn't something like play.example.test or play.example.test:25565.")
         }
 
         // Its secret, without reading it.
@@ -459,6 +467,39 @@ public enum ConnectionCheck {
         case .ready: return ConnectionStatus(.ready, readySummary(service), details: details)
         default: return ConnectionStatus(worst, headline ?? worst.title, details: details)
         }
+    }
+
+    /// A web address players are given, such as the map or the sign-in page. Nil when it isn't one.
+    public static func playerURL(_ text: String) -> URL? {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, !t.contains(" "), let url = URL(string: t), ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+              let host = url.host, !host.isEmpty else { return nil }
+        return url
+    }
+
+    /// Checks a player-facing web address. The quiet check only reads it; `outside` also asks it for a page.
+    public static func runURL(_ text: String, probe: ConnectionProbe, outside: Bool) async -> ConnectionStatus {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return ConnectionStatus(.off, "Not set.") }
+        guard let url = playerURL(t) else { return ConnectionStatus(.notReady, "This isn't a web address like https://example.test.") }
+        let insecure = url.scheme?.lowercased() == "http"
+        let plain = "It uses http, so sign-in links and cookies would cross the internet unprotected. Use https."
+        var details = insecure ? [plain] : []
+        guard outside else {
+            details.append("Not tried from the internet yet.")
+            return insecure ? ConnectionStatus(.warning, plain, details: details) : ConnectionStatus(.unknown, "Not checked yet.", details: details)
+        }
+        guard let code = await probe.httpStatus(url, timeout: 8) else {
+            return ConnectionStatus(.notReady, "Nothing answered at this address from the internet.", details: details)
+        }
+        details.append("It answered (HTTP \(code)).")
+        if code >= 500 { return ConnectionStatus(.notReady, "It answered with a server error (HTTP \(code)).", details: details) }
+        if code == 401 || code == 403 {
+            return ConnectionStatus(insecure ? .warning : .ready, insecure ? plain : "It answers from the internet, and asks for sign-in.", details: details)
+        }
+        if code >= 400 { return ConnectionStatus(.warning, "It answered, but with HTTP \(code). Players may see an error page.", details: details) }
+        if insecure { return ConnectionStatus(.warning, plain, details: details) }
+        return ConnectionStatus(.ready, "It answers from the internet.", details: details)
     }
 
     enum PublicTarget: Equatable { case game(HostPort), web(URL), name(String) }
@@ -734,6 +775,23 @@ public enum MinecraftPing {
         }
         guard let length = read(), length > 2, read() == 0, let _ = read(), i < bytes.count else { return false }
         return bytes[i] == UInt8(ascii: "{")
+    }
+}
+
+/// Which sign-in address goes beside an invite code: the one in Connections, else the one Latchkey reports.
+public enum InviteAddress {
+    public struct Choice: Equatable, Sendable { public var url: String?; public var note: String? }
+    public static func choose(configured: String, latchkey: String?) -> Choice {
+        let mine = configured.trimmingCharacters(in: .whitespaces)
+        let theirs = (latchkey ?? "").trimmingCharacters(in: .whitespaces)
+        if !mine.isEmpty {
+            if !theirs.isEmpty, theirs != mine {
+                return Choice(url: mine, note: "Latchkey's own setting says \(theirs). Check which one is right before sending this.")
+            }
+            return Choice(url: mine, note: nil)
+        }
+        if !theirs.isEmpty { return Choice(url: theirs, note: "This is Latchkey's own setting. Add the sign-in page in Connections to keep it with the server's other addresses.") }
+        return Choice(url: nil, note: "No sign-in page is set, so only the code is shown. Add the address in Connections on the Overview page.")
     }
 }
 
